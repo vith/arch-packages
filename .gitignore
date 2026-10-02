@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.work/
+.evidence/
+opentofu/.terraform/
+opentofu/*.tfstate
+opentofu/*.tfstate.*
+opentofu/*.tfplan
+opentofu/terraform.tfvars
+opentofu/*.auto.tfvars
+opentofu/encryption-passphrase

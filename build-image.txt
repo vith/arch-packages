@@ -1,0 +1,1 @@
+ghcr.io/archlinux/archlinux@sha256:97cc4a029fd74c5d240f525485800c31b238e33a8b2cf6a4a6ba16a91fdcf8b1

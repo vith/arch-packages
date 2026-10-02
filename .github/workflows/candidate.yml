@@ -1,0 +1,159 @@
+name: Exact candidate validation
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Numeric PR number; control and harness always come from main
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: candidate-${{ inputs.pr_number }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    outputs:
+      base: ${{ steps.prepare.outputs.base }}
+      head: ${{ steps.prepare.outputs.head }}
+      mechanical: ${{ steps.prepare.outputs.mechanical }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          persist-credentials: false
+      - id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: python3 -m tools.update prepare --pr "$PR_NUMBER" --directory "$RUNNER_TEMP/prepared"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: prepared-candidate
+          path: ${{ runner.temp }}/prepared
+          if-no-files-found: error
+          retention-days: 2
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: prepared-candidate
+          path: ${{ runner.temp }}/prepared
+      - name: Build every frozen package without credentials
+        run: |
+          python3 -m tools.update extract --archive "$RUNNER_TEMP/prepared/bundle.tar" --directory "$RUNNER_TEMP/build-input"
+          tools/build.sh "$RUNNER_TEMP/build-input/bundle.json" "$RUNNER_TEMP/outputs"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-candidate
+          path: ${{ runner.temp }}/outputs
+          if-no-files-found: error
+          retention-days: 2
+  validate:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: prepared-candidate
+          path: ${{ runner.temp }}/prepared
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: native-candidate
+          path: ${{ runner.temp }}/outputs
+      - env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m tools.update validate-build --record "$RUNNER_TEMP/prepared/candidate.json" --directory "$RUNNER_TEMP/outputs"
+  report-failure:
+    needs: [prepare, build, validate]
+    if: always() && needs.prepare.result == 'success' && (needs.build.result != 'success' || needs.validate.result != 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: prepared-candidate
+          path: ${{ runner.temp }}/prepared
+      - env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m tools.update fail-build --record "$RUNNER_TEMP/prepared/candidate.json"
+  manual-review:
+    name: Review PR ${{ inputs.pr_number }} head ${{ needs.prepare.outputs.head }} base ${{ needs.prepare.outputs.base }}
+    needs: [prepare, validate]
+    if: needs.prepare.outputs.mechanical != 'true'
+    environment: recipe-review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: prepared-candidate
+          path: ${{ runner.temp }}/prepared
+      - name: Revalidate exact approved candidate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m tools.update review --record "$RUNNER_TEMP/prepared/candidate.json"
+  finalize:
+    needs: [prepare, validate, manual-review]
+    if: always() && needs.validate.result == 'success' && (needs.manual-review.result == 'success' || needs.manual-review.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: prepared-candidate
+          path: ${{ runner.temp }}/prepared
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: native-candidate
+          path: ${{ runner.temp }}/outputs
+      - env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          BASE_SHA: ${{ needs.prepare.outputs.base }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head }}
+        run: python3 -m tools.update finalize --pr "$PR_NUMBER" --base "$BASE_SHA" --head "$HEAD_SHA" --record "$RUNNER_TEMP/prepared/candidate.json" --directory "$RUNNER_TEMP/outputs"

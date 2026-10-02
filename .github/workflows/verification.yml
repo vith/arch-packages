@@ -1,0 +1,24 @@
+name: Trusted policy and Worker verification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Run trusted tests with native pinned Arch vercmp
+        shell: bash
+        run: |
+          set -euo pipefail
+          image=$(cat build-image.txt)
+          container=$(docker create --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges "$image" /bin/bash -c 'pacman -Syu --noconfirm --needed -- python git nodejs gnupg && cd /verify && python -m unittest discover -s tests -p "test_*.py" && node --test tests/worker.test.mjs')
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          mkdir -p .work/verification-root
+          cp -R tools tests worker build-image.txt .work/verification-root/
+          docker cp .work/verification-root "$container:/verify"
+          docker start -a "$container"
