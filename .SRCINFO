@@ -1,0 +1,17 @@
+pkgbase = carapace-spec
+	pkgdesc = A multi-shell completion spec
+	pkgver = 1.9.0
+	pkgrel = 1
+	url = https://github.com/carapace-sh/carapace-spec
+	arch = x86_64
+	license = MIT
+	makedepends = git
+	makedepends = go>=1.24
+	depends = glibc
+	conflicts = carapace-spec-bin
+	options = !strip
+	options = !debug
+	source = carapace-spec::git+https://github.com/carapace-sh/carapace-spec.git#tag=v1.9.0
+	sha256sums = SKIP
+
+pkgname = carapace-spec
