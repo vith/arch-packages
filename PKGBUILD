@@ -1,127 +1,179 @@
-# Maintainer:  Vitalii Kuzhdin <vitaliikuzhdin@gmail.com>
-
-_basename="zig"
+# Based on the AUR zig0.15 recipe by Vitalii Kuzhdin and zig-bootstrap's build script.
+# CARCH is the package target. The executable bootstrap compiler runs on ARM only.
+pkgname=zig0.15
 pkgver=0.15.2
-_pkgver="${pkgver%.*}"
 pkgrel=2
-_llvm=20
-
-pkgname="${_basename}${_pkgver}"
-pkgdesc="General-purpose programming language and toolchain for maintaining robust, optimal, and reusable software"
-arch=(
-  # 'aarch64'     # 'aarch64'
-  # 'armv7h'      # 'arm'
-  # 'loong64'     # 'loongarch64'
-  # 'powerpc64le' # 'powerpc64le'
-  # 'riscv64'     # 'riscv64'
-  # 's390x'       # 's390x'
-  # 'i686'        # 'x86'
-  'x86_64'      # 'x86_64'
-)
-url="https://ziglang.org"
-license=(
-  'MIT'
-)
-depends=(
-  'glibc'
-  'libstdc++'
-
-  "clang${_llvm}"
-  "lld${_llvm}"
-  "llvm${_llvm}-libs"
-)
-makedepends=(
-  'cmake>=3.15'
-  'minisign'
-
-  "llvm${_llvm}"
-)
-# checkdepends=(
-#   'lib32-glibc'
-# )
-options=(
-  'emptydirs'
-  '!lto'
-  '!strip'
-)
-_pkgsrc="${_basename}-${pkgver}"
+pkgdesc='General-purpose programming language and toolchain for maintaining robust, optimal, and reusable software'
+arch=('x86_64')
+url='https://ziglang.org'
+license=('MIT' 'Apache-2.0 WITH LLVM-exception' 'BSD-3-Clause' 'Zlib')
+makedepends=('cmake>=3.19' 'ninja' 'python' 'ccache')
+conflicts=('zig0.15-bin')
+options=('emptydirs' '!buildflags' '!lto' '!strip' '!debug')
 source=(
-  "https://ziglang.org/download/${pkgver}/${_pkgsrc}.tar.xz"
-  "https://ziglang.org/download/${pkgver}/${_pkgsrc}.tar.xz.minisig"
-  "${_basename}_skip_localhost_test.patch"
-  "${_basename}_skip_futex_test.patch"
+  "https://ziglang.org/download/${pkgver}/zig-bootstrap-${pkgver}.tar.xz"
+  "https://ziglang.org/download/${pkgver}/zig-aarch64-linux-${pkgver}.tar.xz"
 )
-sha256sums=('d9b30c7aa983fcff5eed2084d54ae83eaafe7ff3a84d8fb754d854165a6e521c'
-            'SKIP'
-            'eeb5f0f72035c52bf558ffc77a171a3ddf93eac7d663ef0c82826007763717a8'
-            'eb30e0eb00e6ced4c99383f0658a0351f42882e303300ed1828d162d27171cd0')
-
-verify() {
-  # https://ziglang.org/download/
-  local ziglang_minisign="RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U"
-
-  minisign -V \
-    -P "${ziglang_minisign}" \
-    -m "${source[0]##*/}"
-}
-
-prepare() {
-  cd "${srcdir}/${_pkgsrc}"
-  patch -Np1 -i "${srcdir}/${_basename}_skip_localhost_test.patch"
-  patch -Np1 -i "${srcdir}/${_basename}_skip_futex_test.patch"
-}
+sha256sums=(
+  'a6845459501df3c3264ebc587b02a7094ad14f4f3f7287c48f04457e784d0d85'
+  '958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f'
+)
 
 build() {
-  # export CC="clang-${_llvm}"
-  # export CXX="clang++-${_llvm}"
-  local cmake_options=(
-    -B "${_pkgsrc}/build"
-    -S "${_pkgsrc}"
-    -G 'Unix Makefiles'
-    -W no-dev
-    -D CMAKE_BUILD_TYPE:STRING='None'
-    -D CMAKE_INSTALL_PREFIX:PATH='/usr'
-    # -D CMAKE_PREFIX_PATH:PATH="/usr/lib/llvm${_llvm}"
-  
-    # -D ZIG_VERSION:STRING="${pkgver}"
-    -D ZIG_PIE:BOOL=ON
-    -D ZIG_SHARED_LLVM:BOOL=ON
-    -D ZIG_USE_LLVM_CONFIG:BOOL=ON
-    # -D ZIG_TARGET_TRIPLE:STRING="native-linux.6.15-gnu.2.42"
-    -D ZIG_TARGET_MCPU:STRING="baseline"
+  if [[ $(uname -m) != aarch64 ]]; then
+    error 'This recipe requires native aarch64 Linux build tools, targeting x86_64.'
+    return 1
+  fi
+
+  local root="${srcdir}/zig-bootstrap-${pkgver}"
+  local zig="${srcdir}/zig-aarch64-linux-${pkgver}/zig"
+  local host="${root}/out/host-tools"
+  local target=x86_64-linux-musl
+  local prefix="${root}/out/${target}"
+
+  # Never pass the package's x86 makepkg flags to the ARM host compiler.
+  # Two compile jobs, one tablegen/link job, no LTO or debug info keep LLVM's
+  # peak memory down on the 2-OCPU/12-GiB builder. Build Zig separately at -j1.
+  unset CPPFLAGS CFLAGS CXXFLAGS LDFLAGS
+  export CMAKE_BUILD_PARALLEL_LEVEL=2
+  export CCACHE_BASEDIR="${srcdir}"
+  export CCACHE_COMPILERCHECK=content
+  export ZIG_GLOBAL_CACHE_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/zig"
+  # Also compile libc/libc++ and compiler-rt from the verified source bundle.
+  export ZIG_LIB_DIR="${root}/zig/lib"
+
+  local llvm_options=(
+    -G Ninja
+    -DCMAKE_BUILD_TYPE=Release
+    '-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG'
+    '-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG'
+    -DLLVM_ENABLE_LTO=OFF
+    -DLLVM_PARALLEL_COMPILE_JOBS=2
+    -DLLVM_PARALLEL_LINK_JOBS=1
+    -DLLVM_PARALLEL_TABLEGEN_JOBS=1
+    -DLLVM_ENABLE_BACKTRACES=OFF
+    -DLLVM_ENABLE_BINDINGS=OFF
+    -DLLVM_ENABLE_CRASH_OVERRIDES=OFF
+    -DLLVM_ENABLE_LIBEDIT=OFF
+    -DLLVM_ENABLE_LIBPFM=OFF
+    -DLLVM_ENABLE_LIBXML2=OFF
+    -DLLVM_ENABLE_OCAMLDOC=OFF
+    -DLLVM_ENABLE_PLUGINS=OFF
+    '-DLLVM_ENABLE_PROJECTS=lld;clang'
+    -DLLVM_ENABLE_Z3_SOLVER=OFF
+    -DLLVM_BUILD_UTILS=OFF
+    -DLLVM_BUILD_TOOLS=OFF
+    -DLLVM_BUILD_STATIC=ON
+    -DLLVM_INCLUDE_UTILS=OFF
+    -DLLVM_INCLUDE_TESTS=OFF
+    -DLLVM_INCLUDE_EXAMPLES=OFF
+    -DLLVM_INCLUDE_BENCHMARKS=OFF
+    -DLLVM_INCLUDE_DOCS=OFF
+    -DLLVM_TOOL_LLVM_LTO2_BUILD=OFF
+    -DLLVM_TOOL_LLVM_LTO_BUILD=OFF
+    -DLLVM_TOOL_LTO_BUILD=OFF
+    -DLLVM_TOOL_REMARKS_SHLIB_BUILD=OFF
+    -DCLANG_BUILD_TOOLS=OFF
+    -DCLANG_INCLUDE_DOCS=OFF
+    -DCLANG_INCLUDE_TESTS=OFF
+    -DCLANG_ENABLE_ARCMT=ON
+    -DCLANG_TOOL_CLANG_IMPORT_TEST_BUILD=OFF
+    -DCLANG_TOOL_CLANG_LINKER_WRAPPER_BUILD=OFF
+    -DCLANG_TOOL_C_INDEX_TEST_BUILD=OFF
+    -DCLANG_TOOL_ARCMT_TEST_BUILD=OFF
+    -DCLANG_TOOL_C_ARCMT_TEST_BUILD=OFF
+    -DCLANG_TOOL_LIBCLANG_BUILD=OFF
+    -DLLD_BUILD_TOOLS=OFF
   )
 
-  cd "${srcdir}"
-  cmake "${cmake_options[@]}"
-  cmake --build "${cmake_options[1]}"
+  # Only the source-matched TableGen programs must run on the host. The pinned
+  # native Zig input is a build tool, not a package payload. This avoids building
+  # a second complete LLVM/Clang/LLD and Zig just to obtain a cross compiler.
+  cmake -S "${root}/llvm" -B "${host}" "${llvm_options[@]}" \
+    -DCMAKE_C_COMPILER=cc \
+    -DCMAKE_CXX_COMPILER=c++ \
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    -DLLVM_TARGETS_TO_BUILD=Native \
+    -DLLVM_ENABLE_ZLIB=OFF \
+    -DLLVM_ENABLE_ZSTD=OFF
+  cmake --build "${host}" --parallel 2 --target llvm-tblgen clang-tblgen
 
-  cd "${_pkgsrc}"
-  DESTDIR="./fakeinstall" cmake --install "build"
+  # Zig supplies the target libc/libc++ sysroot. The image's native cross-binutils
+  # archive x86 objects without ever executing them. No target system LLVM is used.
+  local cross_options=(
+    -G Ninja
+    -DCMAKE_BUILD_TYPE=Release
+    '-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG'
+    '-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG'
+    "-DCMAKE_INSTALL_PREFIX=${prefix}"
+    "-DCMAKE_PREFIX_PATH=${prefix}"
+    -DCMAKE_SYSTEM_NAME=Linux
+    -DCMAKE_SYSTEM_PROCESSOR=x86_64
+    "-DCMAKE_C_COMPILER=${zig};cc;-fno-sanitize=all;-s;-target;${target};-mcpu=baseline"
+    "-DCMAKE_CXX_COMPILER=${zig};c++;-fno-sanitize=all;-s;-target;${target};-mcpu=baseline"
+    "-DCMAKE_ASM_COMPILER=${zig};cc;-fno-sanitize=all;-s;-target;${target};-mcpu=baseline"
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+    -DCMAKE_LINK_DEPENDS_USE_LINKER=OFF
+    -DCMAKE_AR=/usr/bin/x86_64-linux-gnu-ar
+    -DCMAKE_RANLIB=/usr/bin/x86_64-linux-gnu-ranlib
+  )
+
+  # zig cc/c++ use Clang, but ccache cannot infer that from the executable name.
+  export CCACHE_COMPILERTYPE=clang
+  cmake -S "${root}/zlib" -B "${root}/out/build-zlib" "${cross_options[@]}"
+  cmake --build "${root}/out/build-zlib" --parallel 2 --target install
+
+  # These are precisely the source groups used by upstream zig-bootstrap;
+  # the bootstrap archive deliberately omits zstd's separate build system.
+  install -Dm644 "${root}/zstd/lib/zstd.h" "${prefix}/include/zstd.h"
+  cd "${prefix}/lib"
+  "${zig}" build-lib --name zstd -target "${target}" -mcpu=baseline \
+    -fstrip -OReleaseFast -lc \
+    "${root}"/zstd/lib/{common,compress,decompress,deprecated,dictBuilder}/*.c \
+    "${root}/zstd/lib/decompress/huf_decompress_amd64.S"
+
+  # Keep every upstream LLVM backend: this x86 compiler must still be able to
+  # cross-compile user programs for architectures other than x86.
+  cmake -S "${root}/llvm" -B "${root}/out/build-llvm-target" \
+    "${llvm_options[@]}" "${cross_options[@]}" \
+    -DLLVM_TARGETS_TO_BUILD=all \
+    "-DLLVM_DEFAULT_TARGET_TRIPLE=${target}" \
+    "-DLLVM_TABLEGEN=${host}/bin/llvm-tblgen" \
+    "-DCLANG_TABLEGEN=${host}/bin/clang-tblgen" \
+    -DLLVM_ENABLE_ZLIB=FORCE_ON \
+    -DLLVM_ENABLE_ZSTD=FORCE_ON \
+    -DLLVM_USE_STATIC_ZSTD=ON
+  cmake --build "${root}/out/build-llvm-target" --parallel 2 --target install
+
+  # This is the only compiler installed in the package: compiled from the Zig
+  # sources and source-built target libraries. Documentation generators run on
+  # the native host; upstream doctest skips execution of foreign-target examples.
+  cd "${root}/zig"
+  "${zig}" build -j1 \
+    --prefix "${root}/out/zig-${target}" \
+    --search-prefix "${prefix}" \
+    -Dflat -Dstatic-llvm -Doptimize=ReleaseFast -Dstrip \
+    -Dtarget="${target}" -Dcpu=baseline -Dversion-string="${pkgver}"
 }
 
-# check() {
-#   cd "${srcdir}/${_pkgsrc}"
-#   # ugly workaround until test target is provided
-#   # https://github.com/ziglang/zig/issues/14240
-#   ./fakeinstall/usr/bin/zig build test \
-#     -Dconfig_h=build/config.h \
-#     -Dstatic-llvm=false \
-#     -Denable-llvm=true \
-#     -Dskip-non-native=true
-# }
-
 package() {
-  cd "${srcdir}/${_pkgsrc}"
-  install -vDm644 "README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
-  install -vDm644 "LICENSE"   "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  local root="${srcdir}/zig-bootstrap-${pkgver}"
+  local output="${root}/out/zig-x86_64-linux-musl"
 
-  install -vd "${pkgdir}/opt/${pkgname}/lib" "${pkgdir}/usr/bin" "${pkgdir}/usr/lib"
+  install -Dm755 "${output}/zig" "${pkgdir}/opt/${pkgname}/zig"
+  cp -a --no-preserve=ownership "${output}/lib" "${pkgdir}/opt/${pkgname}/"
+  install -Dm644 "${output}/README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  cp -a --no-preserve=ownership "${output}/doc/." "${pkgdir}/usr/share/doc/${pkgname}/"
+  install -Dm644 "${root}/zig/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 "${root}/llvm/LICENSE.TXT" "${pkgdir}/usr/share/licenses/${pkgname}/LLVM-LICENSE"
+  install -Dm644 "${root}/clang/LICENSE.TXT" "${pkgdir}/usr/share/licenses/${pkgname}/Clang-LICENSE"
+  install -Dm644 "${root}/lld/LICENSE.TXT" "${pkgdir}/usr/share/licenses/${pkgname}/LLD-LICENSE"
+  install -Dm644 "${root}/zlib/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/zlib-LICENSE"
+  install -Dm644 "${root}/zstd/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/zstd-LICENSE"
 
-  cd "fakeinstall/usr"
-  cp -va --no-preserve=ownership "bin"          -T "${pkgdir}/opt/${pkgname}"
-  cd "lib"
-  cp -a  --no-preserve=ownership "${_basename}" -T "${pkgdir}/opt/${pkgname}/lib"
-
-  ln -vsf "/opt/${pkgname}/${_basename}" "${pkgdir}/usr/bin/${_basename}-${_pkgver}"
-  ln -vsf "/opt/${pkgname}/lib"          "${pkgdir}/usr/lib/${pkgname}"
+  install -dm755 "${pkgdir}/usr/bin" "${pkgdir}/usr/lib"
+  ln -s "/opt/${pkgname}/zig" "${pkgdir}/usr/bin/zig-0.15"
+  ln -s "/opt/${pkgname}/lib" "${pkgdir}/usr/lib/${pkgname}"
 }
