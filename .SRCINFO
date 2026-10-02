@@ -1,12 +1,16 @@
 pkgbase = swag
-	pkgdesc = Automatically generate RESTful API documentation with Swagger 2.0 for Go.
+	pkgdesc = Generate Swagger 2.0 documentation for Go APIs
 	pkgver = 1.16.6
 	pkgrel = 1
 	url = https://github.com/swaggo/swag
 	arch = x86_64
 	license = MIT
-	makedepends = go
-	source = https://github.com/swaggo/swag/archive/refs/tags/v1.16.6.tar.gz
+	depends = glibc
+	depends = go
+	conflicts = swag-bin
+	options = !strip
+	options = !debug
+	source = swag-1.16.6.tar.gz::https://github.com/swaggo/swag/archive/refs/tags/v1.16.6.tar.gz
 	sha256sums = d0193f08b829e1088753ff6d66d1205e22a6e7fd07ac28df5ecb001d9eb2c43d
 
 pkgname = swag
