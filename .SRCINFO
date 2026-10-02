@@ -1,0 +1,22 @@
+pkgbase = captiveportalautologin-vith-git
+	pkgdesc = Automatically detect and log in to supported captive portals (vith fork)
+	pkgver = r691.a96014f
+	pkgrel = 3
+	url = https://git.n3t.work/vith/CaptivePortalAutoLogin
+	arch = any
+	license = unknown
+	makedepends = git
+	makedepends = java-environment>=17
+	depends = java-runtime>=17
+	depends = networkmanager
+	depends = libnotify
+	provides = captiveportalautologin
+	provides = captiveportalautologin-git
+	conflicts = captiveportalautologin
+	conflicts = captiveportalautologin-git
+	source = git+https://git.n3t.work/vith/CaptivePortalAutoLogin.git#branch=main
+	source = captiveportalautologin.service
+	b2sums = SKIP
+	b2sums = 190ee5de87ceeaddf601177d68a4001363e68abe4b63189a5f7bba2765624fc3028919a28ddb6b16124c35a330a021aae5f23d1898ff75c8c6c2a95f1e3a0e0a
+
+pkgname = captiveportalautologin-vith-git
