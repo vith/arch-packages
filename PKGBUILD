@@ -2,17 +2,18 @@
 
 pkgname=pi
 pkgver=0.99.1
-pkgrel=1
+pkgrel=2
 pkgdesc="AI coding agent for the terminal — minimal, extensible and optimized for tool use"
 arch=('x86_64' 'aarch64')
 url="https://github.com/earendil-works/pi"
 license=('MIT')
-depends=('nodejs>=22')
+depends=('nodejs>=22.19.0')
 makedepends=('npm')
 optdepends=(
   'tmux: for background bash capabilities'
   'fd: system-provided backend for the find tool'
   'ripgrep: system-provided backend for the grep tool'
+  'libxcb: native X11 clipboard support'
 )
 options=('!strip' '!debug')
 
@@ -30,12 +31,32 @@ prepare() {
 build() {
   cd "${pkgname}-${pkgver}"
 
-  npm ci --cache "${srcdir}/npm-cache" --ignore-scripts --no-audit --no-fund
+  export npm_config_cache="${npm_config_cache-"${srcdir}/npm-cache"}"
 
+  local _npm_cpu _other_cpu
+  case "$CARCH" in
+    x86_64) _npm_cpu=x64; _other_cpu=arm64 ;;
+    aarch64) _npm_cpu=arm64; _other_cpu=x64 ;;
+    *) echo "Unsupported architecture: $CARCH" >&2; return 1 ;;
+  esac
+
+  # Build with native tooling (notably the host-architecture tsgo binary).
+  npm ci --ignore-scripts --no-audit --no-fund
   npm run build:offline
 
-  # Remove packages which are only necessary in development / building
-  npm prune --omit=dev --ignore-scripts --no-audit --no-fund --cache "${srcdir}/npm-cache"
+  # A clean, production-only install from the same lockfile selects target
+  # optional binaries without retaining or reinstalling host build tools.
+  npm ci --omit=dev --cpu="$_npm_cpu" --os=linux --libc=glibc \
+    --ignore-scripts --no-audit --no-fund
+
+  # This dependency ships both architectures inside one npm tarball rather
+  # than platform-specific optional packages. Its loader selects process.arch;
+  # retain the target's helper/BPF files, not the other architecture's copy.
+  local _vendor
+  for _vendor in node_modules/@anthropic-ai/sandbox-runtime/{vendor,dist/vendor}/seccomp; do
+    [[ -x "$_vendor/$_npm_cpu/apply-seccomp" ]] || return 1
+    rm -rf "$_vendor/$_other_cpu"
+  done
 }
 
 package() {
@@ -55,6 +76,15 @@ package() {
     cp -a "packages/$_pkg/dist" "packages/$_pkg/package.json" "packages/$_pkg/README.md" \
       "$pkgdir/$mod_dir/packages/$_pkg/"
   done
+
+  local _npm_cpu
+  case "$CARCH" in
+    x86_64) _npm_cpu=x64 ;;
+    aarch64) _npm_cpu=arm64 ;;
+    *) echo "Unsupported architecture: $CARCH" >&2; return 1 ;;
+  esac
+  install -Dm755 "packages/tui/native/linux/prebuilds/linux-$_npm_cpu/linux-platform-x11.node" \
+    "$pkgdir/$mod_dir/packages/tui/native/linux/prebuilds/linux-$_npm_cpu/linux-platform-x11.node"
 
   # Copy the additional files for coding-agent
   cp -a packages/coding-agent/{docs,examples,CHANGELOG.md} \
