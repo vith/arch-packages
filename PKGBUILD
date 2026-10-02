@@ -1,46 +1,46 @@
-# Maintainer: torculus <20175597+torculus@users.noreply.github.com>
-# Contributor: cilgin <cilgincc@outlook.com>
-
-# shellcheck disable=SC2034
-# shellcheck disable=SC2154
+# Adapted from the AUR surge-cli source package.
 pkgbase=surge-cli
 pkgname=surge
 pkgver=0.12.2
 pkgrel=1
-pkgdesc="Surge is a blazing fast, open-source terminal (TUI) download manager built in Go"
-arch=("x86_64")
-url="https://github.com/surge-downloader/surge"
-license=("MIT")
-depends=("glibc")
-makedepends=("go")
-source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+pkgdesc='Fast terminal download manager'
+arch=('x86_64')
+url='https://github.com/SurgeDM/Surge'
+license=('MIT')
+depends=('glibc' 'ca-certificates')
+makedepends=('go>=1.26')
+optdepends=('wl-clipboard: clipboard support on Wayland'
+            'xclip: clipboard support on X11'
+            'xsel: alternative clipboard support on X11'
+            'xdg-utils: open downloads and configuration files')
+conflicts=('surge-bin')
+options=('!strip' '!debug')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v${pkgver}.tar.gz")
 sha512sums=('ba95c71d9e392b87bc5df1c84227700f24ddd3718a9bac28edce2601cad51d2b4fa78930536ad1349995f7f2e7be2351949199b94ab15779caf0ecadc51f6c6c')
 
-provides=("surge")
-conflicts=("surge")
-
-prepare() {
-  cd "Surge-$pkgver" || exit
-  GOFLAGS="-mod=readonly" go mod vendor -v
-}
-
 build() {
-  cd "Surge-$pkgver" || exit
-  export CGO_CPPFLAGS="${CPPFLAGS}"
-  export CGO_CFLAGS="${CFLAGS}"
-  export CGO_CXXFLAGS="${CXXFLAGS}"
-  export CGO_LDFLAGS="${LDFLAGS}"
-  export GOFLAGS="-buildmode=pie -trimpath -modcacherw"
-  local ld_flags="-linkmode=external -compressdwarf=false"
-  go build -ldflags="$ld_flags" -o ${pkgname}
+  cd "$srcdir/Surge-$pkgver"
+  [[ $CARCH == x86_64 ]] || { error "Unsupported package target: $CARCH"; return 1; }
+  export CGO_ENABLED=0 GOFLAGS='-mod=readonly -modcacherw'
+  local ldflags="-s -w -X github.com/SurgeDM/Surge/cmd.Version=${pkgver}"
+
+  # Generate completions with an execution-host binary, never the x86 target.
+  GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" \
+    go build -trimpath -ldflags="$ldflags" -o surge-host .
+  mkdir -p completions
+  ./surge-host completion bash > completions/surge.bash
+  ./surge-host completion zsh > completions/surge.zsh
+  ./surge-host completion fish > completions/surge.fish
+  GOOS=linux GOARCH=amd64 GOAMD64=v1 go build -trimpath -buildmode=pie \
+    -ldflags="$ldflags" -o surge .
 }
 
 package() {
-  cd "Surge-$pkgver" || exit
-  install -Dm755 ${pkgname} -t "$pkgdir/usr/bin"
-  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
-
-  ./${pkgname} completion bash | install -Dm644 /dev/stdin "$pkgdir/usr/share/bash-completion/completions/${pkgname}"
-  ./${pkgname} completion zsh | install -Dm644 /dev/stdin "$pkgdir/usr/share/zsh/site-functions/_${pkgname}"
-  ./${pkgname} completion fish | install -Dm644 /dev/stdin "$pkgdir/usr/share/fish/vendor_completions.d/${pkgname}.fish"
+  cd "$srcdir/Surge-$pkgver"
+  install -Dm755 surge "$pkgdir/usr/bin/surge"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 completions/surge.bash "$pkgdir/usr/share/bash-completion/completions/surge"
+  install -Dm644 completions/surge.zsh "$pkgdir/usr/share/zsh/site-functions/_surge"
+  install -Dm644 completions/surge.fish "$pkgdir/usr/share/fish/vendor_completions.d/surge.fish"
 }

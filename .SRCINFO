@@ -1,15 +1,21 @@
 pkgbase = surge-cli
-	pkgdesc = Surge is a blazing fast, open-source terminal (TUI) download manager built in Go
+	pkgdesc = Fast terminal download manager
 	pkgver = 0.12.2
 	pkgrel = 1
-	url = https://github.com/surge-downloader/surge
+	url = https://github.com/SurgeDM/Surge
 	arch = x86_64
 	license = MIT
-	makedepends = go
+	makedepends = go>=1.26
 	depends = glibc
-	provides = surge
-	conflicts = surge
-	source = surge-0.12.2.tar.gz::https://github.com/surge-downloader/surge/archive/v0.12.2.tar.gz
+	depends = ca-certificates
+	optdepends = wl-clipboard: clipboard support on Wayland
+	optdepends = xclip: clipboard support on X11
+	optdepends = xsel: alternative clipboard support on X11
+	optdepends = xdg-utils: open downloads and configuration files
+	conflicts = surge-bin
+	options = !strip
+	options = !debug
+	source = surge-0.12.2.tar.gz::https://github.com/SurgeDM/Surge/archive/refs/tags/v0.12.2.tar.gz
 	sha512sums = ba95c71d9e392b87bc5df1c84227700f24ddd3718a9bac28edce2601cad51d2b4fa78930536ad1349995f7f2e7be2351949199b94ab15779caf0ecadc51f6c6c
 
 pkgname = surge
