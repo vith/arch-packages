@@ -1,37 +1,37 @@
-pkgname="carapace"
+# Adapted from the AUR carapace source package.
+pkgname=carapace
 pkgver=1.8.0
 pkgrel=1
-pkgdesc="multi-shell multi-command argument completer"
-arch=("x86_64")
-url="https://carapace.sh/"
-license=("MIT")
-makedepends=("go")
+pkgdesc='Multi-shell multi-command argument completer'
+arch=('x86_64')
+url='https://carapace.sh/'
+license=('MIT')
+depends=('glibc')
+makedepends=('go>=1.26.2')
+optdepends=('carapace-aws-bin: enriched AWS completion'
+            'carapace-ffmpeg-bin: FFmpeg completion'
+            'carapace-magick-bin: ImageMagick completion')
+conflicts=('carapace-bin')
+options=('!strip' '!debug')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/carapace-sh/carapace-bin/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('f29dec6afe57675a01076e94cd3850327b5106b47e557d213958124bc2f3cabb')
 
-prepare() {
-    cd "${srcdir}/carapace-bin-${pkgver}"
-    export GOPATH="${srcdir}"
-    go mod download -modcacherw
-}
-build(){
-    cd "${srcdir}/carapace-bin-${pkgver}"
-    export CGO_CPPFLAGS="${CPPFLAGS}"
-    export CGO_CFLAGS="${CFLAGS}"
-    export CGO_CXXFLAGS="${CXXFLAGS}"
-    export CGO_LDFLAGS="${LDFLAGS}"
-    export GOPATH="${srcdir}"
-    export GOFLAGS="-buildmode=pie -mod=readonly -modcacherw"
-    go generate ./cmd/...
-    CGO_ENABLED=0 go build -v -ldflags="-s -w -X main.version=v${pkgver} -compressdwarf=false -bindnow" \
-        -tags "release,force_all" \
-        ./cmd/carapace
+build() {
+  cd "$srcdir/carapace-bin-$pkgver"
+  [[ $CARCH == x86_64 ]] || { error "Unsupported package target: $CARCH"; return 1; }
+  export CGO_ENABLED=0 GOFLAGS='-mod=readonly -modcacherw'
 
+  # Generators run on the execution host; Windows-only shim generation is not
+  # needed for the Linux binary. Keep the runner's persistent Go caches.
+  GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" \
+    go generate ./cmd/carapace/main.go
+  GOOS=linux GOARCH=amd64 GOAMD64=v1 go build -trimpath -buildmode=pie \
+    -ldflags="-s -w -X main.version=v${pkgver}" -tags=release,force_all \
+    -o carapace ./cmd/carapace
 }
-package(){
-    cd "${srcdir}/carapace-bin-${pkgver}"
-    install -Dm755 carapace \
-        "${pkgdir}/usr/bin/carapace"
-    install -Dm644 LICENSE \
-        "${pkgdir}/usr/share/licenses/carapace/LICENSE"
+
+package() {
+  cd "$srcdir/carapace-bin-$pkgver"
+  install -Dm755 carapace "$pkgdir/usr/bin/carapace"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
