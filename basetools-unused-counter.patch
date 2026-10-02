@@ -1,0 +1,21 @@
+diff --git a/BaseTools/Source/C/Common/StringFuncs.c b/BaseTools/Source/C/Common/StringFuncs.c
+index 53e4436..df02d9c 100644
+--- a/BaseTools/Source/C/Common/StringFuncs.c
++++ b/BaseTools/Source/C/Common/StringFuncs.c
+@@ -110,7 +110,6 @@ SplitStringByWhitespace (
+   CHAR8       *EndOfSubString;
+   CHAR8       *EndOfString;
+   STRING_LIST *Output;
+-  UINTN       Item;
+ 
+   String = CloneString (String);
+   if (String == NULL) {
+@@ -120,7 +119,7 @@ SplitStringByWhitespace (
+ 
+   Output = NewStringList ();
+ 
+-  for (Pos = String, Item = 0; Pos < EndOfString; Item++) {
++  for (Pos = String; Pos < EndOfString;) {
+     while (isspace ((int)*Pos)) {
+       Pos++;
+     }

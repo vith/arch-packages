@@ -1,8 +1,7 @@
 # Maintainer ArchEnemy
-GITFLAGS="--branch edk2-stable202411 --depth 1"
 pkgname=i915ovmf
 pkgver=1.0.2
-pkgrel=1
+pkgrel=2
 pkgdesc="i915ovmfPkg VBIOS for Intel GPU Passthrough GVT-g/GVT-d"
 arch=('x86_64')
 url="https://github.com/x78x79x82x79/i915ovmfPkg"
@@ -23,18 +22,20 @@ optdepends=(
 )
 source=(
     "i915ovmf.tar.gz::https://github.com/x78x79x82x79/${pkgname}Pkg/archive/refs/tags/v${pkgver}.tar.gz"
-    "edk2::git+https://github.com/x78x79x82x79/edk2"
+    "edk2::git+https://github.com/x78x79x82x79/edk2#commit=0d61f52fe31c86936c5b4268effddad7241c811e"
     "edk2-platforms.tar.gz::https://github.com/x78x79x82x79/edk2-platforms/archive/refs/tags/v1.0.0.tar.gz"
+    "basetools-unused-counter.patch"
 )
 sha256sums=(
     "5580834291cb07a5da9cab8de964c94ecf4754e1a4cb159eff2a371b737ba3ab"
     "SKIP"
     "9e7ab8c60970a9129c230d87d9a8884c22505b7d9c27ba9212185257d5069012"
+    "dc505c76fb01f4891b9736013406fb39667a629f435097e2075b7fa1f2311ef8"
 )
 
 prepare(){
     cd edk2
-    git init
+    patch --binary -Np1 -i "$srcdir/basetools-unused-counter.patch"
     echo "checking out edk2 submodules..."
     git submodule update --init --depth 1 --recursive
 }
@@ -44,6 +45,10 @@ build(){
     export EDK2_PATH="$BUILD_DIR/edk2"
     export EDK2_PLATFORMS_PATH="$BUILD_DIR/edk2-platforms-1.0.0"
     export REPO_PATH="$BUILD_DIR/${pkgname}Pkg-${pkgver}"
+    # BaseTools runs on the native host; only firmware uses the X64 compiler.
+    if [[ $(uname -m) != "$CARCH" ]]; then
+        export GCC5_BIN=x86_64-linux-gnu-
+    fi
     cd "$REPO_PATH"
     source ./config
     ./build.sh
