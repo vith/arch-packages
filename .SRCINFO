@@ -1,20 +1,23 @@
 pkgbase = microsandbox
 	pkgdesc = Easy, fast and local-first microVM runtime
 	pkgver = 0.7.4
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/superradcompany/microsandbox
 	arch = x86_64
 	arch = aarch64
 	license = Apache-2.0
-	makedepends = clang
 	makedepends = cargo
+	makedepends = cmake
 	depends = glibc
 	depends = libgcc
+	depends = libcap-ng
 	provides = microsandbox
 	provides = msb
 	options = !strip
 	options = !lto
 	source = microsandbox-0.7.4.crate::https://crates.io/api/v1/crates/microsandbox/0.7.4/download
+	source = https://people.redhat.com/sgrubb/libcap-ng/libcap-ng-0.8.5.tar.gz
 	sha256sums = d2d4d6223c59456b82cb98cb7a020bf2dc23dc8d3de6d5ed74c04ed0e9bed856
+	sha256sums = 3ba5294d1cbdfa98afaacfbc00b6af9ed2b83e8a21817185dfd844cc8c7ac6ff
 
 pkgname = microsandbox
