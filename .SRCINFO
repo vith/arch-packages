@@ -1,7 +1,7 @@
 pkgbase = computer-use-linux
 	pkgdesc = Control a real Linux desktop from any MCP host (AT-SPI, portals, multi-compositor window targeting)
 	pkgver = 0.7.7
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/agent-sh/computer-use-linux
 	arch = x86_64
 	arch = aarch64
