@@ -1,0 +1,18 @@
+pkgbase = asleap
+	pkgdesc = Actively recover LEAP/PPTP passwords
+	pkgver = 2.5
+	pkgrel = 3
+	url = https://github.com/OscarAkaElvis/asleap
+	arch = x86_64
+	license = GPL-2.0-or-later
+	makedepends = git
+	makedepends = flex
+	makedepends = bison
+	depends = libpcap
+	depends = openssl
+	source = asleap::git+https://github.com/OscarAkaElvis/asleap.git#commit=aa434293b6108bce5bf6bb29629ad0be6dc881ec
+	source = https://www.tcpdump.org/release/libpcap-1.11.0.tar.xz
+	sha256sums = SKIP
+	sha256sums = 9237f5bae9dcf3a91823d9963ec43b7c0e2e3374ef2ad57d92c8cd39530f4723
+
+pkgname = asleap
