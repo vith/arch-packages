@@ -1,0 +1,42 @@
+name: Temporary initial enrollment proof
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        type: choice
+        options: [non-omp, omp]
+        required: true
+        default: non-omp
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: afc352b0c2a0f258a36c7832edee5ae42494db26
+          persist-credentials: false
+      - name: Select disposable enrollment scope
+        env:
+          ENROLLMENT_SCOPE: ${{ inputs.scope }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path('packages.json')
+          data = json.loads(p.read_text())
+          data['packages'] = [x for x in data['packages'] if (x['pkgbase'] == 'oh-my-pi-vith-git') == (os.environ['ENROLLMENT_SCOPE'] == 'omp')]
+          p.write_text(json.dumps(data))
+          PY
+      - name: Freeze and execute native probes without credentials
+        run: |
+          python3 -m tools.update bootstrap --directory "$RUNNER_TEMP/enrollment"
+          python3 -m tools.update pack --directory "$RUNNER_TEMP/enrollment" --archive "$RUNNER_TEMP/source-data.tar"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: enrollment-${{ inputs.scope }}
+          path: ${{ runner.temp }}/source-data.tar
+          retention-days: 7
+          if-no-files-found: error
