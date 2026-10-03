@@ -31,7 +31,6 @@ checkdepends=('python-certifi'
               'python-pytest-asyncio'
               'python-pytest-xdist'
               'python-mcp'
-              'python-sentencepiece'
               'python-protobuf'
               'python-aiohttp')
 optdepends=('python-aiohttp: aiohttp'
