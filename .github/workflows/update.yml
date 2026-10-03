@@ -33,8 +33,9 @@ jobs:
         with:
           ref: main
           persist-credentials: false
-      - name: Discover and probe without credentials
+      - name: Read immutable recipe data and probe in credential-free containers
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           BOOTSTRAP: ${{ inputs.bootstrap }}
         run: |
           if [ "$BOOTSTRAP" = true ]; then

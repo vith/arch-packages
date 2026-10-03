@@ -13,6 +13,8 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Freeze all accepted recipe gitlinks and execute native probes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           work="$HOME/.local/state/omp/work/enrollment-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -p "$work/tmp"
