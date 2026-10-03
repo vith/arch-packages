@@ -27,6 +27,7 @@ jobs:
     env:
       WORK: /home/runner/.local/state/arch-packages/build-${{ github.run_id }}
       TMPDIR: /home/runner/.local/state/arch-packages/build-${{ github.run_id }}/tmp
+      ARCH_BUILD_CACHE: /home/runner/.local/state/arch-packages/cache/${{ inputs.package }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -38,6 +39,7 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ env.WORK }}
       - name: Prepare only the selected recipe
+        id: prepare
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PACKAGE: ${{ inputs.package }}
@@ -46,8 +48,33 @@ jobs:
         run: |
           mkdir -p "$TMPDIR"
           python3 -m tools.package_runs prepare "$WORK" --package "$PACKAGE" --publication-run "$PUBLICATION" --publication-attempt "$ATTEMPT"
+      - name: Restore this package's trusted build cache
+        id: cache
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ env.ARCH_BUILD_CACHE }}
+          key: ${{ steps.prepare.outputs.cache-key }}
+          restore-keys: |
+            ${{ steps.prepare.outputs.cache-input-prefix }}
+            ${{ steps.prepare.outputs.cache-prefix }}
       - name: Build package without credentials
+        id: build
         run: tools/build.sh "$WORK/input/bundle.json" "$WORK/output"
+      - name: Make cache readable by the runner
+        if: ${{ always() && steps.build.outcome != 'skipped' }}
+        continue-on-error: true
+        run: |
+          if [[ -d "$ARCH_BUILD_CACHE" ]]; then
+            sudo chown -R --no-dereference "$(id -u):$(id -g)" "$ARCH_BUILD_CACHE"
+          fi
+      - name: Save build progress for later runs
+        if: ${{ always() && !cancelled() && steps.build.outcome != 'skipped' && steps.cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ env.ARCH_BUILD_CACHE }}
+          key: ${{ steps.prepare.outputs.cache-key }}
       - name: Pack outputs
         run: |
           python3 - <<'PY'

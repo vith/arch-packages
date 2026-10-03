@@ -60,6 +60,8 @@ The updater runs every six hours and is also manually dispatchable. Routine prop
 
 Each changed package builds in its own `build-package.yml` workflow run, with separate logs, status and retries. The publication workflow dispatches those runs and validates their artifacts; it never compiles packages itself. Unchanged packages are reused from the previous signed catalog after verification. A complete snapshot is signed, uploaded, anonymously read back and verified before GitHub latest-release promotion. Reusing a filename for different bytes is refused. A failed or stale run cannot replace the active repository.
 
+Trusted main package runs persist Cargo downloads/compiled output, Rustup toolchains, Bun downloads, Go modules/build output and pip downloads using GitHub Actions caches. Keys separate packages, architecture, image and harness; exact input digests select cache generations, with fallback only inside the same package/build environment. Failed builds also save progress. PR builds neither restore nor save these caches, and release builds never consume PR-produced caches. Caches contain no credentials or signing material and are not publication evidence: metadata, output hashes and runtime checks still run. GitHub's normal cache quota/eviction applies; missing caches only make builds slower.
+
 Manual operations use GitHub CLI; these commands are fish-compatible:
 
 ```fish

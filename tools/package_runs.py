@@ -1,5 +1,6 @@
 """Dispatch isolated package workflow runs and collect their verified outputs."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -54,6 +55,13 @@ def prepare(directory, name, parent, attempt):
     recipes.copy_recipe(publish.ROOT / package['recipe_dir'], target / package['recipe_dir'])
     selected['packages'] = [{key: package[key] for key in ('pkgbase', 'recipe_commit', 'recipe_dir', 'lock', 'policy', 'input_digest')}]
     (target / 'bundle.json').write_bytes(github_api.canonical(selected))
+    scope = hashlib.sha256(github_api.canonical({'image': plan['image'], 'harness': plan['harness_sha']})).hexdigest()[:24]
+    prefix = f'trusted-build-v1-linux-x86_64-{name}-{scope}-'
+    input_prefix = prefix + package['input_digest'] + '-'
+    with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+        output.write('cache-prefix=' + prefix + '\n')
+        output.write('cache-input-prefix=' + input_prefix + '\n')
+        output.write('cache-key=' + input_prefix + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'] + '\n')
 
 
 def collect(directory, timeout=10800):

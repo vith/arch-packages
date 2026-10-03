@@ -154,6 +154,25 @@ def readonly(root):
         path.chmod(0o555 if path.is_dir() or path.stat().st_mode & 0o111 else 0o444)
 
 
+def cache_environment(root):
+    locations = {
+        'CARGO_HOME': 'cargo', 'RUSTUP_HOME': 'rustup', 'CARGO_TARGET_DIR': 'target',
+        'BUN_INSTALL_CACHE_DIR': 'bun', 'GOCACHE': 'go-build', 'GOMODCACHE': 'go-mod',
+        'PIP_CACHE_DIR': 'pip',
+    }
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError('unsafe build cache root')
+    for name in locations.values():
+        directory = root / name
+        if directory.is_symlink():
+            raise ValueError('unsafe build cache directory')
+        directory.mkdir(exist_ok=True)
+    for directory, directories, files in os.walk(root, followlinks=False):
+        for path in [Path(directory), *[Path(directory) / name for name in directories + files]]:
+            os.chown(path, 1000, 1000, follow_symlinks=False)
+    return {key: str(root / name) for key, name in locations.items()}
+
+
 def runtime_identity(version):
     match = re.fullmatch(r'(?:[0-9]+:)?(.+)\.vith\.r([0-9]+)\.g([0-9a-f]{12})-[0-9]+(?:\.[0-9]+)*', version)
     if not match:
@@ -184,6 +203,11 @@ def build(path: Path, output: Path):
     from tools.recipe_gate import parse_srcinfo, tree_manifest, input_digest, harness_digest
     from tools.sources import materialize_sources
     bundle = validate_bundle(path)
+    cache = {}
+    if os.environ.get('ARCH_PACKAGE_CACHE') == '1':
+        if len(bundle['packages']) != 1:
+            raise ValueError('persistent cache requires exactly one package')
+        cache = cache_environment(Path('/ci-cache'))
     if harness_digest(Path(__file__).resolve().parent.parent) != bundle['harness_sha']:
         raise ValueError('executing harness differs from bound stable digest')
     output.mkdir(parents=True)
@@ -235,6 +259,7 @@ def build(path: Path, output: Path):
             os.chown(cache_dir, 1000, 1000)
         gitconfig.chmod(0o444)
         env = {'PATH': '/usr/bin', 'HOME': str(home), 'LANG': 'C.UTF-8', 'GOTOOLCHAIN': 'local', 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': str(gitconfig)}
+        env.update(cache)
         command = ['makepkg', '--config', str(config)]
         prepared_log = builder([*command, '--nobuild', '--noconfirm', '--cleanbuild'], directory, env)
         prepared = builder([*command, '--printsrcinfo'], directory, env)
