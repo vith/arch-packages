@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: d25e3703cb12ff75a45beeee9fb3fbe0767b33e2
+          ref: 7abfe1986b063b0838d5497cdfd5b9d84d216c27
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -44,7 +44,7 @@ jobs:
               shutil.rmtree(root / 'recipes' / name)
               shutil.copytree(accepted / name / 'recipe', root / 'recipes' / name, symlinks=True)
               shutil.copyfile(accepted / name / 'lock.json', root / 'inputs' / (name + '.json'))
-          plan = publish.expectations('d25e3703cb12ff75a45beeee9fb3fbe0767b33e2', os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'], None)
+          plan = publish.expectations('7abfe1986b063b0838d5497cdfd5b9d84d216c27', os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'], None)
           bundle_dir = temp / 'native-bundle'
           bundle_dir.mkdir()
           packages = []
@@ -63,7 +63,7 @@ jobs:
           from pathlib import Path
           from tools import publish
           temp = Path(os.environ['RUNNER_TEMP'])
-          plan = publish.expectations('d25e3703cb12ff75a45beeee9fb3fbe0767b33e2', os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'], None)
+          plan = publish.expectations('7abfe1986b063b0838d5497cdfd5b9d84d216c27', os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'], None)
           publish.validate_unsigned(temp / 'unsigned', plan)
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
