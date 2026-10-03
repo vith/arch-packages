@@ -53,7 +53,7 @@ gh workflow run candidate.yml --repo vith/arch-packages -f pr_number=PR_NUMBER
 gh workflow run verification.yml --repo vith/arch-packages
 ```
 
-Native builds and empty-cache installation/runtime proofs run on GitHub, never on the workstation. The official Arch image and third-party Actions are pinned. Hardware-detected compilation concurrency is retained. OMP's temporarily disabled source test suites remain disabled; the retained source gate checks and compiles, then asserts the exact executable identity.
+Native builds and empty-cache installation/runtime proofs run on GitHub, never on the workstation. The official Arch image and third-party Actions are pinned. Native source probes first preserve recipe modes and establish root-owned, read-only frozen Git configuration and mirrors during trusted container setup; recipe execution then drops all capabilities and enables no-new-privileges in a credential-free environment. Hardware-detected compilation concurrency is retained. OMP's temporarily disabled source test suites remain disabled; the retained source gate checks and compiles, then asserts the exact executable identity.
 
 ## Cloudflare ownership
 
