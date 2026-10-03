@@ -38,6 +38,7 @@ jobs:
           temp = Path(os.environ['RUNNER_TEMP'])
           accepted = temp / 'validated'
           module.validate([temp / 'source-data'], accepted, None)
+          (root / 'inputs').mkdir(exist_ok=True)
           for policy in scoped['packages']:
               name = policy['pkgbase']
               shutil.rmtree(root / 'recipes' / name)
