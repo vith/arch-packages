@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 .work/
 .evidence/
+opentofu/.terraform/
+opentofu/*.tfstate*
+opentofu/*.tfplan
+opentofu/*.tfvars
+opentofu/crash.log

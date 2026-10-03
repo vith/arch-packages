@@ -84,6 +84,20 @@ python3 tools/publish.py rollback --target-tag SNAPSHOT_TAG --expected-release-i
 
 The workflow's rollback operation provides the same guarded path. Fixed snapshot URLs remain usable without changing latest. No laptop package configuration is changed automatically.
 
+## GitHub configuration
+
+`opentofu/` owns the GitHub repository settings, default branch, Actions permissions, review/publish environments, publication branch restriction, and signing secrets/fingerprint. Workflow and recipe files remain version-controlled source code. Repository settings are changed through OpenTofu, not ad-hoc API writes.
+
+Run from this checkout:
+
+```sh
+tools/tofu.sh init
+tools/tofu.sh plan -out=github.tfplan
+tools/tofu.sh apply github.tfplan
+```
+
+The wrapper uses the GitHub CLI login without printing its token. State and saved plans are encrypted and ignored by Git. The independent state passphrase is `~/.local/state/arch-packages/tofu-passphrase`; signing recovery files are under `~/.local/state/arch-packages/signing/`. Back up both privately before moving to another workstation. `ARCH_STATE_PASSPHRASE_FILE` overrides the passphrase path and `TF_VAR_signing_directory` overrides signing recovery location. Never commit these files or decrypted state. `imports.tf` records adoption of existing resources without recreating the repository.
+
 ## Signing and recovery
 
 Only `publish` holds the dedicated private signing key and passphrase. The committed public key/fingerprint is checked before signing. Packages, both pacman databases, and the complete catalog have detached signatures. Corresponding-source/license assets and pinned source identities are bound by the signed catalog.
