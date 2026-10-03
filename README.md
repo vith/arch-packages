@@ -58,7 +58,7 @@ The updater runs every six hours and is also manually dispatchable. Routine prop
 
 `main` requires `recipe-policy` and `candidate-build`, a PR, and an up-to-date base. Changed head/base identities invalidate evidence and approval. Builds receive no write, signing or model credentials. All packages affected by one candidate use one exact head and its recipe pins; missing or failing outputs prevent acceptance of the entire candidate.
 
-Publication builds changed input digests only and reuses unchanged packages from the previous signed catalog after verification. A complete snapshot is signed, uploaded, anonymously read back and verified before GitHub latest-release promotion. Reusing a filename for different bytes is refused. A failed or stale run cannot replace the active repository.
+Each changed package builds in its own `build-package.yml` workflow run, with separate logs, status and retries. The publication workflow dispatches those runs and validates their artifacts; it never compiles packages itself. Unchanged packages are reused from the previous signed catalog after verification. A complete snapshot is signed, uploaded, anonymously read back and verified before GitHub latest-release promotion. Reusing a filename for different bytes is refused. A failed or stale run cannot replace the active repository.
 
 Manual operations use GitHub CLI; these commands are fish-compatible:
 

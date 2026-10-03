@@ -1,0 +1,65 @@
+name: Build one package
+run-name: Build ${{ inputs.package }} / ${{ inputs.publication_run }}.${{ inputs.publication_attempt }}
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Package to build
+        required: true
+        type: choice
+        options: [archive-mounter, carapace, nasc-tui-bin, cloudflare-speed-cli, oh-my-pi-vith-git, python-google-genai]
+      publication_run:
+        description: Publication plan run ID
+        required: true
+        type: string
+      publication_attempt:
+        description: Publication plan attempt
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  package:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      WORK: /home/runner/.local/state/arch-packages/build-${{ github.run_id }}
+      TMPDIR: /home/runner/.local/state/arch-packages/build-${{ github.run_id }}/tmp
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: publication-plan-${{ inputs.publication_attempt }}
+          run-id: ${{ inputs.publication_run }}
+          github-token: ${{ github.token }}
+          path: ${{ env.WORK }}
+      - name: Prepare only the selected recipe
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PACKAGE: ${{ inputs.package }}
+          PUBLICATION: ${{ inputs.publication_run }}
+          ATTEMPT: ${{ inputs.publication_attempt }}
+        run: |
+          mkdir -p "$TMPDIR"
+          python3 -m tools.package_runs prepare "$WORK" --package "$PACKAGE" --publication-run "$PUBLICATION" --publication-attempt "$ATTEMPT"
+      - name: Build package without credentials
+        run: tools/build.sh "$WORK/input/bundle.json" "$WORK/output"
+      - name: Pack outputs
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, tarfile
+          work = pathlib.Path(os.environ['WORK'])
+          with tarfile.open(work / 'unsigned.tar', 'w') as archive:
+              for path in sorted((work / 'output').iterdir()):
+                  archive.add(path, arcname=path.name, recursive=False)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: package-${{ inputs.package }}
+          path: ${{ env.WORK }}/unsigned.tar
+          if-no-files-found: error
+          retention-days: 7

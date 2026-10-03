@@ -30,9 +30,13 @@ concurrency:
   group: arch-packages-publication
   cancel-in-progress: false
 jobs:
-  build:
+  collect:
     if: github.ref == 'refs/heads/main' && inputs.operation != 'rollback'
     runs-on: ubuntu-latest
+    timeout-minutes: 190
+    permissions:
+      contents: read
+      actions: write
     outputs:
       accepted_sha: ${{ steps.target.outputs.sha }}
     steps:
@@ -67,27 +71,16 @@ jobs:
         run: |
           mkdir -p "$HOME/.local/state/omp/work"
           python3 tools/publish.py plan --accepted-sha "$ACCEPTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --output-dir "$HOME/.local/state/omp/work/publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-      - name: Build changed immutable inputs without credentials
-        run: |
-          python3 - <<'PY'
-          import json, os, pathlib, subprocess
-          root = pathlib.Path.home() / '.local/state/omp/work' / ('publication-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
-          bundle = json.loads((root / 'bundle/bundle.json').read_text())
-          output = root / 'unsigned'
-          if bundle['packages']:
-              subprocess.run(['tools/build.sh', str(root / 'bundle/bundle.json'), str(output)], check=True)
-          else:
-              output.mkdir()
-              (output / 'native-evidence.json').write_text(json.dumps(bundle, sort_keys=True, separators=(',', ':')) + '\n')
-          PY
-      - name: Package bounded unsigned data
-        run: |
-          python3 - <<'PY'
-          import os, pathlib, tarfile
-          root = pathlib.Path.home() / '.local/state/omp/work' / ('publication-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
-          with tarfile.open(root / 'unsigned.tar', 'w') as archive:
-              for path in sorted((root / 'unsigned').iterdir()): archive.add(path, arcname=path.name, recursive=False)
-          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: publication-plan-${{ github.run_attempt }}
+          path: ~/.local/state/omp/work/publication-${{ github.run_id }}-${{ github.run_attempt }}/publication-plan.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Dispatch independent package runs and collect verified outputs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m tools.package_runs collect "$HOME/.local/state/omp/work/publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: unsigned-publication-${{ github.run_id }}-${{ github.run_attempt }}
@@ -126,7 +119,7 @@ jobs:
           path: ~/.local/state/omp/work/rollback-${{ github.run_id }}-${{ github.run_attempt }}/publication-result.json
           if-no-files-found: warn
   publish:
-    needs: build
+    needs: collect
     runs-on: ubuntu-latest
     environment: publish
     permissions:
@@ -136,7 +129,7 @@ jobs:
       - name: Rebind trusted main before checking out publisher controls
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          ACCEPTED_SHA: ${{ needs.build.outputs.accepted_sha }}
+          ACCEPTED_SHA: ${{ needs.collect.outputs.accepted_sha }}
         run: |
           mkdir -p "$TMPDIR"
           python3 - <<'PY'
@@ -149,7 +142,7 @@ jobs:
           PY
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ needs.build.outputs.accepted_sha }}
+          ref: ${{ needs.collect.outputs.accepted_sha }}
           persist-credentials: false
       - name: Install trusted publisher tools before secrets
         run: sudo apt-get update && sudo apt-get install -y gnupg libarchive-tools
@@ -163,7 +156,7 @@ jobs:
           ARCH_SIGNING_KEY: ${{ secrets.ARCH_SIGNING_KEY }}
           ARCH_SIGNING_PASSPHRASE: ${{ secrets.ARCH_SIGNING_PASSPHRASE }}
           ARCH_SIGNING_FINGERPRINT: ${{ vars.ARCH_SIGNING_FINGERPRINT }}
-          ACCEPTED_SHA: ${{ needs.build.outputs.accepted_sha }}
+          ACCEPTED_SHA: ${{ needs.collect.outputs.accepted_sha }}
         run: |
           python3 tools/publish.py publish --accepted-sha "$ACCEPTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --plan "$HOME/.local/state/omp/work/publication-input-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/publication-plan.json" --artifact "$HOME/.local/state/omp/work/publication-input-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/unsigned.tar" --work-dir "$HOME/.local/state/omp/work/signed-publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Record public verification and rollback evidence
