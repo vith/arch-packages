@@ -68,7 +68,7 @@ gh workflow run candidate.yml --repo vith/arch-packages -f pr_number=PR_NUMBER
 gh workflow run verification.yml --repo vith/arch-packages
 ```
 
-Native builds and empty-cache installation/runtime proofs run on GitHub, never on the workstation. The official Arch image and third-party Actions are pinned. Native source probes first preserve recipe modes and establish root-owned, read-only frozen Git configuration and mirrors during trusted container setup; recipe execution then drops all capabilities and enables no-new-privileges in a credential-free environment. Hardware-detected compilation concurrency is retained. OMP's temporarily disabled source test suites remain disabled; the retained source gate checks and compiles, then asserts the exact executable identity.
+Native builds and empty-cache installation/runtime proofs run on GitHub, never on the workstation. The official Arch image and third-party Actions are pinned. Native source probes first preserve recipe modes and establish root-owned, read-only frozen Git configuration and mirrors during trusted container setup; recipe execution then drops all capabilities and enables no-new-privileges in a credential-free environment. Initial enrollment preserves the accepted native pkgrel even when makepkg derives a new VCS version. Hardware-detected compilation concurrency is retained. OMP's source test suites remain disabled. The x86_64 package build verifies the compiled executable identity and native PipeWire linkage; there is no duplicate ARM source build. Source merges still require human review.
 
 ## Release activation and rollback
 

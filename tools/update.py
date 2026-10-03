@@ -504,7 +504,7 @@ def render_recipe(recipe,policy,pkgver,checksums,pkgrel='1'):
     (recipe/'PKGBUILD').write_text(text)
 
 
-def native_probe(recipe,lock,policy,work):
+def native_probe(recipe,lock,policy,work,preserve_pkgrel=False):
     image=(ROOT/'build-image.txt').read_text().strip()
     if not re.fullmatch(r'ghcr.io/archlinux/archlinux@sha256:[0-9a-f]{64}',image):
         raise ValueError('native probe image not pinned')
@@ -531,7 +531,7 @@ def native_probe(recipe,lock,policy,work):
     (probe/'gitconfig').write_text(config)
     import shlex
     install='import subprocess;from pathlib import Path;from tools.native import dependency_names;subprocess.run(["pacman","-S","--noconfirm","--needed","--",*dependency_names(Path("recipe/.SRCINFO").read_text())],check=True)'
-    execute='import json;from pathlib import Path;from tools.sources import probe_recipe;print(json.dumps(probe_recipe(Path("recipe"),json.load(open("lock.json")),json.load(open("policy.json")))))'
+    execute='import json;from pathlib import Path;from tools.sources import probe_recipe;print(json.dumps(probe_recipe(Path("recipe"),json.load(open("lock.json")),json.load(open("policy.json")),preserve_pkgrel='+repr(preserve_pkgrel)+')))'
     script='set -euo pipefail\npacman -Syu --noconfirm --needed base-devel git python util-linux\nuseradd -m -u 1000 builder\ncp -a /probe /work\nchown -R root:root /work\nchmod a-w /work/gitconfig\nif [ -d /work/mirrors ]; then chmod -R a-w /work/mirrors; fi\nchown -R builder:builder /work/recipe\ncd /work\nPYTHONPATH=/work python -c '+shlex.quote(install)+'\nsetpriv --reuid=1000 --regid=1000 --clear-groups --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs env -i PATH=/usr/bin:/bin HOME=/home/builder LANG=C.UTF-8 GOTOOLCHAIN=local GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/work/gitconfig PYTHONPATH=/work python -c '+shlex.quote(execute)+' > /work/result.json\ncp /work/result.json /result/result.json\n'
     (probe/'run.sh').write_text(script)
     result=work/'result';result.mkdir()
@@ -794,7 +794,7 @@ def bootstrap(output):
                     record['bundle']['url']='https://github.com/'+repository()+'/releases/download/source-'+sha+'/'+sha+'.bundle'
             records.append(record)
         lock={'schema':1,'version':metadata['version'],'sources':records}
-        result=native_probe(recipe,lock,policy,work)
+        result=native_probe(recipe,lock,policy,work,preserve_pkgrel=True)
         lock['version']=result['version'];lock['sources']=result['sources']
         render_recipe(recipe,policy,result['pkgver'],result['checksums'],pkgrel=result['pkgrel'])
         (recipe/'.SRCINFO').write_text(result['srcinfo'])

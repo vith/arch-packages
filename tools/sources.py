@@ -276,11 +276,12 @@ def materialize_sources(lock, destination):
     return mapping
 
 
-def probe_recipe(recipe_dir, lock, policy):
+def probe_recipe(recipe_dir, lock, policy, preserve_pkgrel=False):
     """Execute only inside the enrolled Arch container as an unprivileged user."""
     if not Path('/etc/arch-release').is_file() or os.geteuid()==0:
         raise RuntimeError('probe_recipe requires isolated unprivileged Arch runtime')
     from tools.recipe_gate import parse_srcinfo
+    original_pkgrel=parse_srcinfo((Path(recipe_dir)/'.SRCINFO').read_text())['pkgrel']
     validate_lock(lock)
     configuration=os.environ.get('GIT_CONFIG_GLOBAL')
     if any(source['kind']=='git' for source in lock['sources']):
@@ -335,6 +336,15 @@ def probe_recipe(recipe_dir, lock, policy):
     if len(text.encode())>1048576:
         raise ValueError('native metadata exceeds bound')
     metadata=parse_srcinfo(text)
+    if preserve_pkgrel and metadata['pkgrel']!=original_pkgrel:
+        from tools.update import render_recipe
+        render_recipe(Path(recipe_dir),policy,metadata['pkgver'],{source['id']:source['checksums'] for source in lock['sources']},pkgrel=original_pkgrel)
+        text=subprocess.run(['makepkg','--printsrcinfo'],cwd=recipe_dir,check=True,capture_output=True,text=True).stdout
+        if len(text.encode())>1048576:
+            raise ValueError('native metadata exceeds bound')
+        metadata=parse_srcinfo(text)
+        if metadata['pkgrel']!=original_pkgrel:
+            raise ValueError('native enrollment did not preserve pkgrel')
     runtime_identity=None
     if policy['pkgbase']=='oh-my-pi-vith-git':
         match=re.fullmatch(r'([0-9]+(?:\.[0-9]+){2})\.vith\.r([0-9]+)\.g([0-9a-f]{12})',metadata['pkgver'])
