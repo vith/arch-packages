@@ -3,6 +3,11 @@ run-name: Build ${{ inputs.package }} / ${{ inputs.publication_run }}.${{ inputs
 on:
   workflow_dispatch:
     inputs:
+      kind:
+        description: Parent workflow type
+        type: choice
+        options: [publication, candidate]
+        default: publication
       package:
         description: Package to build
         required: true
@@ -34,7 +39,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: publication-plan-${{ inputs.publication_attempt }}
+          name: ${{ inputs.kind == 'candidate' && 'prepared-candidate' || format('publication-plan-{0}', inputs.publication_attempt) }}
           run-id: ${{ inputs.publication_run }}
           github-token: ${{ github.token }}
           path: ${{ env.WORK }}
@@ -45,10 +50,12 @@ jobs:
           PACKAGE: ${{ inputs.package }}
           PUBLICATION: ${{ inputs.publication_run }}
           ATTEMPT: ${{ inputs.publication_attempt }}
+          KIND: ${{ inputs.kind || 'publication' }}
         run: |
           mkdir -p "$TMPDIR"
-          python3 -m tools.package_runs prepare "$WORK" --package "$PACKAGE" --publication-run "$PUBLICATION" --publication-attempt "$ATTEMPT"
+          python3 -m tools.package_runs prepare "$WORK" --package "$PACKAGE" --publication-run "$PUBLICATION" --publication-attempt "$ATTEMPT" --kind "$KIND"
       - name: Restore this package's trusted build cache
+        if: inputs.kind != 'candidate'
         id: cache
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -60,16 +67,20 @@ jobs:
             ${{ steps.prepare.outputs.cache-prefix }}
       - name: Build package without credentials
         id: build
-        run: tools/build.sh "$WORK/input/bundle.json" "$WORK/output"
+        env:
+          KIND: ${{ inputs.kind }}
+        run: |
+          if [[ "$KIND" == candidate ]]; then unset ARCH_BUILD_CACHE; fi
+          tools/build.sh "$WORK/input/bundle.json" "$WORK/output"
       - name: Make cache readable by the runner
-        if: ${{ always() && steps.build.outcome != 'skipped' }}
+        if: ${{ always() && inputs.kind != 'candidate' && steps.build.outcome != 'skipped' }}
         continue-on-error: true
         run: |
           if [[ -d "$ARCH_BUILD_CACHE" ]]; then
             sudo chown -R --no-dereference "$(id -u):$(id -g)" "$ARCH_BUILD_CACHE"
           fi
       - name: Save build progress for later runs
-        if: ${{ always() && !cancelled() && steps.build.outcome != 'skipped' && steps.cache.outputs.cache-hit != 'true' }}
+        if: ${{ always() && !cancelled() && inputs.kind != 'candidate' && steps.build.outcome != 'skipped' && steps.cache.outputs.cache-hit != 'true' }}
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:

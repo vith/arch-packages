@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.parse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -189,6 +190,7 @@ def expectations(head, run_id, attempt, previous, pins):
     harness = harness_digest(ROOT)
     policy = json.loads((ROOT / 'packages.json').read_text())
     packages = []
+    legacy_environment = None
     for item in policy['packages']:
         name = item['pkgbase']
         if not re.fullmatch(r'[a-z0-9][a-z0-9+_.-]*', name):
@@ -206,7 +208,18 @@ def expectations(head, run_id, attempt, previous, pins):
             raise ValueError('accepted lock/native metadata mismatch: ' + name)
         digest = input_digest(recipe, lock, item, image, harness)
         old = previous['recipes'].get(name) if previous else None
-        packages.append({'recipe_commit':pins[name],'pkgbase':name,'recipe_dir':'recipes/' + name,'lock':lock,'policy':item,'input_digest':digest,'tree_sha':hashlib.sha256(github_api.canonical(tree_manifest(recipe))).hexdigest(),'metadata':metadata,'aur':aur,'reuse':bool(old and old['input_digest'] == digest)})
+        content_digest = input_digest(recipe, lock, item, 'package-content-v1', '')
+        reuse = bool(old and (old['input_digest'] == digest or old.get('content_digest') == content_digest))
+        if old and not reuse and 'content_digest' not in old and previous.get('accepted_sha'):
+            if legacy_environment is None:
+                with tempfile.TemporaryDirectory(prefix='previous-build-', dir=ROOT.parent) as session:
+                    archive = Path(session) / 'control.tar.gz'
+                    checkout = Path(session) / 'control'
+                    github_api.download(f'https://api.github.com/repos/{REPOSITORY}/tarball/{previous["accepted_sha"]}', archive)
+                    extract_tree(archive, checkout)
+                    legacy_environment = ((checkout / 'build-image.txt').read_text().strip(), harness_digest(checkout))
+            reuse = old['input_digest'] == input_digest(recipe, lock, item, *legacy_environment)
+        packages.append({'recipe_commit':pins[name],'pkgbase':name,'recipe_dir':'recipes/' + name,'lock':lock,'policy':item,'input_digest':digest,'content_digest':content_digest,'tree_sha':hashlib.sha256(github_api.canonical(tree_manifest(recipe))).hexdigest(),'metadata':metadata,'aur':aur,'reuse':reuse})
     output_names = [output['name'] for package in packages for output in package['policy']['outputs']]
     if len({p['pkgbase'] for p in packages}) != len(packages) or not packages or len(set(output_names)) != len(output_names):
         raise ValueError('duplicate/empty package enrollment')
@@ -231,6 +244,9 @@ def prepare(head, run_id, attempt, directory):
     changed = []
     for package in plan['packages']:
         if not package['reuse']:
+            old = previous['recipes'].get(package['pkgbase']) if previous else None
+            if old and old.get('version') == package['lock']['version']:
+                raise ValueError('changed package inputs require a pkgrel/version bump: ' + package['pkgbase'])
             recipes.copy_recipe(ROOT / package['recipe_dir'], bundle_dir / package['recipe_dir'])
             changed.append({k:package[k] for k in ('pkgbase','recipe_commit','recipe_dir','lock','policy','input_digest')})
     bundle = {k:v for k,v in plan.items() if k != 'packages'}
@@ -488,7 +504,14 @@ def promote(target, previous, catalog, ring, work):
         # Reconcile only the actual public latest pointer and signed bytes.
         if latest_release() != target:
             raise RuntimeError('promotion ambiguous; latest is not the requested snapshot') from None
-    if latest_release() != target:
+    for attempt in range(12):
+        observed_release = latest_release()
+        if observed_release == target:
+            break
+        if observed_release != previous:
+            raise ValueError('latest changed to an unrelated snapshot during promotion')
+        time.sleep(5)
+    else:
         raise ValueError('promotion did not select requested snapshot')
     observed = verified_snapshot(target, work, ring)
     active = latest_catalog(work, ring)
@@ -553,7 +576,7 @@ def publish(args):
     for package in plan['packages']:
         name = package['pkgbase']
         lock = package['lock']
-        catalog['recipes'][name] = {'recipe_commit':package['recipe_commit'],'tree_sha':package['tree_sha'],'input_digest':package['input_digest'],'version':lock['version'],'aur':package['aur'],'sources':lock['sources']}
+        catalog['recipes'][name] = ({**previous['recipes'][name], 'content_digest':package['content_digest']} if package['reuse'] else {'recipe_commit':package['recipe_commit'],'tree_sha':package['tree_sha'],'input_digest':package['input_digest'],'content_digest':package['content_digest'],'version':lock['version'],'aur':package['aur'],'sources':lock['sources']})
         for filename, identity in filenames(package).items():
             if package['reuse']:
                 if previous['recipes'][name]['version'] != lock['version']:

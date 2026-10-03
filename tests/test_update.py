@@ -16,8 +16,18 @@ SRCINFO='pkgbase = example\n\tpkgver = 1.0\n\tpkgrel = 1\n\tarch = x86_64\npkgna
 
 
 class CandidateBoundaries(unittest.TestCase):
+    def test_documentation_changes_need_review_without_package_builds(self):
+        with tempfile.TemporaryDirectory() as session:
+            old = Path(session) / 'old'
+            new = Path(session) / 'new'
+            old.mkdir()
+            new.mkdir()
+            (old / 'README.md').write_text('before')
+            (new / 'README.md').write_text('after')
+            self.assertEqual(update.affected_packages(old, new, {'example': {}}), ([], True))
+
     def setUp(self):
-        root=Path.home()/'.local/state/omp/work/arch-package-tests'
+        root=Path.home()/'.local/state/arch-packages/work/arch-package-tests'
         root.mkdir(parents=True,exist_ok=True)
         self.temp=tempfile.TemporaryDirectory(dir=root);self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)

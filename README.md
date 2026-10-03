@@ -1,48 +1,38 @@
 # Arch packages
 
-Native x86-64 Arch builds on standard GitHub-hosted runners and signed complete GitHub Release snapshots. GitHub hosts the recipes, CI and package downloads. Accepted recipe gitlinks on `main`—not moving recipe or AUR branch tips—are the build authority.
+Personal x86_64 Arch Linux packages, built on GitHub Actions and distributed
+as signed GitHub Releases.
 
-## Packages and sources
+## Packages
 
-| Package | Recipe authority | Independent update discovery |
-| --- | --- | --- |
-| archive-mounter | Unmodified third-party AUR | AUR recipe commits |
-| carapace | Maintained AUR-derived recipe | Software tags and deterministic three-way AUR integration; conflicts require a human |
-| nasc-tui-bin | Local authoritative recipe | GitHub Release asset plus exact GPLv2 corresponding source |
-| cloudflare-speed-cli | Local authoritative recipe | Authentic software tags, native Git checksum |
-| oh-my-pi-vith-git | Maintained fork recipe | Exact canonical `vith/oh-my-pi` integration commits |
-| python-google-genai | AUR-derived recipe with a preserved local correction | Deterministic three-way AUR recipe updates; conflicts require a human |
+| Package | Source |
+| --- | --- |
+| `archive-mounter` | AUR recipe |
+| `carapace` | AUR-derived recipe, updated from upstream tags |
+| `nasc-tui-bin` | Upstream release binary and corresponding GPL source |
+| `cloudflare-speed-cli` | Upstream source tags |
+| `oh-my-pi-vith-git` | [vith/oh-my-pi](https://github.com/vith/oh-my-pi) |
+| `python-google-genai` | AUR-derived recipe |
 
-The Google SDK recipe removes only the unused `python-sentencepiece` test dependency, which is absent from the official Arch repositories. Its tokenizer tests were already excluded upstream; enabled tests and the optional runtime tokenizer dependency remain unchanged. AUR updates preserve this correction.
+The Google SDK recipe omits the unavailable `python-sentencepiece` build/test
+dependency. Upstream already excludes tokenizer tests; the optional runtime
+dependency is unchanged.
 
-The source fork is <https://github.com/vith/oh-my-pi>. There are no source credentials or automatic AUR uploads.
+## Install
 
-`inputs/` binds exact software identities and native versions. Git inputs pin upstream commits and version tags. Builds fetch those exact objects directly from upstream; this repository does not publish Git source bundles. Builds use verified read-only mirrors instead of resolving moving branches. OMP derives its native package and runtime identities from that frozen ancestry; source-version manifests are not rewritten to create artificial releases.
-
-## Independent recipe histories
-
-This is one GitHub repository, not one repository per package. `main` contains shared policy, source locks, CI and publication tools. Each `recipes/<pkgbase>` is a submodule pointing back to this repository at an exact package-root commit:
-
-The preserved Nasc history contains upstream v1.0.4 binaries and old package metadata that incorrectly claimed MIT. The maintained recipe corrects the license. [Complete corresponding source, upstream GPL license and verified historical binary provenance](https://github.com/vith/arch-packages/releases/tag/history-source-nasc-v1.0.4) accompany those original objects.
-
-- `aur/<pkgbase>` retains authentic upstream AUR history where it exists.
-- `pkg/<pkgbase>` retains our maintained recipe history and corrections.
-- `recipe-updates/<pkgbase>/<watcher>` anchors proposed recipe commits.
-- `updates/<pkgbase>/<watcher>` proposes their gitlinks and source-lock/provenance changes to `main`.
-
-Recipe branches have `PKGBUILD`, `.SRCINFO` and payloads at their root. Existing AUR/maintained history is preserved without rewriting original commits or inventing ancestry. Locally authored recipes with no earlier commits start honestly with a new root. Branch heads do not override accepted gitlinks; CI never uses `submodule update --remote`. The trusted loader verifies same-repository module identity and exports bounded immutable recipe data without executing candidate Git configuration, hooks or scripts.
-
-Candidate review includes the complete underlying recipe diff, modes and history, not just changed SHA values. Rewritten recipe/AUR history fails closed. Maintained branch advancement uses ancestry checks and exact leases and cannot overwrite divergent or pending work. A coordinated `main` commit can pin multiple recipes together, with human approval and every affected package built from that exact candidate.
-
-## Client configuration
-
-After verified publication, GitHub's latest-release download URL exposes the signed catalog, public key, databases and packages. Trust the dedicated key only after independently comparing this full fingerprint:
+Download [the public signing key](https://github.com/vith/arch-packages/releases/latest/download/arch-packages.asc).
+Before trusting it, verify its full fingerprint:
 
 ```text
 9C293ABB1F701DA04BA2C0D5711FC9BDDC5AF617
 ```
 
-Public key: <https://github.com/vith/arch-packages/releases/latest/download/arch-packages.asc>. Pacman configuration:
+```sh
+sudo pacman-key --add arch-packages.asc
+sudo pacman-key --lsign-key 9C293ABB1F701DA04BA2C0D5711FC9BDDC5AF617
+```
+
+Add to `/etc/pacman.conf`, then run `sudo pacman -Syu`:
 
 ```ini
 [arch-packages]
@@ -50,47 +40,49 @@ SigLevel = Required
 Server = https://github.com/vith/arch-packages/releases/latest/download
 ```
 
-Strict signatures are never disabled. Separate database/signature requests can straddle latest-release promotion; such a pair fails closed. Retry a fresh sync or use `https://github.com/vith/arch-packages/releases/download/SNAPSHOT_TAG` as the server for a fixed generation. Old snapshot, package, signature and corresponding-source assets are retained. Pacman database/file aliases are uploaded as real signed bytes under the exact requested filenames, not local symlinks.
+Packages and repository databases are signed. If a database/signature download
+straddles a release update, retry a fresh sync; do not disable signature checking.
+For a fixed snapshot, replace `releases/latest/download` with
+`releases/download/SNAPSHOT_TAG`.
 
-## Approval and builds
+## Development
 
-The updater runs every six hours and is also manually dispatchable. Routine proposals are per package/watcher. Narrow, independently verified literal source/version/checksum transitions may merge automatically only after exact-head native validation and the deterministic gate. Changes to functions, dependencies, payloads, licenses, architecture, modes, policy, automation, unknown metadata, or multiple packages require human approval through the secret-free `recipe-review` environment and then human merge. A successful build is not approval. No LLM is involved.
+- `recipes/`: exact recipe commits, stored as submodules of this repository.
+- `pkg/*`: maintained recipe branches; `aur/*`: imported AUR history.
+- `packages.json`, `inputs/`, `upstream/`: package policy, source pins and update tracking.
+- `tools/`, `tests/`, `.github/workflows/`: builds, updates, publication and tests.
+- `opentofu/`: settings for this GitHub repository only.
 
-`main` requires `recipe-policy` and `candidate-build`, a PR, and an up-to-date base. Changed head/base identities invalidate evidence and approval. Builds receive no write, signing or model credentials. All packages affected by one candidate use one exact head and its recipe pins; missing or failing outputs prevent acceptance of the entire candidate.
+Clone with `git clone --recurse-submodules https://github.com/vith/arch-packages.git`.
+Change recipe code on its `pkg/*` branch, then update its gitlink and source lock
+on a main-branch PR. Changed package contents require a version or `pkgrel` bump.
 
-Each changed package builds in its own `build-package.yml` workflow run, with separate logs, status and retries. The publication workflow dispatches those runs and validates their artifacts; it never compiles packages itself. Unchanged packages are reused from the previous signed catalog after verification. A complete snapshot is signed, uploaded, anonymously read back and verified before GitHub latest-release promotion. Reusing a filename for different bytes is refused. A failed or stale run cannot replace the active repository.
+Source updates are checked every six hours. Automatic merges are limited to
+verified version/source/checksum changes. Other changes require approval in the
+`recipe-review` environment and a human merge. Main requires passing tests,
+candidate checks and an up-to-date PR. Candidate validation starts after PR tests;
+it can also be started manually:
 
-Trusted main package runs persist Cargo downloads/compiled output, Rustup toolchains, Bun downloads, Go modules/build output and pip downloads using GitHub Actions caches. Keys separate packages, architecture, image and harness; exact input digests select cache generations, with fallback only inside the same package/build environment. Failed builds also save progress. PR builds neither restore nor save these caches, and release builds never consume PR-produced caches. Caches contain no credentials or signing material and are not publication evidence: metadata, output hashes and runtime checks still run. GitHub's normal cache quota/eviction applies; missing caches only make builds slower.
-
-Manual operations use GitHub CLI; these commands are fish-compatible:
-
-```fish
+```sh
+gh workflow run candidate.yml --repo vith/arch-packages -f pr_number=NUMBER
 gh workflow run update.yml --repo vith/arch-packages
-gh workflow run candidate.yml --repo vith/arch-packages -f pr_number=PR_NUMBER
-gh workflow run verification.yml --repo vith/arch-packages
+python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Native builds and empty-cache installation/runtime proofs run on GitHub, never on the workstation. The official Arch image and third-party Actions are pinned. Native source probes first preserve recipe modes and establish root-owned, read-only frozen Git configuration and mirrors during trusted container setup; recipe execution then drops all capabilities and enables no-new-privileges in a credential-free environment. Initial enrollment preserves the accepted native pkgrel even when makepkg derives a new VCS version. Hardware-detected compilation concurrency is retained. The x86_64 package build verifies the compiled executable identity and native PipeWire linkage.
+Each affected package builds in a separate hosted x86_64 workflow run. Documentation
+changes do not rebuild packages. Trusted release builds cache dependencies and
+compiler output; candidate builds do not read or write those caches. Publication
+reuses unchanged signed packages, including across CI-only changes. To rebuild a
+package with new tooling, bump its `pkgrel`.
 
-## Release activation and rollback
+Publication verifies packages, signs the snapshot and checks public downloads
+before updating `latest`. Older snapshots remain available. The manual
+`consumer-proof.yml` workflow installs a snapshot in a clean Arch container and
+exercises the packages; it is separate from publication.
 
-`publish.yml` creates a draft snapshot, uploads every expected asset, publishes it with `make_latest=false`, and independently verifies all public bytes/signatures and the complete database. Only then may it promote that exact snapshot with `make_latest=true`. Corresponding-source releases are not package snapshots.
+## Administration
 
-Before promotion, the publisher rechecks current `main` and the previous latest ID/tag. It observes the promoted release and signed stable catalog afterward. An ambiguous API response is reconciled against actual public state; it is not permission to roll back an unrelated activation.
-
-Rollback requires the expected current release ID/tag, independently verifies the retained complete signed snapshot, and promotes that old release without deleting assets or changing the key. From an exact accepted control checkout:
-
-```fish
-python3 tools/publish.py rollback --target-tag SNAPSHOT_TAG --expected-release-id CURRENT_ID --expected-tag CURRENT_TAG --work-dir ~/.local/state/omp/work/arch-rollback
-```
-
-The workflow's rollback operation provides the same guarded path. Fixed snapshot URLs remain usable without changing latest. No laptop package configuration is changed automatically.
-
-## GitHub configuration
-
-`opentofu/` owns the GitHub repository settings, default branch, Actions permissions, review/publish environments, publication branch restriction, and signing secrets/fingerprint. Workflow and recipe files remain version-controlled source code. Repository settings are changed through OpenTofu, not ad-hoc API writes.
-
-Run from this checkout:
+Repository settings and signing secrets are managed with OpenTofu:
 
 ```sh
 tools/tofu.sh init
@@ -98,14 +90,16 @@ tools/tofu.sh plan -out=github.tfplan
 tools/tofu.sh apply github.tfplan
 ```
 
-The wrapper uses the GitHub CLI login without printing its token. State and saved plans are encrypted and ignored by Git. The independent state passphrase is `~/.local/state/arch-packages/tofu-passphrase`; signing recovery files are under `~/.local/state/arch-packages/signing/`. Back up both privately before moving to another workstation. `ARCH_STATE_PASSPHRASE_FILE` overrides the passphrase path and `TF_VAR_signing_directory` overrides signing recovery location. Never commit these files or decrypted state. `imports.tf` records adoption of existing resources without recreating the repository.
+The wrapper uses your GitHub CLI login. State and plans are encrypted and ignored
+by Git. Privately back up `~/.local/state/arch-packages/tofu-passphrase` and
+`~/.local/state/arch-packages/signing/`. The environment variables
+`ARCH_STATE_PASSPHRASE_FILE` and `TF_VAR_signing_directory` override these paths.
 
-## Signing and recovery
+To roll back, run `publish.yml` with `operation=rollback`, the retained
+`target_tag`, and the current `expected_tag` and `expected_release_id`. It verifies
+the retained snapshot before changing `latest`; it does not delete releases.
 
-Only `publish` holds the dedicated private signing key and passphrase. The committed public key/fingerprint is checked before signing. Packages, both pacman databases, and the complete catalog have detached signatures. Corresponding-source/license assets and pinned source identities are bound by the signed catalog.
-
-Private signing recovery copies are outside this checkout. Never commit tokens/passphrases, delete old snapshots, or alter client configuration automatically. Rollback selects a previously verified complete GitHub Release without deleting assets or changing the key.
-
-## Verification
-
-`verification.yml` runs the Python gitlink/policy/source/publication boundary suite with native `vercmp` from the pinned Arch image. Publication/candidate builds validate complete prepared `.SRCINFO`, lock identity, expected outputs, and native runtime evidence. `tools/smoke.sh` installs all six with empty databases/cache and required signatures in a disposable Arch environment and exercises their actual consumers. The Google SDK smoke sends a real SDK request to a local HTTP fixture and checks the decoded response, without credentials or a paid API. Verification is complete only when the corresponding Actions runs and live snapshot evidence exist; checked-in automation alone is not proof of a deployed service.
+The preserved Nasc history includes old binaries whose metadata incorrectly said
+MIT. The maintained recipe corrects this to GPLv2; [corresponding source and the
+upstream license](https://github.com/vith/arch-packages/releases/tag/history-source-nasc-v1.0.4)
+remain available with that history.

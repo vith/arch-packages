@@ -1,0 +1,30 @@
+name: Start candidate validation
+on:
+  workflow_run:
+    workflows: [Trusted recipe and publication verification]
+    types: [completed]
+permissions:
+  contents: read
+  actions: write
+  pull-requests: read
+jobs:
+  dispatch:
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          event = json.load(open(os.environ['GITHUB_EVENT_PATH']))
+          repository = os.environ['GITHUB_REPOSITORY']
+          for candidate in event['workflow_run']['pull_requests']:
+              number = str(int(candidate['number']))
+              current = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/pulls/{number}']))
+              if current['state'] != 'open' or current['base']['ref'] != 'main':
+                  continue
+              if current['head']['sha'] != event['workflow_run']['head_sha']:
+                  continue
+              subprocess.run(['gh', 'workflow', 'run', 'candidate.yml', '--repo', repository, '--ref', 'main', '-f', 'pr_number=' + number], check=True)
+          PY

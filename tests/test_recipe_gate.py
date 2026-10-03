@@ -8,7 +8,7 @@ from tools.recipe_gate import classify_recipe_update, parse_srcinfo, tree_manife
 
 class GateTests(unittest.TestCase):
     def setUp(self):
-        root = Path.home() / '.local/state/omp/work/arch-gate-tests'
+        root = Path.home() / '.local/state/arch-packages/work/arch-gate-tests'
         root.mkdir(parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=root)
         self.addCleanup(self.temp.cleanup)

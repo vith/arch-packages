@@ -1,6 +1,10 @@
 import unittest
+from unittest.mock import patch
+from pathlib import Path
+import json
+import tempfile
 
-from tools.package_runs import select, title, validate_run
+from tools.package_runs import select, title, validate_run, collect
 
 
 class IndependentPackageRuns(unittest.TestCase):
@@ -25,6 +29,26 @@ class IndependentPackageRuns(unittest.TestCase):
         self.plan['packages'].append(self.plan['packages'][0])
         with self.assertRaises(ValueError):
             select(self.plan, 'first')
+
+    def test_candidate_run_uses_trusted_base_not_candidate_head(self):
+        plan = {**self.plan, 'base': 'b'*40}
+        record = {'path': '.github/workflows/build-package.yml', 'head_sha': plan['base'],
+                  'head_branch': 'main', 'event': 'workflow_dispatch', 'conclusion': 'success',
+                  'display_title': title(plan, 'first')}
+        validate_run(record, plan, 'first')
+        with self.assertRaises(ValueError):
+            validate_run({**record, 'head_sha': plan['head']}, plan, 'first')
+
+    def test_documentation_candidate_dispatches_no_builds(self):
+        with tempfile.TemporaryDirectory() as session:
+            directory = Path(session)
+            plan = {**self.plan, 'packages': [], 'pr_number': 1}
+            (directory / 'candidate.json').write_text(json.dumps(plan))
+            with patch('tools.package_runs.github_api.api') as api, patch('tools.package_runs.update.validate_build') as validate:
+                collect(directory, kind='candidate')
+            api.assert_not_called()
+            validate.assert_called_once_with(plan, directory / 'unsigned', report=False)
+            self.assertEqual(json.loads((directory / 'unsigned/native-evidence.json').read_text())['packages'], [])
 
     def test_only_successful_exact_workflow_is_accepted(self):
         record = {'path': '.github/workflows/build-package.yml', 'head_sha': self.plan['head'],

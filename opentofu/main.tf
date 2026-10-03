@@ -69,6 +69,29 @@ resource "github_actions_repository_permissions" "packages" {
   sha_pinning_required = false
 }
 
+resource "github_branch_protection" "main" {
+  repository_id       = github_repository.packages.node_id
+  pattern             = "main"
+  enforce_admins      = true
+  allows_deletions    = false
+  allows_force_pushes = false
+  required_status_checks {
+    strict   = true
+    contexts = ["verify", "recipe-policy", "candidate-build"]
+  }
+  required_pull_request_reviews {
+    required_approving_review_count = 0
+    dismiss_stale_reviews           = true
+  }
+}
+
+resource "terraform_data" "source_updates" {
+  triggers_replace = [github_repository.packages.name, "update.yml", "active"]
+  provisioner "local-exec" {
+    command = "gh api --method PUT repos/vith/arch-packages/actions/workflows/update.yml/enable"
+  }
+}
+
 resource "github_workflow_repository_permissions" "packages" {
   repository                       = github_repository.packages.name
   default_workflow_permissions     = "read"

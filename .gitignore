@@ -6,4 +6,6 @@ opentofu/.terraform/
 opentofu/*.tfstate*
 opentofu/*.tfplan
 opentofu/*.tfvars
+opentofu/*.tfvars.json
+opentofu/errored.tfstate
 opentofu/crash.log

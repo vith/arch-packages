@@ -7,8 +7,8 @@ on:
         required: true
         type: string
 env:
-  OMP_WORK: /home/runner/.local/state/omp/work/arch-packages/${{ github.run_id }}/${{ github.run_attempt }}
-  TMPDIR: /home/runner/.local/state/omp/work/arch-packages/${{ github.run_id }}/${{ github.run_attempt }}/tmp
+  ARCH_WORK: /home/runner/.local/state/arch-packages/work/arch-packages/${{ github.run_id }}/${{ github.run_attempt }}
+  TMPDIR: /home/runner/.local/state/arch-packages/work/arch-packages/${{ github.run_id }}/${{ github.run_attempt }}/tmp
 permissions:
   contents: read
 concurrency:
@@ -29,7 +29,7 @@ jobs:
     steps:
       - name: Prepare persistent scratch and trusted validation tools
         run: |
-          mkdir -p "$OMP_WORK" "$TMPDIR"
+          mkdir -p "$ARCH_WORK" "$TMPDIR"
           sudo apt-get update
           sudo apt-get install --yes libarchive-tools
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -40,11 +40,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
-        run: python3 -m tools.update prepare --pr "$PR_NUMBER" --directory "$OMP_WORK/prepared"
+        run: python3 -m tools.update prepare --pr "$PR_NUMBER" --directory "$ARCH_WORK/prepared"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: prepared-candidate
-          path: ${{ env.OMP_WORK }}/prepared
+          path: ${{ env.ARCH_WORK }}/prepared
           if-no-files-found: error
           retention-days: 2
   build:
@@ -52,10 +52,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: write
+      pull-requests: read
+    timeout-minutes: 190
     steps:
       - name: Prepare persistent scratch and trusted validation tools
         run: |
-          mkdir -p "$OMP_WORK" "$TMPDIR"
+          mkdir -p "$ARCH_WORK" "$TMPDIR"
           sudo apt-get update
           sudo apt-get install --yes libarchive-tools
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -65,15 +68,16 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: prepared-candidate
-          path: ${{ env.OMP_WORK }}/prepared
-      - name: Build every frozen package without credentials
+          path: ${{ env.ARCH_WORK }}/prepared
+      - name: Dispatch separate package builds and collect results
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python3 -m tools.update extract --archive "$OMP_WORK/prepared/bundle.tar" --directory "$OMP_WORK/build-input"
-          tools/build.sh "$OMP_WORK/build-input/bundle.json" "$OMP_WORK/outputs"
+          python3 -m tools.package_runs collect "$ARCH_WORK/prepared" --kind candidate
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: native-candidate
-          path: ${{ env.OMP_WORK }}/outputs
+          path: ${{ env.ARCH_WORK }}/prepared/unsigned
           if-no-files-found: error
           retention-days: 2
   validate:
@@ -86,7 +90,7 @@ jobs:
     steps:
       - name: Prepare persistent scratch and trusted validation tools
         run: |
-          mkdir -p "$OMP_WORK" "$TMPDIR"
+          mkdir -p "$ARCH_WORK" "$TMPDIR"
           sudo apt-get update
           sudo apt-get install --yes libarchive-tools
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -96,14 +100,14 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: prepared-candidate
-          path: ${{ env.OMP_WORK }}/prepared
+          path: ${{ env.ARCH_WORK }}/prepared
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: native-candidate
-          path: ${{ env.OMP_WORK }}/outputs
+          path: ${{ env.ARCH_WORK }}/outputs
       - env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 -m tools.update validate-build --record "$OMP_WORK/prepared/candidate.json" --directory "$OMP_WORK/outputs"
+        run: python3 -m tools.update validate-build --record "$ARCH_WORK/prepared/candidate.json" --directory "$ARCH_WORK/outputs"
   report-failure:
     needs: [prepare, build, validate]
     if: always() && needs.prepare.result == 'success' && (needs.build.result != 'success' || needs.validate.result != 'success')
@@ -115,7 +119,7 @@ jobs:
     steps:
       - name: Prepare persistent scratch and trusted validation tools
         run: |
-          mkdir -p "$OMP_WORK" "$TMPDIR"
+          mkdir -p "$ARCH_WORK" "$TMPDIR"
           sudo apt-get update
           sudo apt-get install --yes libarchive-tools
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -125,10 +129,10 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: prepared-candidate
-          path: ${{ env.OMP_WORK }}/prepared
+          path: ${{ env.ARCH_WORK }}/prepared
       - env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 -m tools.update fail-build --record "$OMP_WORK/prepared/candidate.json"
+        run: python3 -m tools.update fail-build --record "$ARCH_WORK/prepared/candidate.json"
   manual-review:
     name: Review PR ${{ inputs.pr_number }} head ${{ needs.prepare.outputs.head }} base ${{ needs.prepare.outputs.base }}
     needs: [prepare, validate]
@@ -142,7 +146,7 @@ jobs:
     steps:
       - name: Prepare persistent scratch and trusted validation tools
         run: |
-          mkdir -p "$OMP_WORK" "$TMPDIR"
+          mkdir -p "$ARCH_WORK" "$TMPDIR"
           sudo apt-get update
           sudo apt-get install --yes libarchive-tools
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -152,11 +156,11 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: prepared-candidate
-          path: ${{ env.OMP_WORK }}/prepared
+          path: ${{ env.ARCH_WORK }}/prepared
       - name: Revalidate exact approved candidate
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 -m tools.update review --record "$OMP_WORK/prepared/candidate.json"
+        run: python3 -m tools.update review --record "$ARCH_WORK/prepared/candidate.json"
   finalize:
     needs: [prepare, validate, manual-review]
     if: always() && needs.validate.result == 'success' && (needs.manual-review.result == 'success' || needs.manual-review.result == 'skipped')
@@ -169,7 +173,7 @@ jobs:
     steps:
       - name: Prepare persistent scratch and trusted validation tools
         run: |
-          mkdir -p "$OMP_WORK" "$TMPDIR"
+          mkdir -p "$ARCH_WORK" "$TMPDIR"
           sudo apt-get update
           sudo apt-get install --yes libarchive-tools
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -179,14 +183,14 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: prepared-candidate
-          path: ${{ env.OMP_WORK }}/prepared
+          path: ${{ env.ARCH_WORK }}/prepared
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: native-candidate
-          path: ${{ env.OMP_WORK }}/outputs
+          path: ${{ env.ARCH_WORK }}/outputs
       - env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
           BASE_SHA: ${{ needs.prepare.outputs.base }}
           HEAD_SHA: ${{ needs.prepare.outputs.head }}
-        run: python3 -m tools.update finalize --pr "$PR_NUMBER" --base "$BASE_SHA" --head "$HEAD_SHA" --record "$OMP_WORK/prepared/candidate.json" --directory "$OMP_WORK/outputs"
+        run: python3 -m tools.update finalize --pr "$PR_NUMBER" --base "$BASE_SHA" --head "$HEAD_SHA" --record "$ARCH_WORK/prepared/candidate.json" --directory "$ARCH_WORK/outputs"

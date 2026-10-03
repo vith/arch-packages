@@ -9,7 +9,7 @@ import subprocess
 import tarfile
 import time
 
-from tools import github_api, publish, recipes
+from tools import github_api, publish, recipes, update
 
 
 WORKFLOW = 'build-package.yml'
@@ -17,7 +17,7 @@ REPOSITORY = publish.REPOSITORY
 
 
 def select(plan, name):
-    selected = [package for package in plan['packages'] if package['pkgbase'] == name and not package['reuse']]
+    selected = [package for package in plan['packages'] if package['pkgbase'] == name and not package.get('reuse', False)]
     if len(selected) != 1:
         raise ValueError('package is not a changed publication input')
     return {**plan, 'packages': selected}
@@ -29,19 +29,35 @@ def title(plan, name):
 
 def validate_run(record, plan, name):
     if (record['path'] != '.github/workflows/' + WORKFLOW
-            or record['head_sha'] != plan['head'] or record['head_branch'] != 'main'
+            or record['head_sha'] != plan.get('base', plan['head']) or record['head_branch'] != 'main'
             or record['event'] != 'workflow_dispatch' or record['display_title'] != title(plan, name)):
         raise ValueError('package workflow identity mismatch')
     if record['conclusion'] != 'success':
         raise ValueError('package workflow did not succeed: ' + name)
 
 
-def prepare(directory, name, parent, attempt):
+def prepare(directory, name, parent, attempt, kind='publication'):
     record = github_api.api(f'repos/{REPOSITORY}/actions/runs/{parent}')
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-    if (record['path'] != '.github/workflows/publish.yml' or record['head_sha'] != head
+    workflow = 'candidate.yml' if kind == 'candidate' else 'publish.yml'
+    if (record['path'] != '.github/workflows/' + workflow or record['head_sha'] != head
             or record['head_branch'] != 'main' or record['run_attempt'] != int(attempt)):
         raise ValueError('publication workflow identity mismatch')
+    if kind == 'candidate':
+        plan = update.load(directory / 'candidate.json')
+        if plan['base'] != head or plan['run_id'] != parent or plan['run_attempt'] != attempt:
+            raise ValueError('candidate plan identity mismatch')
+        selected = select(plan, name)
+        update.extract_tree(directory / 'bundle.tar', directory / 'frozen', {'recipes', 'bundle.json'})
+        bundle = update.load(directory / 'frozen/bundle.json')
+        if bundle['packages'] != plan['packages']:
+            raise ValueError('candidate bundle differs from plan')
+        target = directory / 'input'
+        target.mkdir()
+        package = selected['packages'][0]
+        recipes.copy_recipe(directory / 'frozen' / package['recipe_dir'], target / package['recipe_dir'])
+        (target / 'bundle.json').write_bytes(github_api.canonical({**bundle, 'packages': selected['packages']}))
+        return
     plan = json.loads((directory / 'publication-plan.json').read_text())['expected']
     if plan['head'] != head or plan['run_id'] != parent or plan['run_attempt'] != attempt:
         raise ValueError('publication plan identity mismatch')
@@ -64,12 +80,13 @@ def prepare(directory, name, parent, attempt):
         output.write('cache-key=' + input_prefix + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'] + '\n')
 
 
-def collect(directory, timeout=10800):
-    plan = json.loads((directory / 'publication-plan.json').read_text())['expected']
-    pending = {package['pkgbase'] for package in plan['packages'] if not package['reuse']}
+def collect(directory, timeout=10800, kind='publication'):
+    candidate = kind == 'candidate'
+    plan = update.load(directory / 'candidate.json') if candidate else json.loads((directory / 'publication-plan.json').read_text())['expected']
+    pending = {package['pkgbase'] for package in plan['packages'] if not package.get('reuse', False)}
     for name in sorted(pending):
         github_api.api(f'repos/{REPOSITORY}/actions/workflows/{WORKFLOW}/dispatches', 'POST', {
-            'ref': 'main', 'inputs': {'package': name, 'publication_run': plan['run_id'], 'publication_attempt': plan['run_attempt']}})
+            'ref': 'main', 'inputs': {'package': name, 'publication_run': plan['run_id'], 'publication_attempt': plan['run_attempt'], 'kind': kind}})
         print('Dispatched ' + title(plan, name), flush=True)
     output = directory / 'unsigned'
     output.mkdir()
@@ -79,7 +96,7 @@ def collect(directory, timeout=10800):
     while pending:
         if time.monotonic() >= deadline:
             raise TimeoutError('package workflows still pending: ' + ', '.join(sorted(pending)))
-        runs = github_api.api(f'repos/{REPOSITORY}/actions/workflows/{WORKFLOW}/runs?event=workflow_dispatch&head_sha={plan["head"]}&per_page=100')['workflow_runs']
+        runs = github_api.api(f'repos/{REPOSITORY}/actions/workflows/{WORKFLOW}/runs?event=workflow_dispatch&head_sha={plan["base"]}&per_page=100')['workflow_runs']
         for name in sorted(pending):
             matches = [record for record in runs if record['display_title'] == title(plan, name)]
             if len(matches) > 1:
@@ -98,9 +115,14 @@ def collect(directory, timeout=10800):
             subprocess.run(['gh', 'run', 'download', str(record['id']), '--repo', REPOSITORY, '--name', 'package-' + name, '--dir', str(artifact)], env=env, check=True)
             unpacked = directory / ('verified-' + name)
             publish.safe_extract(artifact / 'unsigned.tar', unpacked)
-            publish.validate_unsigned(unpacked, select(plan, name))
+            if candidate:
+                update.validate_build(select(plan, name), unpacked, report=False)
+            else:
+                publish.validate_unsigned(unpacked, select(plan, name))
             evidence['packages'].extend(json.loads((unpacked / 'native-evidence.json').read_text())['packages'])
-            for filename in publish.filenames(select(plan, name)['packages'][0]):
+            receipt = json.loads((unpacked / 'native-evidence.json').read_text())
+            filenames = [file['filename'] for package in receipt['packages'] for file in package['files']]
+            for filename in filenames:
                 if (output / filename).exists():
                     raise ValueError('duplicate package output')
                 shutil.copyfile(unpacked / filename, output / filename)
@@ -109,7 +131,10 @@ def collect(directory, timeout=10800):
     if failures:
         raise RuntimeError('Independent package builds failed: ' + ', '.join(failures))
     (output / 'native-evidence.json').write_bytes(github_api.canonical(evidence))
-    publish.validate_unsigned(output, plan)
+    if candidate:
+        update.validate_build(plan, output, report=False)
+    else:
+        publish.validate_unsigned(output, plan)
     with tarfile.open(directory / 'unsigned.tar', 'w') as archive:
         for path in sorted(output.iterdir()):
             archive.add(path, arcname=path.name, recursive=False)
@@ -122,11 +147,12 @@ def main():
     parser.add_argument('--package')
     parser.add_argument('--publication-run')
     parser.add_argument('--publication-attempt')
+    parser.add_argument('--kind', choices=('publication', 'candidate'), default='publication')
     args = parser.parse_args()
     if args.operation == 'prepare':
-        prepare(args.directory, args.package, args.publication_run, args.publication_attempt)
+        prepare(args.directory, args.package, args.publication_run, args.publication_attempt, args.kind)
     else:
-        collect(args.directory)
+        collect(args.directory, kind=args.kind)
 
 
 if __name__ == '__main__':

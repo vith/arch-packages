@@ -19,8 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      PROOF_WORK: /home/runner/.local/state/omp/work/consumers-${{ github.run_id }}-${{ github.run_attempt }}
-      TMPDIR: /home/runner/.local/state/omp/work/consumers-${{ github.run_id }}-${{ github.run_attempt }}/tmp
+      PROOF_WORK: /home/runner/.local/state/arch-packages/work/consumers-${{ github.run_id }}-${{ github.run_attempt }}
+      TMPDIR: /home/runner/.local/state/arch-packages/work/consumers-${{ github.run_id }}-${{ github.run_attempt }}/tmp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

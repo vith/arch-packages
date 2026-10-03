@@ -71,7 +71,7 @@ class HTTPFixture:
 
 class PublicationBoundaries(unittest.TestCase):
     def setUp(self):
-        scratch = Path.home() / '.local/state/omp/work'
+        scratch = Path.home() / '.local/state/arch-packages/work'
         scratch.mkdir(parents=True, exist_ok=True)
         self.work = tempfile.TemporaryDirectory(dir=scratch)
         self.root = Path(self.work.name)
@@ -135,6 +135,14 @@ class PublicationBoundaries(unittest.TestCase):
         with patch.object(publish,'latest_release',side_effect=[old,unrelated]), patch.object(publish.github_api,'api',side_effect=TimeoutError('lost')) as api, self.assertRaisesRegex(RuntimeError,'ambiguous'):
             publish.promote(target,old,{},self.root/'ring',self.root/'observed')
         self.assertEqual(api.call_count,1)
+
+    def test_promotion_waits_for_public_pointer_propagation(self):
+        old = {'id': 1, 'tag': 'snapshot-old'}
+        target = {'id': 2, 'tag': 'snapshot-new'}
+        catalog = {'snapshot': 'snapshot-new'}
+        with patch.object(publish, 'latest_release', side_effect=[old, old, target, target]), patch.object(publish.github_api, 'api'), patch.object(publish, 'verified_snapshot', return_value=catalog), patch.object(publish, 'latest_catalog', return_value=catalog), patch.object(publish.time, 'sleep') as sleep:
+            publish.promote(target, old, catalog, self.root / 'ring', self.root / 'observed')
+        sleep.assert_called_once_with(5)
 
     def test_changed_latest_prevents_any_promotion(self):
         with patch.object(publish,'latest_release',return_value={'id':3,'tag':'snapshot-unrelated'}), patch.object(publish.github_api,'api') as api, self.assertRaisesRegex(ValueError,'changed'):
@@ -235,10 +243,24 @@ class PublicationBoundaries(unittest.TestCase):
         with patch.object(publish,'ROOT',checkout), patch.object(publish,'harness_digest',return_value='b'*64):
             first = publish.expectations('a'*40,1,1,None,pins)
             self.assertEqual({p['pkgbase'] for p in first['packages'] if not p['reuse']},{'example'+str(i) for i in range(5)})
-            previous = {'recipes':{p['pkgbase']:{'input_digest':p['input_digest']} for p in first['packages']}}
+            previous = {'recipes':{p['pkgbase']:{'input_digest':p['input_digest'], 'content_digest':p['content_digest']} for p in first['packages']}}
             unchanged = publish.expectations('c'*40,2,1,previous,pins)
             self.assertTrue(all(p['reuse'] for p in unchanged['packages']))
             self.assertTrue(all(p['aur'] is None for p in unchanged['packages']))
+            with patch.object(publish, 'harness_digest', return_value='f'*64):
+                upgraded = publish.expectations('c'*40, 2, 1, previous, pins)
+            self.assertTrue(all(package['reuse'] for package in upgraded['packages']))
+            (checkout / 'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:' + 'f'*64)
+            upgraded_image = publish.expectations('c'*40, 2, 1, previous, pins)
+            self.assertTrue(all(package['reuse'] for package in upgraded_image['packages']))
+            legacy = {'accepted_sha': 'a'*40, 'recipes': {package['pkgbase']: {'input_digest': package['input_digest']} for package in first['packages']}}
+            def extract_previous(archive, destination):
+                destination.mkdir()
+                (destination / 'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:' + 'a'*64)
+            with patch.object(publish.github_api, 'download') as download, patch.object(publish, 'extract_tree', side_effect=extract_previous):
+                migrated = publish.expectations('c'*40, 2, 1, legacy, pins)
+            self.assertTrue(all(package['reuse'] for package in migrated['packages']))
+            download.assert_called_once()
             # An accepted local input byte changes without changing the package version.
             (checkout / 'recipes/example2/PKGBUILD').write_text('pkgname=example2\n# changed accepted payload\n')
             changed = publish.expectations('d'*40,3,1,previous,pins)

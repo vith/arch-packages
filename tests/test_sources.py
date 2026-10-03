@@ -9,7 +9,7 @@ from tools import sources
 
 class SourceContracts(unittest.TestCase):
     def setUp(self):
-        root=Path.home()/'.local/state/omp/work/arch-package-tests'
+        root=Path.home()/'.local/state/arch-packages/work/arch-package-tests'
         root.mkdir(parents=True,exist_ok=True)
         self.temp=tempfile.TemporaryDirectory(dir=root)
         self.addCleanup(self.temp.cleanup)

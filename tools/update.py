@@ -177,7 +177,7 @@ def affected_packages(base,head,policies):
             affected.add(Path(parts[1]).stem)
         else:
             shared=True
-    if shared:
+    if any(path == 'build-image.txt' or path == 'packages.json' or path == '.gitmodules' or path.startswith('tools/') for path in changed):
         affected=set(policies)
     return sorted(affected),shared
 
@@ -222,8 +222,6 @@ def prepare(number,output):
     names,shared=affected_packages(old,new,policies)
     names=sorted(set(names)|{name for name in policies if oldpins.get(name)!=newpins.get(name)})
     shared |= oldpins.keys()!=newpins.keys()
-    if not names:
-        raise ValueError('candidate has no affected package inputs')
     image=(old/'build-image.txt').read_text().strip()
     if not re.fullmatch(r'ghcr.io/archlinux/archlinux@sha256:[0-9a-f]{64}',image):
         raise ValueError('build image is not pinned official Arch')
@@ -391,7 +389,7 @@ def independent_transition(old,new,name,policy,work):
     return {'srcinfo':(new/'recipes'/name/'.SRCINFO').read_text(),'checksums':{s['id']:s['checksums'] for s in newlock['sources']},'source_templates_verified':True,'lock_verified':True,'auxiliary_inputs_verified':True,'authentic':authentic,'fast_forward':fast_forward}
 
 
-def validate_build(record,directory):
+def validate_build(record,directory,report=True):
     record=load(record) if not isinstance(record,dict) else record
     pr_identity(record['pr_number'],record['base'],record['head'])
     directory=Path(directory);evidence=load(directory/'native-evidence.json')
@@ -423,9 +421,10 @@ def validate_build(record,directory):
             path=directory/filename
             if not path.is_file() or path.is_symlink() or file['version']!=candidate['lock']['version'] or hashlib.sha256(path.read_bytes()).hexdigest()!=file['sha256']:
                 raise ValueError('native output bytes/version mismatch')
-    status(record['head'],'candidate-build','success','Every frozen package output verified')
-    if record['mechanical']:
-        status(record['head'],'recipe-policy','success','Independent mechanical source transition verified')
+    if report:
+        status(record['head'],'candidate-build','success','Every frozen package output verified')
+        if record['mechanical']:
+            status(record['head'],'recipe-policy','success','Independent mechanical source transition verified')
     return evidence
 
 
@@ -874,6 +873,9 @@ def discover(output):
 
 
 def dispatch(number):
+    candidate = api(route('/pulls/' + str(number)))
+    if candidate['head']['repo']['full_name'] == repository():
+        api(route('/actions/workflows/verification.yml/dispatches'), 'POST', {'ref': candidate['head']['ref']})
     api(route('/actions/workflows/candidate.yml/dispatches'),'POST',{'ref':'main','inputs':{'pr_number':str(number)}})
 
 

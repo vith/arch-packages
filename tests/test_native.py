@@ -10,7 +10,7 @@ from tools.native import cache_environment, contained, dependency_names, parse_p
 
 class PackageMetadataTests(unittest.TestCase):
     def test_restored_cache_survives_next_build_setup(self):
-        state = Path.home() / '.local/state/omp/work/native-test'
+        state = Path.home() / '.local/state/arch-packages/work/native-test'
         state.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=state) as directory, patch('tools.native.os.chown') as chown:
             root = Path(directory)
@@ -23,7 +23,7 @@ class PackageMetadataTests(unittest.TestCase):
                 self.assertFalse(call.kwargs['follow_symlinks'])
 
     def test_cache_cannot_redirect_writable_roots(self):
-        state = Path.home() / '.local/state/omp/work/native-test'
+        state = Path.home() / '.local/state/arch-packages/work/native-test'
         state.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=state) as directory, patch('tools.native.os.chown') as chown:
             root = Path(directory)
@@ -89,7 +89,7 @@ depends = bash
                 dependency_names(text.replace('go>=1.26.2', invalid))
 
     def test_invalid_harness_or_commit_identity_rejected(self):
-        state = Path.home() / '.local/state/omp/work/native-test'
+        state = Path.home() / '.local/state/arch-packages/work/native-test'
         state.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=state) as directory:
             root = Path(directory)
@@ -124,7 +124,7 @@ depends = bash
                     validate_bundle(path)
 
     def test_input_path_does_not_escape_artifact(self):
-        state = Path.home() / '.local/state/omp/work/native-test'
+        state = Path.home() / '.local/state/arch-packages/work/native-test'
         state.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=state) as directory:
             root = Path(directory)

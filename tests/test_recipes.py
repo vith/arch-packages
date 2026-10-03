@@ -11,7 +11,7 @@ from tools.recipe_gate import tree_manifest
 
 class ImmutableRecipeTests(unittest.TestCase):
     def setUp(self):
-        work = Path.home() / '.local/state/omp/work/recipe-gitlink-tests'
+        work = Path.home() / '.local/state/arch-packages/work/recipe-gitlink-tests'
         work.mkdir(parents=True, exist_ok=True)
         self.session = tempfile.TemporaryDirectory(dir=work)
         self.addCleanup(self.session.cleanup)
