@@ -75,6 +75,10 @@ def tree_manifest(directory):
     result = []
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root).as_posix()
+        if relative == ".git" and path.is_file() and not path.is_symlink():
+            if path.stat().st_size <= 16384 and path.read_bytes().startswith(b"gitdir: "):
+                continue
+            raise ValueError("invalid recipe Git administration marker")
         if any(part in (".", "..", ".git") for part in Path(relative).parts):
             raise ValueError("invalid recipe path")
         info = path.lstat()

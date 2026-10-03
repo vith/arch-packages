@@ -5,13 +5,25 @@ on:
   workflow_dispatch:
     inputs:
       accepted_sha:
-        description: Exact accepted main SHA
-        required: true
+        description: Exact accepted main SHA (publish only)
+        required: false
         type: string
-      bootstrap:
-        description: First snapshot only; skip Worker activation
-        default: false
-        type: boolean
+      operation:
+        description: Publish accepted main or explicitly restore a retained snapshot
+        default: publish
+        type: choice
+        options: [publish, rollback]
+      target_tag:
+        description: Retained snapshot tag for rollback
+        type: string
+      expected_tag:
+        description: Expected current latest snapshot tag for rollback
+        type: string
+      expected_release_id:
+        description: Expected current latest release ID for rollback
+        type: string
+env:
+  TMPDIR: /home/runner/.local/state/omp/work/tmp-${{ github.run_id }}-${{ github.run_attempt }}
 permissions:
   contents: read
 concurrency:
@@ -19,20 +31,19 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.operation != 'rollback'
     runs-on: ubuntu-latest
     outputs:
       accepted_sha: ${{ steps.target.outputs.sha }}
-      bootstrap: ${{ steps.target.outputs.bootstrap }}
     steps:
       - name: Resolve exact accepted target
         id: target
         env:
           REQUESTED_SHA: ${{ inputs.accepted_sha }}
           EVENT_SHA: ${{ github.sha }}
-          BOOTSTRAP: ${{ inputs.bootstrap || false }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          mkdir -p "$TMPDIR"
           python3 - <<'PY'
           import json, os, re, urllib.request
           sha = os.environ['REQUESTED_SHA'] or os.environ['EVENT_SHA']
@@ -41,7 +52,7 @@ jobs:
           with urllib.request.urlopen(request, timeout=90) as response:
               if json.load(response)['object']['sha'] != sha: raise ValueError('target is not current trusted main')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('sha=' + sha + '\nbootstrap=' + os.environ['BOOTSTRAP'] + '\n')
+              output.write('sha=' + sha + '\n')
           PY
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -53,16 +64,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           ACCEPTED_SHA: ${{ steps.target.outputs.sha }}
-          BOOTSTRAP: ${{ steps.target.outputs.bootstrap }}
         run: |
-          args=()
-          if [[ "$BOOTSTRAP" == true ]]; then args+=(--bootstrap); fi
-          python3 tools/publish.py plan --accepted-sha "$ACCEPTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --output-dir "$RUNNER_TEMP/publication" "${args[@]}"
+          mkdir -p "$HOME/.local/state/omp/work"
+          python3 tools/publish.py plan --accepted-sha "$ACCEPTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --output-dir "$HOME/.local/state/omp/work/publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Build changed immutable inputs without credentials
         run: |
           python3 - <<'PY'
           import json, os, pathlib, subprocess
-          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'publication'
+          root = pathlib.Path.home() / '.local/state/omp/work' / ('publication-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
           bundle = json.loads((root / 'bundle/bundle.json').read_text())
           output = root / 'unsigned'
           if bundle['packages']:
@@ -75,7 +84,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import os, pathlib, tarfile
-          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'publication'
+          root = pathlib.Path.home() / '.local/state/omp/work' / ('publication-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
           with tarfile.open(root / 'unsigned.tar', 'w') as archive:
               for path in sorted((root / 'unsigned').iterdir()): archive.add(path, arcname=path.name, recursive=False)
           PY
@@ -83,10 +92,39 @@ jobs:
         with:
           name: unsigned-publication-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/publication/unsigned.tar
-            ${{ runner.temp }}/publication/publication-plan.json
+            ~/.local/state/omp/work/publication-${{ github.run_id }}-${{ github.run_attempt }}/unsigned.tar
+            ~/.local/state/omp/work/publication-${{ github.run_id }}-${{ github.run_attempt }}/publication-plan.json
           if-no-files-found: error
           retention-days: 7
+  rollback:
+    if: github.ref == 'refs/heads/main' && inputs.operation == 'rollback'
+    runs-on: ubuntu-latest
+    environment: publish
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Install trusted public verification tools
+        run: mkdir -p "$TMPDIR" && sudo apt-get update && sudo apt-get install -y gnupg libarchive-tools
+      - name: Independently verify retained snapshot and explicitly promote
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_TAG: ${{ inputs.target_tag }}
+          EXPECTED_TAG: ${{ inputs.expected_tag }}
+          EXPECTED_RELEASE_ID: ${{ inputs.expected_release_id }}
+        run: |
+          mkdir -p "$HOME/.local/state/omp/work"
+          python3 tools/publish.py rollback --target-tag "$TARGET_TAG" --expected-tag "$EXPECTED_TAG" --expected-release-id "$EXPECTED_RELEASE_ID" --work-dir "$HOME/.local/state/omp/work/rollback-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - name: Record rollback receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rollback-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ~/.local/state/omp/work/rollback-${{ github.run_id }}-${{ github.run_attempt }}/publication-result.json
+          if-no-files-found: warn
   publish:
     needs: build
     runs-on: ubuntu-latest
@@ -100,6 +138,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           ACCEPTED_SHA: ${{ needs.build.outputs.accepted_sha }}
         run: |
+          mkdir -p "$TMPDIR"
           python3 - <<'PY'
           import json, os, re, urllib.request
           sha = os.environ['ACCEPTED_SHA']
@@ -117,24 +156,20 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: unsigned-publication-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/publication-input
+          path: ~/.local/state/omp/work/publication-input-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Validate sign release readback then activate
         env:
           GITHUB_TOKEN: ${{ github.token }}
           ARCH_SIGNING_KEY: ${{ secrets.ARCH_SIGNING_KEY }}
           ARCH_SIGNING_PASSPHRASE: ${{ secrets.ARCH_SIGNING_PASSPHRASE }}
           ARCH_SIGNING_FINGERPRINT: ${{ vars.ARCH_SIGNING_FINGERPRINT }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           ACCEPTED_SHA: ${{ needs.build.outputs.accepted_sha }}
-          BOOTSTRAP: ${{ needs.build.outputs.bootstrap }}
         run: |
-          args=()
-          if [[ "$BOOTSTRAP" == true ]]; then args+=(--bootstrap); fi
-          python3 tools/publish.py publish --accepted-sha "$ACCEPTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --plan "$RUNNER_TEMP/publication-input/publication-plan.json" --artifact "$RUNNER_TEMP/publication-input/unsigned.tar" --work-dir "$RUNNER_TEMP/signed-publication" "${args[@]}"
+          python3 tools/publish.py publish --accepted-sha "$ACCEPTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --plan "$HOME/.local/state/omp/work/publication-input-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/publication-plan.json" --artifact "$HOME/.local/state/omp/work/publication-input-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/unsigned.tar" --work-dir "$HOME/.local/state/omp/work/signed-publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Record public verification and rollback evidence
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: publication-receipt-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/signed-publication/publication-result.json
+          path: ~/.local/state/omp/work/signed-publication-${{ github.run_id }}-${{ github.run_attempt }}/publication-result.json
           if-no-files-found: error

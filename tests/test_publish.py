@@ -11,7 +11,7 @@ import unittest
 import urllib.request
 from unittest.mock import patch
 
-from tools import publish, cloudflare
+from tools import publish
 
 
 class HTTPFixture:
@@ -24,9 +24,7 @@ class HTTPFixture:
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
             def do_GET(self):
-                if self.path.endswith('/deployments'):
-                    self.respond({'success':True,'result':[{'versions':[{'version_id':owner.version,'percentage':100}]}]})
-                elif self.path == '/assets':
+                if self.path == '/assets':
                     self.respond([{'name':name} for name in owner.assets if name != owner.omit])
                 else:
                     name = self.path.rsplit('/',1)[-1]
@@ -36,16 +34,16 @@ class HTTPFixture:
                     self.send_response(200); self.end_headers(); self.wfile.write(body)
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get('Content-Length','0')))
-                if self.path.endswith('/deployments'):
-                    owner.version = json.loads(body)['versions'][0]['version_id']
-                    self.respond({'success':True,'result':{}})
-                elif self.path == '/release':
+                if self.path == '/release':
                     owner.draft = True; self.respond({'id':1})
                 else:
                     name = self.path.rsplit('/',1)[-1]
                     owner.assets[name] = body; self.respond({'name':name})
             def do_PATCH(self):
-                owner.draft = json.loads(self.rfile.read(int(self.headers['Content-Length'])))['draft']
+                payload = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                owner.draft = payload.get('draft', owner.draft)
+                if not owner.draft and payload.get('make_latest') != 'false':
+                    owner.version = 'new-version'
                 self.respond({'id':1})
             def respond(self, value):
                 self.send_response(200); self.end_headers(); self.wfile.write(json.dumps(value).encode())
@@ -73,7 +71,9 @@ class HTTPFixture:
 
 class PublicationBoundaries(unittest.TestCase):
     def setUp(self):
-        self.work = tempfile.TemporaryDirectory(dir=Path.cwd())
+        scratch = Path.home() / '.local/state/omp/work'
+        scratch.mkdir(parents=True, exist_ok=True)
+        self.work = tempfile.TemporaryDirectory(dir=scratch)
         self.root = Path(self.work.name)
         self.http = HTTPFixture()
     def tearDown(self):
@@ -88,12 +88,20 @@ class PublicationBoundaries(unittest.TestCase):
             self.upload({'package','signature'})
         self.assertTrue(self.http.draft)
         self.assertEqual(self.http.version,'old-version')
+    def test_complete_uploaded_release_is_public_but_not_latest(self):
+        for name in ('package','signature'):
+            (self.root/name).write_bytes(name.encode())
+        self.upload({'package','signature'})
+        self.assertFalse(self.http.draft)
+        self.assertEqual(self.http.version,'old-version')
+        self.assertEqual(self.http.assets,{'package':b'package','signature':b'signature'})
+
     def readback_fixture(self):
         assets = self.root/'assets'; assets.mkdir()
         bodies = {'example-1-1-any.pkg.tar.zst':b'package bytes','example-1-1-any.pkg.tar.zst.sig':b'signature bytes','catalog.json':b'catalog','catalog.json.sig':b'catalog signature'}
         for name, body in bodies.items(): (assets/name).write_bytes(body)
         self.http.assets.update(bodies); self.http.draft=False
-        catalog = {'snapshot':'snapshot-fixture','files':{n:{'url':cloudflare.release_url(publish.REPOSITORY,'snapshot-fixture',n),'sha256':hashlib.sha256(b).hexdigest()} for n,b in bodies.items() if not n.startswith('catalog.')},'source_assets':{}}
+        catalog = {'snapshot':'snapshot-fixture','files':{n:{'url':publish.release_url(publish.REPOSITORY,'snapshot-fixture',n),'sha256':hashlib.sha256(b).hexdigest()} for n,b in bodies.items() if not n.startswith('catalog.')},'source_assets':{}}
         return assets,catalog
     def test_anonymous_readback_hash_failure_prevents_activation(self):
         assets,catalog=self.readback_fixture()
@@ -108,16 +116,75 @@ class PublicationBoundaries(unittest.TestCase):
             publish.public_readback(catalog,assets,self.root/'readback',self.root/'ring')
         self.assertEqual(self.http.version,'old-version')
     def test_activation_lost_response_reconciles_without_rollback(self):
-        client=cloudflare.Cloudflare('a'*32,'fixture-token',base=self.http.base)
-        request = client.request
-        def lost_response(path, method='GET', data=None, content_type='application/json'):
-            result = request(path, method, data, content_type)
-            if method == 'POST':
-                raise TimeoutError('activation response lost after server committed')
-            return result
-        with patch.object(client, 'request', side_effect=lost_response):
-            self.assertEqual(client.activate('new-version'),'new-version')
-        self.assertEqual(self.http.version,'new-version')
+        old = {'id':1,'tag':'snapshot-old'}
+        target = {'id':2,'tag':'snapshot-new'}
+        catalog = {'snapshot':'snapshot-new'}
+        state = [old]
+        def lost_response(*args, **kwargs):
+            state[0] = target
+            raise TimeoutError('response lost after commit')
+        with patch.object(publish,'latest_release',side_effect=lambda:state[0]), patch.object(publish.github_api,'api',side_effect=lost_response) as api, patch.object(publish,'verified_snapshot',return_value=catalog), patch.object(publish,'latest_catalog',return_value=catalog):
+            publish.promote(target,old,catalog,self.root/'ring',self.root/'observed')
+        self.assertEqual(state[0],target)
+        self.assertEqual(api.call_count,1)
+
+    def test_failed_activation_never_rolls_back_unrelated_latest(self):
+        old = {'id':1,'tag':'snapshot-old'}
+        target = {'id':2,'tag':'snapshot-new'}
+        unrelated = {'id':3,'tag':'snapshot-unrelated'}
+        with patch.object(publish,'latest_release',side_effect=[old,unrelated]), patch.object(publish.github_api,'api',side_effect=TimeoutError('lost')) as api, self.assertRaisesRegex(RuntimeError,'ambiguous'):
+            publish.promote(target,old,{},self.root/'ring',self.root/'observed')
+        self.assertEqual(api.call_count,1)
+
+    def test_changed_latest_prevents_any_promotion(self):
+        with patch.object(publish,'latest_release',return_value={'id':3,'tag':'snapshot-unrelated'}), patch.object(publish.github_api,'api') as api, self.assertRaisesRegex(ValueError,'changed'):
+            publish.promote({'id':2,'tag':'snapshot-new'},{'id':1,'tag':'snapshot-old'},{},self.root/'ring',self.root/'observed')
+        api.assert_not_called()
+
+    def test_rollback_rejects_invalid_retained_signatures_before_promotion(self):
+        from types import SimpleNamespace
+        old = {'id':1,'tag':'snapshot-old'}
+        target = {'id':2,'tag':'snapshot-target'}
+        active = {'retained_snapshots':{'snapshot-target':{'files':{}}}}
+        args = SimpleNamespace(work_dir=self.root/'rollback',expected_release_id=1,expected_tag='snapshot-old',target_tag='snapshot-target')
+        with patch.object(publish,'current_main'), patch.object(publish,'run',return_value=b'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), patch.object(publish,'keyring',return_value=self.root/'ring'), patch.object(publish,'latest_release',return_value=old), patch.object(publish,'verified_snapshot',side_effect=[active,ValueError('invalid signature')]), patch.object(publish.github_api,'api',return_value={'id':2,'tag_name':target['tag'],'draft':False,'prerelease':False}), patch.object(publish,'promote') as promote, self.assertRaisesRegex(ValueError,'invalid signature'):
+            publish.rollback(args)
+        promote.assert_not_called()
+
+    def test_rollback_promotes_only_verified_matching_retained_catalog(self):
+        from types import SimpleNamespace
+        old = {'id':1,'tag':'snapshot-old'}
+        target = {'id':2,'tag':'snapshot-target'}
+        files = {'package':{'sha256':'a'*64}}
+        catalog = {'files':files}
+        active = {'retained_snapshots':{'snapshot-target':{'files':files}}}
+        args = SimpleNamespace(work_dir=self.root/'rollback',expected_release_id=1,expected_tag='snapshot-old',target_tag='snapshot-target')
+        with patch.object(publish,'current_main'), patch.object(publish,'run',return_value=b'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), patch.object(publish,'keyring',return_value=self.root/'ring'), patch.object(publish,'latest_release',return_value=old), patch.object(publish,'verified_snapshot',side_effect=[active,catalog]), patch.object(publish.github_api,'api',return_value={'id':2,'tag_name':target['tag'],'draft':False,'prerelease':False}), patch.object(publish,'promote') as promote:
+            result = publish.rollback(args)
+        self.assertEqual(result['activated_release'],target)
+        self.assertEqual(result['previous_release'],old)
+        self.assertEqual(promote.call_args.args[:3],(target,old,catalog))
+
+    def test_observed_signed_latest_catalog_mismatch_fails_without_rollback(self):
+        old = {'id':1,'tag':'snapshot-old'}
+        target = {'id':2,'tag':'snapshot-new'}
+        catalog = {'snapshot':'snapshot-new'}
+        with patch.object(publish,'latest_release',side_effect=[old,target,target]), patch.object(publish.github_api,'api') as api, patch.object(publish,'verified_snapshot',return_value=catalog), patch.object(publish,'latest_catalog',return_value={'snapshot':'snapshot-other'}), self.assertRaisesRegex(ValueError,'active catalog'):
+            publish.promote(target,old,catalog,self.root/'ring',self.root/'observed')
+        self.assertEqual(api.call_count,1)
+
+    def test_complete_catalog_requires_exact_pacman_aliases_and_canonical_archives(self):
+        files = {name:{'url':publish.release_url(publish.REPOSITORY,'snapshot-fixture',name),'sha256':'a'*64} for name in publish.DATABASES}
+        for name in ('example-1-1-any.pkg.tar.zst','example-1-1-any.pkg.tar.zst.sig'):
+            files[name] = {'url':publish.release_url(publish.REPOSITORY,'snapshot-fixture',name),'sha256':'b'*64}
+        catalog = {'schema':1,'repository':publish.REPOSITORY,'snapshot':'snapshot-fixture','accepted_sha':'a'*40,'key_fingerprint':'A'*40,'recipes':{'example':{'recipe_commit':'e'*40}},'files':files,'source_assets':{},'retained_packages':{},'retained_snapshots':{}}
+        publish.validate_catalog(catalog,publish.REPOSITORY,'A'*40)
+        for name in publish.DATABASES:
+            broken = copy.deepcopy(catalog)
+            del broken['files'][name]
+            with self.subTest(asset=name), self.assertRaisesRegex(ValueError,'Incomplete database'):
+                publish.validate_catalog(broken,publish.REPOSITORY,'A'*40)
+
     def test_stale_main_is_rejected_before_checkout_or_activation(self):
         with patch.object(publish.github_api,'api',return_value={'object':{'sha':'b'*40}}), self.assertRaisesRegex(ValueError,'stale'):
             publish.current_main('a'*40)
@@ -164,36 +231,37 @@ class PublicationBoundaries(unittest.TestCase):
             (checkout / 'upstream' / (name+'.json')).write_text(json.dumps({'aur':None}))
             policies.append({'pkgbase':name,'outputs':[{'name':name,'arch':'any'}]})
         (checkout / 'packages.json').write_text(json.dumps({'schema':1,'packages':policies}))
+        pins = {p['pkgbase']:'e'*40 for p in policies}
         with patch.object(publish,'ROOT',checkout), patch.object(publish,'harness_digest',return_value='b'*64):
-            first = publish.expectations('a'*40,1,1,None)
+            first = publish.expectations('a'*40,1,1,None,pins)
             self.assertEqual({p['pkgbase'] for p in first['packages'] if not p['reuse']},{'example'+str(i) for i in range(5)})
             previous = {'recipes':{p['pkgbase']:{'input_digest':p['input_digest']} for p in first['packages']}}
-            unchanged = publish.expectations('c'*40,2,1,previous)
+            unchanged = publish.expectations('c'*40,2,1,previous,pins)
             self.assertTrue(all(p['reuse'] for p in unchanged['packages']))
             self.assertTrue(all(p['aur'] is None for p in unchanged['packages']))
             # An accepted local input byte changes without changing the package version.
             (checkout / 'recipes/example2/PKGBUILD').write_text('pkgname=example2\n# changed accepted payload\n')
-            changed = publish.expectations('d'*40,3,1,previous)
+            changed = publish.expectations('d'*40,3,1,previous,pins)
             self.assertEqual([p['pkgbase'] for p in changed['packages'] if not p['reuse']],['example2'])
             from tools.sources import FIELDS
             source = {field:None for field in FIELDS}
             source.update({'id':'local-payload','kind':'local','source':'PKGBUILD','checksums':{'sha256':'f'*64}})
             (checkout / 'inputs/example3.json').write_text(json.dumps({'schema':1,'version':'1-1','sources':[source]}))
-            source_changed = publish.expectations('d'*40,3,1,previous)
+            source_changed = publish.expectations('d'*40,3,1,previous,pins)
             self.assertEqual([p['pkgbase'] for p in source_changed['packages'] if not p['reuse']],['example2','example3'])
             upstream = checkout / 'upstream/example1.json'
             upstream.write_text(json.dumps({'aur':{'url':'https://github.com/archlinux/aur.git','commit':'e'*40}}))
-            with_aur = publish.expectations('d'*40,3,1,previous)
+            with_aur = publish.expectations('d'*40,3,1,previous,pins)
             self.assertEqual(with_aur['packages'][1]['aur']['commit'],'e'*40)
     def test_receipt_hash_and_run_identity_are_not_authority(self):
         output = self.root / 'unsigned'; output.mkdir()
         metadata = publish.parse_srcinfo('pkgbase = example\n\tpkgver = 1\n\tpkgrel = 1\n\tarch = any\npkgname = example\n')
         text = 'pkgbase = example\n\tpkgver = 1\n\tpkgrel = 1\n\tarch = any\npkgname = example\n'
-        package = {'pkgbase':'example','lock':{'version':'1-1','sources':[]},'input_digest':'a'*64,'tree_sha':'b'*64,'metadata':metadata,'reuse':False,'policy':{'outputs':[{'name':'example','arch':'any'}]}}
-        plan = {'schema':1,'repository':publish.REPOSITORY,'base':'a'*40,'head':'a'*40,'run_id':'1','run_attempt':'1','image':'image','harness_sha':'c'*64,'packages':[package]}
+        package = {'recipe_commit':'e'*40,'pkgbase':'example','lock':{'version':'1-1','sources':[]},'input_digest':'a'*64,'tree_sha':'b'*64,'metadata':metadata,'reuse':False,'policy':{'outputs':[{'name':'example','arch':'any'}]}}
+        plan = {'recipe_pins':{'example':'e'*40},'schema':1,'repository':publish.REPOSITORY,'base':'a'*40,'head':'a'*40,'run_id':'1','run_attempt':'1','image':'image','harness_sha':'c'*64,'packages':[package]}
         filename = 'example-1-1-any.pkg.tar.zst'
         (output / filename).write_bytes(b'original bytes')
-        receipt = {'pkgbase':'example','source_lock':package['lock'],'input_digest':package['input_digest'],'tree_sha':package['tree_sha'],'metadata':metadata | {'srcinfo':text},**{k:plan[k] for k in ('run_id','run_attempt','image','harness_sha')},'files':[{'filename':filename,'sha256':publish.sha(output/filename),'name':'example','version':'1-1','arch':'any'}]}
+        receipt = {'recipe_commit':'e'*40,'pkgbase':'example','source_lock':package['lock'],'input_digest':package['input_digest'],'tree_sha':package['tree_sha'],'metadata':metadata | {'srcinfo':text},**{k:plan[k] for k in ('run_id','run_attempt','image','harness_sha')},'files':[{'filename':filename,'sha256':publish.sha(output/filename),'name':'example','version':'1-1','arch':'any'}]}
         evidence = {k:v for k,v in plan.items() if k != 'packages'} | {'packages':[receipt]}
         evidence_path = output / 'native-evidence.json'
         info = {'pkgname':'example','pkgver':'1-1','arch':'any'}

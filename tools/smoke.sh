@@ -51,8 +51,8 @@ actual=$(gpg --batch --homedir /fresh/gnupg --with-colons --import-options show-
 [[ $expected =~ ^[A-Fa-f0-9]{40}$ && ${actual^^} == ${expected^^} ]] || { echo 'repository public key fingerprint mismatch' >&2; exit 1; }
 pacman-key --gpgdir /fresh/gnupg --add /key.asc
 pacman-key --gpgdir /fresh/gnupg --lsign-key "$expected"
-server=https://arch.packages.n3t.work/repo
-[[ -z $snapshot ]] || server="https://arch.packages.n3t.work/snapshots/$snapshot"
+server=https://github.com/vith/arch-packages/releases/latest/download
+[[ -z $snapshot ]] || server="https://github.com/vith/arch-packages/releases/download/$snapshot"
 cat >/fresh/pacman.conf <<EOF
 [options]
 RootDir = /fresh/root

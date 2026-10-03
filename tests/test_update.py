@@ -1,6 +1,8 @@
 import hashlib
 import io
 import json
+import os
+import shutil
 from pathlib import Path
 import tarfile
 import tempfile
@@ -108,13 +110,87 @@ class CandidateBoundaries(unittest.TestCase):
             update.pr_identity(1,'a'*40,'b'*40)
 
     def record(self):
-        package={'pkgbase':'example','input_digest':'d'*64,'lock':{'schema':1,'version':'1.0-1','sources':[]},'expected_srcinfo':SRCINFO,'policy':{'outputs':[{'name':'example','arch':'x86_64'}]}}
-        record={'schema':1,'repository':'owner/repo','base':'a'*40,'head':'b'*40,'run_id':'1','run_attempt':'1','image':'arch@sha256:'+'c'*64,'harness_sha':'e'*64,'pr_number':1,'mechanical':True,'packages':[package]}
+        package={'pkgbase':'example','recipe_commit':'1'*40,'input_digest':'d'*64,'lock':{'schema':1,'version':'1.0-1','sources':[]},'expected_srcinfo':SRCINFO,'policy':{'outputs':[{'name':'example','arch':'x86_64'}]}}
+        record={'schema':1,'repository':'owner/repo','base':'a'*40,'head':'b'*40,'recipe_pins':{'example':'1'*40},'previous_recipe_pins':{'example':'2'*40},'run_id':'1','run_attempt':'1','image':'arch@sha256:'+'c'*64,'harness_sha':'e'*64,'pr_number':1,'mechanical':True,'packages':[package]}
         path=self.root/'example.pkg.tar.zst';path.write_bytes(b'package bytes')
-        evidence={k:record[k] for k in ('schema','repository','base','head','run_id','run_attempt','image','harness_sha')}
-        evidence['packages']=[{'pkgbase':'example','input_digest':package['input_digest'],'source_lock':package['lock'],'metadata':{'srcinfo':SRCINFO},'files':[{'filename':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'name':'example','version':'1.0-1','arch':'x86_64'}]}]
+        evidence={k:record[k] for k in ('schema','repository','base','head','recipe_pins','previous_recipe_pins','run_id','run_attempt','image','harness_sha')}
+        evidence['packages']=[{'pkgbase':'example','recipe_commit':package['recipe_commit'],'input_digest':package['input_digest'],'source_lock':package['lock'],'metadata':{'srcinfo':SRCINFO},'files':[{'filename':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'name':'example','version':'1.0-1','arch':'x86_64'}]}]
         update.dump(self.root/'native-evidence.json',evidence)
         return record,evidence,path
+
+    def test_native_receipt_rejects_changed_recipe_pin_before_status(self):
+        record,evidence,path=self.record()
+        evidence['packages'][0]['recipe_commit']='9'*40
+        update.dump(self.root/'native-evidence.json',evidence)
+        with patch.object(update,'pr_identity'),patch.object(update,'status') as status,self.assertRaisesRegex(ValueError,'frozen input'):
+            update.validate_build(record,self.root)
+        status.assert_not_called()
+        evidence['packages'][0]['recipe_commit']=record['packages'][0]['recipe_commit']
+        evidence['recipe_pins']={'example':'9'*40}
+        update.dump(self.root/'native-evidence.json',evidence)
+        with patch.object(update,'pr_identity'),patch.object(update,'status') as status,self.assertRaisesRegex(ValueError,'recipe_pins'):
+            update.validate_build(record,self.root)
+        status.assert_not_called()
+
+    def test_affected_manifest_includes_hidden_content_modes_and_symlink_targets(self):
+        old=self.root/'old';new=self.root/'new'
+        for root in (old,new):
+            recipe=root/'recipes/example';recipe.mkdir(parents=True)
+            (recipe/'PKGBUILD').write_text('accepted code')
+            (recipe/'.hidden').write_text('retained')
+            (recipe/'other').write_text('retained')
+            (recipe/'link').symlink_to('.hidden')
+        for mutation in ('hidden','mode','link','code'):
+            with self.subTest(mutation=mutation):
+                recipe=new/'recipes/example'
+                (recipe/'.hidden').write_text('changed' if mutation=='hidden' else 'retained')
+                (recipe/'PKGBUILD').write_text('new code' if mutation=='code' else 'accepted code')
+                (recipe/'PKGBUILD').chmod(0o755 if mutation=='mode' else 0o644)
+                (recipe/'link').unlink();(recipe/'link').symlink_to('other' if mutation=='link' else '.hidden')
+                self.assertEqual(update.affected_packages(old,new,{'example':{}}),(['example'],False))
+        (new/'.gitmodules').write_text('untrusted URL')
+        self.assertEqual(update.affected_packages(old,new,{'example':{},'second':{}}),(['example','second'],True))
+
+    def test_prepare_classifies_full_pinned_recipe_and_history_not_opaque_sha(self):
+        policy={'pkgbase':'example','sources':[],'automatic':{'version':{'assignment':'pkgver'},'pkgrel':{'assignment':'pkgrel'},'checksums':[]}}
+        for mutation in ('version','code','hidden','mode','rewrite','modules'):
+            with self.subTest(mutation=mutation):
+                fixture=self.root/mutation
+                for label,version in [('old','1.0'),('new','1.1')]:
+                    root=fixture/label;recipe=root/'recipes/example';recipe.mkdir(parents=True)
+                    (root/'packages.json').write_text(json.dumps({'schema':1,'packages':[policy]}))
+                    (root/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:'+'a'*64)
+                    (root/'.gitmodules').write_text('enrolled modules')
+                    (root/'inputs').mkdir()
+                    (root/'inputs/example.json').write_text(json.dumps({'schema':1,'version':version+'-1','sources':[]}))
+                    (recipe/'PKGBUILD').write_text(f'pkgver={version}\npkgrel=1\npackage() {{ echo accepted; }}\n')
+                    (recipe/'.SRCINFO').write_text(SRCINFO.replace('1.0',version))
+                    (recipe/'.payload').write_text('retained patch')
+                recipe=fixture/'new/recipes/example'
+                if mutation=='code':
+                    (recipe/'PKGBUILD').write_text((recipe/'PKGBUILD').read_text().replace('echo accepted','echo malicious'))
+                elif mutation=='hidden':
+                    (recipe/'.payload').write_text('changed patch')
+                elif mutation=='mode':
+                    (recipe/'PKGBUILD').chmod(0o755)
+                elif mutation=='modules':
+                    (fixture/'new/.gitmodules').write_text('changed candidate URL')
+                def checkout(sha,destination,pins):
+                    pins.update(example=('1' if sha=='a'*40 else '2')*40)
+                    return Path(shutil.copytree(fixture/('old' if sha=='a'*40 else 'new'),destination))
+                evidence={'srcinfo':(recipe/'.SRCINFO').read_text(),'checksums':{},'source_templates_verified':True,'lock_verified':True,'auxiliary_inputs_verified':True,'authentic':True,'fast_forward':True}
+                with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'},clear=True),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'independent_transition',return_value=evidence),patch.object(update.recipes,'is_ancestor',return_value=mutation!='rewrite'),patch('tools.recipe_gate._compare',return_value=1),patch.object(update,'status'):
+                    record=update.prepare(1,fixture/'prepared')
+                self.assertEqual(record['mechanical'],mutation=='version')
+                self.assertEqual(record['packages'][0]['recipe_commit'],'2'*40)
+                self.assertEqual(record['packages'][0]['previous_recipe_commit'],'1'*40)
+                if mutation not in {'version','modules'}:
+                    self.assertNotEqual(record['decisions'][0]['decision'],'mechanical')
+
+    def test_pin_lookup_rejects_flattened_or_wrong_gitlink(self):
+        for mode,kind,sha in [('100644','blob','1'*40),('040000','tree','1'*40),('160000','commit','not-a-sha')]:
+            with self.subTest(mode=mode,sha=sha),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'api',side_effect=[{'tree':{'sha':'a'*40}},{'tree':[{'path':'recipes/example','mode':mode,'type':kind,'sha':sha}]}]),self.assertRaisesRegex(ValueError,'gitlink'):
+                update.pin_at('b'*40,'example')
 
     def test_full_outputs_required_before_any_success_status(self):
         record,evidence,path=self.record()
@@ -132,6 +208,15 @@ class CandidateBoundaries(unittest.TestCase):
         path.write_bytes(b'package bytes');evidence['packages'][0]['metadata']['srcinfo']=SRCINFO.replace('1.0','2.0');update.dump(self.root/'native-evidence.json',evidence)
         with patch.object(update,'pr_identity'),patch.object(update,'status'),self.assertRaisesRegex(ValueError,'metadata'):
             update.validate_build(record,self.root)
+
+    def test_stale_head_after_human_approval_cannot_finalize(self):
+        record,evidence,path=self.record();record['mechanical']=False
+        update.dump(self.root/'candidate.json',record)
+        pr={'state':'open','base':{'ref':'main','sha':record['base'],'repo':{'full_name':'owner/repo'}},'head':{'sha':'c'*40}}
+        with patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'main_sha',return_value=record['base']),patch.object(update,'api',return_value=pr) as api,patch.object(update,'status') as status,self.assertRaisesRegex(ValueError,'changed'):
+            update.finalize(1,record['base'],record['head'],self.root/'candidate.json',self.root)
+        status.assert_not_called()
+        self.assertTrue(all(call.args[1:] == () for call in api.call_args_list))
 
     def test_human_candidate_never_auto_merges(self):
         record,evidence,path=self.record();record['mechanical']=False

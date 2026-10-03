@@ -71,11 +71,20 @@ depends = bash
                 'harness_sha': 'c' * 64,
                 'image': 'ghcr.io/archlinux/archlinux@sha256:' + 'd' * 64,
                 'run_id': 1, 'run_attempt': 1,
+                'recipe_pins': {'carapace': 'f' * 40},
                 'packages': [{'pkgbase': 'carapace', 'recipe_dir': 'recipes/carapace',
+                              'recipe_commit': 'f' * 40,
                               'input_digest': 'e' * 64,
                               'lock': {'schema': 1, 'version': '1.8.0-1'}}],
             }
             path = root / 'bundle.json'
+            path.write_text(json.dumps(bundle))
+            validate_bundle(path)
+            altered = json.loads(json.dumps(bundle))
+            altered['packages'][0]['recipe_commit'] = '0' * 40
+            path.write_text(json.dumps(altered))
+            with self.assertRaisesRegex(ValueError, 'gitlink'):
+                validate_bundle(path)
             for field, value in [('harness_sha', 'c' * 40), ('base', 'a' * 64), ('head', 'b' * 64)]:
                 invalid = dict(bundle, **{field: value})
                 path.write_text(json.dumps(invalid))

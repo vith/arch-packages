@@ -11,10 +11,11 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import urllib.request
+import urllib.parse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools import cloudflare, github_api
+from tools import github_api, recipes
+from tools.update import extract_tree
 from tools.recipe_gate import harness_digest, input_digest, parse_srcinfo, tree_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +23,78 @@ MAXIMUM = 805306368
 REPOSITORY = 'vith/arch-packages'
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._+~-]*\Z')
 PKG_KEYS = {'pkgname','pkgbase','pkgver','pkgdesc','url','builddate','packager','size','arch','license','replaces','group','depend','optdepend','conflict','provides','backup','xdata','makedepend','checkdepend'}
+
+
+DATABASES = {'n3t-arch.db', 'n3t-arch.db.sig', 'n3t-arch.files', 'n3t-arch.files.sig', 'n3t-arch.asc', 'n3t-arch.db.tar.gz', 'n3t-arch.db.tar.gz.sig', 'n3t-arch.files.tar.gz', 'n3t-arch.files.tar.gz.sig'}
+SHA256 = re.compile(r'[0-9a-f]{64}\Z')
+
+
+def release_url(repository, snapshot, filename):
+    return f'https://github.com/{repository}/releases/download/{urllib.parse.quote(snapshot, safe="")}/{urllib.parse.quote(filename, safe="")}'
+
+
+def validate_catalog(catalog, repository, key_fingerprint):
+    if catalog.get('schema') != 1 or catalog.get('repository') != repository:
+        raise ValueError('Wrong catalog schema/repository')
+    if catalog.get('key_fingerprint') != key_fingerprint:
+        raise ValueError('Wrong signing fingerprint')
+    if not re.fullmatch(r'[0-9a-f]{40}', catalog.get('accepted_sha', '')):
+        raise ValueError('Invalid accepted SHA')
+    snapshot = catalog.get('snapshot', '')
+    if not NAME.fullmatch(snapshot) or not snapshot.startswith('snapshot-'):
+        raise ValueError('Invalid snapshot')
+    if not isinstance(catalog.get('recipes'), dict) or not catalog['recipes']:
+        raise ValueError('Incomplete recipe manifest')
+    for recipe in catalog['recipes'].values():
+        if not isinstance(recipe, dict) or not re.fullmatch(r'[0-9a-f]{40}', recipe.get('recipe_commit', '')):
+            raise ValueError('Invalid immutable recipe commit')
+    for key in ('files', 'source_assets', 'retained_packages', 'retained_snapshots'):
+        if not isinstance(catalog.get(key), dict):
+            raise ValueError('Missing catalog map: ' + key)
+    if not DATABASES <= catalog['files'].keys():
+        raise ValueError('Incomplete database/key assets')
+    if {'catalog.json', 'catalog.json.sig'} & catalog['files'].keys():
+        raise ValueError('Self-referential catalog')
+
+    def files(entries, expected_snapshot=None, allow_source_bundle=False):
+        for name, entry in entries.items():
+            if not NAME.fullmatch(name) or not isinstance(entry, dict) or not SHA256.fullmatch(entry.get('sha256', '')):
+                raise ValueError('Invalid asset name/hash')
+            url = entry.get('url', '')
+            parsed = urllib.parse.urlsplit(url)
+            segments = parsed.path.split('/')
+            if (parsed.scheme != 'https' or parsed.netloc != 'github.com' or parsed.query or parsed.fragment
+                    or len(segments) != 7 or '/'.join(segments[1:3]) != repository
+                    or segments[3:5] != ['releases', 'download']):
+                raise ValueError('Asset outside repository release boundary')
+            tag = urllib.parse.unquote(segments[5])
+            source_bundle = (allow_source_bundle and re.fullmatch(r'source-[0-9a-f]{64}', tag)
+                             and name == tag[7:] + '.bundle' and entry['sha256'] == tag[7:])
+            if not NAME.fullmatch(tag) or not (tag.startswith('snapshot-') or source_bundle) or (expected_snapshot and tag != expected_snapshot):
+                raise ValueError('Wrong asset snapshot')
+            if url != release_url(repository, tag, name):
+                raise ValueError('Noncanonical asset destination')
+    files(catalog['files'])
+    files({name: catalog['files'][name] for name in DATABASES}, snapshot)
+    files(catalog['source_assets'], allow_source_bundle=True)
+    files(catalog['retained_packages'])
+    for old, entry in catalog['retained_snapshots'].items():
+        if not NAME.fullmatch(old) or not old.startswith('snapshot-') or not isinstance(entry, dict):
+            raise ValueError('Invalid retained snapshot')
+        files(entry['files'])
+        files({name: value for name, value in entry['files'].items() if name in DATABASES}, old)
+    for name in catalog['files'].keys() & catalog['retained_packages'].keys():
+        if catalog['files'][name] != catalog['retained_packages'][name]:
+            raise ValueError('Retained filename was retargeted')
+    all_packages = {**catalog['retained_packages'], **catalog['files']}
+    if not any(name.endswith('.pkg.tar.zst') for name in catalog['files']):
+        raise ValueError('Snapshot contains no packages')
+    for name in all_packages:
+        if name not in DATABASES and not re.fullmatch(r'.+\.pkg\.tar\.(?:zst|xz|gz)(?:\.sig)?', name):
+            raise ValueError('Non-package repo asset')
+        if name not in DATABASES and name.endswith(('.zst', '.xz', '.gz')) and name + '.sig' not in all_packages:
+            raise ValueError('Missing package signature')
+    return catalog
 
 
 def sha(path):
@@ -84,22 +157,34 @@ def previous_catalog(url, work, ring):
     if not url.startswith(prefix) or not url.endswith('/catalog.json'):
         raise ValueError('previous catalog must be immutable repository URL')
     tag = url[len(prefix):].split('/')[0]
-    if url != cloudflare.release_url(REPOSITORY, tag, 'catalog.json') or not tag.startswith('snapshot-'):
+    if url != release_url(REPOSITORY, tag, 'catalog.json') or not tag.startswith('snapshot-'):
         raise ValueError('invalid previous catalog destination')
     path = github_api.download(url, work / 'previous.json', maximum=32*1024*1024)
     signature = github_api.download(url + '.sig', work / 'previous.sig', maximum=65536)
     verify(path, signature, ring)
-    return cloudflare.validate_catalog(json.loads(path.read_text()), REPOSITORY, fingerprint())
+    catalog = validate_catalog(json.loads(path.read_text()), REPOSITORY, fingerprint())
+    if catalog['snapshot'] != tag:
+        raise ValueError('previous catalog snapshot differs from release tag')
+    return catalog
 
 
-def active_catalog_url():
-    # Redirect discovery is public and carries no credentials. Only the final fixed
-    # GitHub URL is accepted by previous_catalog, never arbitrary destinations.
-    with urllib.request.urlopen('https://arch.packages.n3t.work/catalog.json', timeout=90) as response:
-        return response.url
+def latest_release():
+    try:
+        release = github_api.api(f'repos/{REPOSITORY}/releases/latest', authenticated=False)
+    except github_api.GitHubError as error:
+        if error.status == 404:
+            return None
+        raise
+    if release['draft'] or release['prerelease'] or not NAME.fullmatch(release['tag_name']) or not release['tag_name'].startswith('snapshot-'):
+        raise ValueError('latest release is not a complete snapshot')
+    return {'id': release['id'], 'tag': release['tag_name']}
 
 
-def expectations(head, run_id, attempt, previous):
+def catalog_url(release):
+    return release_url(REPOSITORY, release['tag'], 'catalog.json') if release else None
+
+
+def expectations(head, run_id, attempt, previous, pins):
     image = (ROOT / 'build-image.txt').read_text().strip()
     if not re.fullmatch(r'ghcr.io/archlinux/archlinux@sha256:[0-9a-f]{64}', image):
         raise ValueError('pinned official image required')
@@ -123,31 +208,33 @@ def expectations(head, run_id, attempt, previous):
             raise ValueError('accepted lock/native metadata mismatch: ' + name)
         digest = input_digest(recipe, lock, item, image, harness)
         old = previous['recipes'].get(name) if previous else None
-        packages.append({'pkgbase':name,'recipe_dir':'recipes/' + name,'lock':lock,'policy':item,'input_digest':digest,'tree_sha':hashlib.sha256(github_api.canonical(tree_manifest(recipe))).hexdigest(),'metadata':metadata,'aur':aur,'reuse':bool(old and old['input_digest'] == digest)})
+        packages.append({'recipe_commit':pins[name],'pkgbase':name,'recipe_dir':'recipes/' + name,'lock':lock,'policy':item,'input_digest':digest,'tree_sha':hashlib.sha256(github_api.canonical(tree_manifest(recipe))).hexdigest(),'metadata':metadata,'aur':aur,'reuse':bool(old and old['input_digest'] == digest)})
     output_names = [output['name'] for package in packages for output in package['policy']['outputs']]
     if len({p['pkgbase'] for p in packages}) != len(packages) or not packages or len(set(output_names)) != len(output_names):
         raise ValueError('duplicate/empty package enrollment')
-    return {'schema':1,'repository':REPOSITORY,'base':head,'head':head,'run_id':str(run_id),'run_attempt':str(attempt),'image':image,'harness_sha':harness,'packages':packages}
+    return {'schema':1,'repository':REPOSITORY,'base':head,'head':head,'run_id':str(run_id),'run_attempt':str(attempt),'image':image,'harness_sha':harness,'recipe_pins':pins,'packages':packages}
 
 
-def prepare(head, run_id, attempt, directory, previous_url, bootstrap):
+def prepare(head, run_id, attempt, directory):
     current_main(head)
+    pins = recipes.materialize(ROOT, head, REPOSITORY, extract_tree)
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix='plan-', dir=directory.parent) as session:
         work = Path(session)
         ring = keyring(work)
-        url = previous_url or (None if bootstrap else active_catalog_url())
+        previous_release = latest_release()
+        url = catalog_url(previous_release)
         previous = previous_catalog(url, work, ring)
-        plan = expectations(head, run_id, attempt, previous)
-    (directory / 'publication-plan.json').write_bytes(github_api.canonical({'previous_url':url,'expected':plan}))
+        plan = expectations(head, run_id, attempt, previous, pins)
+    (directory / 'publication-plan.json').write_bytes(github_api.canonical({'previous_release':previous_release,'previous_url':url,'expected':plan}))
     bundle_dir = directory / 'bundle'
     bundle_dir.mkdir()
     changed = []
     for package in plan['packages']:
         if not package['reuse']:
-            shutil.copytree(ROOT / package['recipe_dir'], bundle_dir / package['recipe_dir'], symlinks=True)
-            changed.append({k:package[k] for k in ('pkgbase','recipe_dir','lock','policy','input_digest')})
+            recipes.copy_recipe(ROOT / package['recipe_dir'], bundle_dir / package['recipe_dir'])
+            changed.append({k:package[k] for k in ('pkgbase','recipe_commit','recipe_dir','lock','policy','input_digest')})
     bundle = {k:v for k,v in plan.items() if k != 'packages'}
     bundle['packages'] = changed
     (bundle_dir / 'bundle.json').write_bytes(github_api.canonical(bundle))
@@ -222,7 +309,7 @@ def validate_unsigned(directory, plan):
     if evidence_path.stat().st_size > 32*1024*1024:
         raise ValueError('oversized native evidence')
     evidence = json.loads(evidence_path.read_text())
-    for key in ('schema','repository','base','head','run_id','run_attempt','image','harness_sha'):
+    for key in ('schema','repository','base','head','run_id','run_attempt','image','harness_sha','recipe_pins'):
         if evidence.get(key) != plan[key]:
             raise ValueError('native artifact identity mismatch: ' + key)
     receipts = evidence.get('packages', [])
@@ -236,7 +323,7 @@ def validate_unsigned(directory, plan):
             raise ValueError('native prepared metadata differs from accepted metadata')
         if {k:v for k,v in returned_metadata.items() if k != 'srcinfo'} != package['metadata']:
             raise ValueError('native metadata fields differ')
-        for field, wanted in {'input_digest':package['input_digest'],'tree_sha':package['tree_sha'],'source_lock':package['lock'],**{k:plan[k] for k in ('run_id','run_attempt','image','harness_sha')}}.items():
+        for field, wanted in {'recipe_commit':package['recipe_commit'],'input_digest':package['input_digest'],'tree_sha':package['tree_sha'],'source_lock':package['lock'],**{k:plan[k] for k in ('run_id','run_attempt','image','harness_sha')}}.items():
             if receipt.get(field) != wanted:
                 raise ValueError('native receipt mismatch: ' + field)
         if package['pkgbase'] == 'oh-my-pi-vith-git':
@@ -306,6 +393,11 @@ def database(image, packages, output):
         alias = output / f'n3t-arch.{suffix}'
         alias.unlink(missing_ok=True)
         shutil.copyfile(path, alias)
+
+    verify_database(packages, output)
+
+
+def verify_database(packages, output):
     # Verify the actual database describes exactly the complete package bytes.
     found = {}
     with tarfile.open(output / 'n3t-arch.db', 'r:gz') as archive:
@@ -329,13 +421,13 @@ def database(image, packages, output):
 
 
 def upload_release(snapshot, head, assets, names):
-    release = github_api.api(f'repos/{REPOSITORY}/releases','POST',{'tag_name':snapshot,'target_commitish':head,'name':snapshot,'draft':True,'prerelease':False,'body':'Complete signed snapshot; retained releases are immutable.'})
+    release = github_api.api(f'repos/{REPOSITORY}/releases','POST',{'tag_name':snapshot,'target_commitish':head,'name':snapshot,'draft':True,'prerelease':False,'make_latest':'false','body':'Complete signed snapshot; retained releases are immutable.'})
     for name in sorted(names):
         github_api.upload_asset(REPOSITORY, release['id'], assets / name)
     remote = list(github_api.pages(f'repos/{REPOSITORY}/releases/{release["id"]}/assets'))
     if len(remote) != len(names) or {a['name'] for a in remote} != names:
         raise ValueError('partial/extra release upload')
-    github_api.api(f'repos/{REPOSITORY}/releases/{release["id"]}','PATCH',{'draft':False})
+    github_api.api(f'repos/{REPOSITORY}/releases/{release["id"]}','PATCH',{'draft':False,'make_latest':'false'})
     ref = github_api.api(f'repos/{REPOSITORY}/git/ref/tags/{snapshot}')['object']
     for _ in range(8):
         if ref['type'] == 'commit':
@@ -351,15 +443,86 @@ def upload_release(snapshot, head, assets, names):
 def public_readback(catalog, assets, readback, ring):
     readback.mkdir()
     for name, entry in {**catalog['files'], **catalog['source_assets']}.items():
-        retrieve(entry, name, readback)
+        # Each complete snapshot also carries exact copies of reused bytes.
+        retrieve({'url':release_url(REPOSITORY,catalog['snapshot'],name),'sha256':entry['sha256']}, name, readback)
     for name in ('catalog.json','catalog.json.sig'):
-        path = github_api.download(cloudflare.release_url(REPOSITORY,catalog['snapshot'],name), readback / name, maximum=32*1024*1024)
-        if sha(path) != sha(assets / name):
+        path = github_api.download(release_url(REPOSITORY,catalog['snapshot'],name), readback / name, maximum=32*1024*1024)
+        if assets is not None and sha(path) != sha(assets / name):
             raise ValueError('public catalog readback differs')
     for name in catalog['files']:
         if name.endswith('.sig'):
             verify(readback / name[:-4], readback / name, ring)
     verify(readback / 'catalog.json', readback / 'catalog.json.sig', ring)
+    if json.loads((readback / 'catalog.json').read_text()) != catalog:
+        raise ValueError('signed readback catalog differs')
+    for suffix in ('db','files'):
+        if sha(readback / f'n3t-arch.{suffix}') != sha(readback / f'n3t-arch.{suffix}.tar.gz'):
+            raise ValueError('pacman alias differs from canonical archive')
+    verify_database(readback, readback)
+
+
+def verified_snapshot(release, work, ring):
+    work.mkdir()
+    catalog = previous_catalog(catalog_url(release), work, ring)
+    if catalog['snapshot'] != release['tag']:
+        raise ValueError('release/catalog identity differs')
+    public_readback(catalog, None, work / 'complete', ring)
+    return catalog
+
+
+def latest_catalog(work, ring):
+    stable = work / 'latest.json'
+    signature = work / 'latest.json.sig'
+    url = f'https://github.com/{REPOSITORY}/releases/latest/download/catalog.json'
+    github_api.download(url, stable, maximum=32*1024*1024)
+    github_api.download(url + '.sig', signature, maximum=65536)
+    verify(stable, signature, ring)
+    return json.loads(stable.read_text())
+
+
+def promote(target, previous, catalog, ring, work):
+    if latest_release() != previous:
+        raise ValueError('latest changed before promotion')
+    try:
+        github_api.api(f'repos/{REPOSITORY}/releases/{target["id"]}', 'PATCH', {'make_latest':'true'})
+    except Exception:
+        # A lost response is not evidence of failure or permission to roll back.
+        # Reconcile only the actual public latest pointer and signed bytes.
+        if latest_release() != target:
+            raise RuntimeError('promotion ambiguous; latest is not the requested snapshot') from None
+    if latest_release() != target:
+        raise ValueError('promotion did not select requested snapshot')
+    observed = verified_snapshot(target, work, ring)
+    active = latest_catalog(work, ring)
+    if active != catalog or observed != catalog or latest_release() != target:
+        raise ValueError('active catalog changed during verification')
+
+
+def rollback(args):
+    current_main(run(['git','-C',str(ROOT),'rev-parse','HEAD']).decode().strip())
+    work = Path(args.work_dir).resolve()
+    work.mkdir(parents=True, exist_ok=False)
+    ring = keyring(work)
+    previous = latest_release()
+    if previous != {'id':args.expected_release_id,'tag':args.expected_tag}:
+        raise ValueError('rollback expected latest differs')
+    active = verified_snapshot(previous, work / 'current', ring)
+    if args.target_tag not in active['retained_snapshots']:
+        raise ValueError('rollback target is not a retained snapshot')
+    remote = github_api.api(f'repos/{REPOSITORY}/releases/tags/{urllib.parse.quote(args.target_tag, safe="")}', authenticated=False)
+    if remote['draft'] or remote['prerelease'] or remote['tag_name'] != args.target_tag:
+        raise ValueError('rollback target is not public complete release')
+    target = {'id':remote['id'],'tag':remote['tag_name']}
+    catalog = verified_snapshot(target, work / 'target', ring)
+    if catalog['files'] != active['retained_snapshots'][args.target_tag]['files']:
+        raise ValueError('retained rollback catalog differs')
+    result = {'previous_release':previous,'activated_release':target,'activation':'pending','operation':'rollback'}
+    receipt = work / 'publication-result.json'
+    receipt.write_bytes(github_api.canonical(result))
+    promote(target, previous, catalog, ring, work / 'active-readback')
+    result['activation'] = 'verified'
+    receipt.write_bytes(github_api.canonical(result))
+    return result
 
 
 def publish(args):
@@ -371,13 +534,11 @@ def publish(args):
     if plan_path.is_symlink() or not plan_path.is_file() or plan_path.stat().st_size > 32*1024*1024:
         raise ValueError('invalid bounded publication plan')
     carried = json.loads(plan_path.read_text())
-    if args.bootstrap:
-        if carried['previous_url'] is not None:
-            raise ValueError('bootstrap cannot reuse a prior snapshot')
-    elif carried['previous_url'] != active_catalog_url():
+    if carried['previous_release'] != latest_release() or carried['previous_url'] != catalog_url(carried['previous_release']):
         raise ValueError('previous signed catalog no longer active')
+    pins = recipes.materialize(ROOT, args.accepted_sha, REPOSITORY, extract_tree)
     previous = previous_catalog(carried['previous_url'], work, ring)
-    plan = expectations(args.accepted_sha, args.run_id, args.run_attempt, previous)
+    plan = expectations(args.accepted_sha, args.run_id, args.run_attempt, previous, pins)
     if carried['expected'] != plan:
         raise ValueError('build plan differs from accepted trusted inputs')
     unsigned = work / 'unsigned'
@@ -394,7 +555,7 @@ def publish(args):
     for package in plan['packages']:
         name = package['pkgbase']
         lock = package['lock']
-        catalog['recipes'][name] = {'tree_sha':package['tree_sha'],'input_digest':package['input_digest'],'version':lock['version'],'aur':package['aur'],'sources':lock['sources']}
+        catalog['recipes'][name] = {'recipe_commit':package['recipe_commit'],'tree_sha':package['tree_sha'],'input_digest':package['input_digest'],'version':lock['version'],'aur':package['aur'],'sources':lock['sources']}
         for filename, identity in filenames(package).items():
             if package['reuse']:
                 if previous['recipes'][name]['version'] != lock['version']:
@@ -414,7 +575,7 @@ def publish(args):
             if source.get('bundle'):
                 entry = source['bundle']
                 asset_name = entry.get('filename') or entry['url'].rsplit('/',1)[-1]
-                if asset_name != entry['sha256'] + '.bundle' or entry['url'] != cloudflare.release_url(REPOSITORY, 'source-' + entry['sha256'], asset_name):
+                if asset_name != entry['sha256'] + '.bundle' or entry['url'] != release_url(REPOSITORY, 'source-' + entry['sha256'], asset_name):
                     raise ValueError('source bundle outside package repository')
                 catalog['source_assets'][asset_name] = {'url':entry['url'],'sha256':entry['sha256']}
         if name == 'nasc-tui-bin':
@@ -440,7 +601,7 @@ def publish(args):
                     if catalog['source_assets'][asset]['sha256'] != digest:
                         raise ValueError('corresponding source filename collision')
                 else:
-                    catalog['source_assets'][asset] = {'url':cloudflare.release_url(REPOSITORY,snapshot,asset),'sha256':digest}
+                    catalog['source_assets'][asset] = {'url':release_url(REPOSITORY,snapshot,asset),'sha256':digest}
                     new_names.add(asset)
     # Validation before key import includes signed URL boundaries and all source bytes.
     source_work = work / 'sources'; source_work.mkdir()
@@ -453,39 +614,34 @@ def publish(args):
             signer.sign(packages / name)
             verify(packages / name, packages / (name+'.sig'), ring)
     database(plan['image'], packages, assets)
-    for name in ('n3t-arch.db','n3t-arch.files'):
+    for name in ('n3t-arch.db','n3t-arch.files','n3t-arch.db.tar.gz','n3t-arch.files.tar.gz'):
         signer.sign(assets / name)
     shutil.copyfile(ROOT / 'keys/n3t-arch.asc', assets / 'n3t-arch.asc')
-    upload_names = set(new_names) | cloudflare.DATABASES
-    for name in new_names:
-        if name not in catalog['source_assets']:
-            shutil.copyfile(packages / name, assets / name)
+    upload_names = set(new_names) | DATABASES | set(catalog['files']) | set(catalog['source_assets'])
+    for name in catalog['source_assets']:
+        if name not in new_names:
+            shutil.copyfile(source_work / name, assets / name)
+    for path in packages.iterdir():
+        shutil.copyfile(path, assets / path.name)
     for name in upload_names:
-        if name not in catalog['source_assets']:
-            catalog['files'][name] = {'url':cloudflare.release_url(REPOSITORY,snapshot,name),'sha256':sha(assets / name)}
-    cloudflare.validate_catalog(catalog, REPOSITORY, fingerprint())
+        if name not in catalog['source_assets'] and name not in catalog['files']:
+            catalog['files'][name] = {'url':release_url(REPOSITORY,snapshot,name),'sha256':sha(assets / name)}
+    validate_catalog(catalog, REPOSITORY, fingerprint())
     (assets / 'catalog.json').write_bytes(github_api.canonical(catalog))
     signer.sign(assets / 'catalog.json')
     current_main(args.accepted_sha)
     expected_uploads = upload_names | {'catalog.json','catalog.json.sig'}
     release = upload_release(snapshot, args.accepted_sha, assets, expected_uploads)
+    if latest_release() != carried['previous_release']:
+        raise ValueError('latest changed during non-latest publication; refusing activation')
     public_readback(catalog, assets, work / 'readback', ring)
     current_main(args.accepted_sha)
-    result = {'snapshot':snapshot,'catalog_url':cloudflare.release_url(REPOSITORY,snapshot,'catalog.json'),'bootstrap':args.bootstrap}
-    if not args.bootstrap:
-        client = cloudflare.Cloudflare(os.environ['CLOUDFLARE_ACCOUNT_ID'], os.environ['CLOUDFLARE_API_TOKEN'])
-        result['previous_version'] = client.current()
-        result['activation'] = 'pending'
-        (work / 'publication-result.json').write_bytes(github_api.canonical(result))
-        github_api.api(f'repos/{REPOSITORY}/releases/{release["id"]}','PATCH',{'body':'Verified signed snapshot. Pre-activation rollback evidence: ' + json.dumps(result, sort_keys=True)})
-        current_main(args.accepted_sha)
-        result.update(client.deploy(cloudflare.generate_module(catalog, REPOSITORY, fingerprint())))
-        result['activation'] = 'verified'
-        with urllib.request.urlopen('https://arch.packages.n3t.work/healthz', timeout=90) as response:
-            if json.load(response).get('snapshot') != snapshot:
-                raise ValueError('active Worker health differs')
-        github_api.api(f'repos/{REPOSITORY}/releases/{release["id"]}','PATCH',{'body':'Verified signed snapshot. Rollback evidence: ' + json.dumps(result, sort_keys=True)})
-    (work / 'publication-result.json').write_bytes(github_api.canonical(result))
+    result = {'snapshot':snapshot,'catalog_url':release_url(REPOSITORY,snapshot,'catalog.json'),'previous_release':carried['previous_release'],'activated_release':{'id':release['id'],'tag':snapshot},'activation':'pending'}
+    receipt = work / 'publication-result.json'
+    receipt.write_bytes(github_api.canonical(result))
+    promote(result['activated_release'], result['previous_release'], catalog, ring, work / 'active-readback')
+    result['activation'] = 'verified'
+    receipt.write_bytes(github_api.canonical(result))
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as summary:
             summary.write('## Signed publication\n```json\n' + json.dumps(result,indent=2) + '\n```\n')
@@ -500,19 +656,25 @@ def main():
         p.add_argument('--accepted-sha',required=True)
         p.add_argument('--run-id',required=True,type=int)
         p.add_argument('--run-attempt',required=True,type=int)
-        p.add_argument('--bootstrap',action='store_true')
         if command == 'plan':
             p.add_argument('--output-dir',required=True)
-            p.add_argument('--previous-url')
         else:
             p.add_argument('--plan',required=True)
             p.add_argument('--artifact',required=True)
             p.add_argument('--work-dir',required=True)
+    p = sub.add_parser('rollback')
+    p.add_argument('--target-tag',required=True)
+    p.add_argument('--expected-release-id',required=True,type=int)
+    p.add_argument('--expected-tag',required=True)
+    p.add_argument('--work-dir',required=True)
     args = parser.parse_args()
+    if args.command == 'rollback':
+        print(json.dumps(rollback(args),sort_keys=True))
+        return
     if args.run_id < 1 or args.run_attempt < 1:
         raise ValueError('positive run identity required')
     if args.command == 'plan':
-        print(json.dumps({'changed':prepare(args.accepted_sha,args.run_id,args.run_attempt,args.output_dir,args.previous_url,args.bootstrap)}))
+        print(json.dumps({'changed':prepare(args.accepted_sha,args.run_id,args.run_attempt,args.output_dir)}))
     else:
         try:
             print(json.dumps(publish(args),sort_keys=True))

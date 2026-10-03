@@ -1,12 +1,6 @@
-name: Temporary initial enrollment proof
+name: Temporary full enrollment native proof
 on:
   workflow_dispatch:
-    inputs:
-      scope:
-        type: choice
-        options: [non-omp, omp]
-        required: true
-        default: non-omp
 permissions:
   contents: read
 jobs:
@@ -16,27 +10,18 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 0ca767c9d60c65aca19b9996b8ee118f63c5cd35
+          ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Select disposable enrollment scope
-        env:
-          ENROLLMENT_SCOPE: ${{ inputs.scope }}
+      - name: Freeze all accepted recipe gitlinks and execute native probes
         run: |
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          p = Path('packages.json')
-          data = json.loads(p.read_text())
-          data['packages'] = [x for x in data['packages'] if (x['pkgbase'] == 'oh-my-pi-vith-git') == (os.environ['ENROLLMENT_SCOPE'] == 'omp')]
-          p.write_text(json.dumps(data))
-          PY
-      - name: Freeze and execute native probes without credentials
-        run: |
-          python3 -m tools.update bootstrap --directory "$RUNNER_TEMP/enrollment"
-          python3 -m tools.update pack --directory "$RUNNER_TEMP/enrollment" --archive "$RUNNER_TEMP/source-data.tar"
+          work="$HOME/.local/state/omp/work/enrollment-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$work/tmp"
+          export TMPDIR="$work/tmp"
+          python3 -m tools.update bootstrap --directory "$work/enrollment"
+          python3 -m tools.update pack --directory "$work/enrollment" --archive "$work/source-data.tar"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: enrollment-${{ inputs.scope }}
-          path: ${{ runner.temp }}/source-data.tar
-          retention-days: 7
+          name: enrollment-all
+          path: ~/.local/state/omp/work/enrollment-${{ github.run_id }}-${{ github.run_attempt }}/source-data.tar
+          retention-days: 14
           if-no-files-found: error

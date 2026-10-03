@@ -15,6 +15,17 @@ def canonical(value):
     return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
 
 
+class NoAPIRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        raise RuntimeError("GitHub API redirect refused")
+
+
+class GitHubError(RuntimeError):
+    def __init__(self, status, method, path):
+        self.status = status
+        super().__init__(f"GitHub HTTP {status} for {method} {path}")
+
+
 def _request(url, method="GET", data=None, content_type="application/json", authenticated=False, maximum=MAX_JSON):
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or parsed.username or parsed.password:
@@ -31,22 +42,22 @@ def _request(url, method="GET", data=None, content_type="application/json", auth
         headers["Authorization"] = "Bearer " + token
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=120) as response:
+        with urllib.request.build_opener(NoAPIRedirect()).open(req, timeout=120) as response:
             body = response.read(maximum + 1)
             if len(body) > maximum:
                 raise ValueError("API response exceeds bounded size")
             return body
     except urllib.error.HTTPError as error:
         # Never return provider bodies that may echo credentials or submitted data.
-        raise RuntimeError(f"GitHub HTTP {error.code} for {method} {parsed.path}") from None
+        raise GitHubError(error.code, method, parsed.path) from None
 
 
-def api(path, method="GET", data=None):
+def api(path, method="GET", data=None, *, authenticated=True):
     if path.startswith("/"):
         path = path[1:]
     if "://" in path or path.startswith(("..", "?")):
         raise ValueError("API relative path required")
-    body = _request(API + "/" + path, method, canonical(data) if data is not None else None, authenticated=True)
+    body = _request(API + "/" + path, method, canonical(data) if data is not None else None, authenticated=authenticated)
     return json.loads(body) if body else None
 
 

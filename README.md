@@ -1,6 +1,6 @@
 # n3t Arch packages
 
-Native x86-64 Arch builds on standard GitHub-hosted runners, signed immutable GitHub Release snapshots, and originless Cloudflare redirects. The Oracle VM is not a runtime dependency. Accepted recipes in this repository—not a moving upstream recipe branch—are the build authority.
+Native x86-64 Arch builds on standard GitHub-hosted runners and signed complete GitHub Release snapshots. GitHub hosts the recipes, CI and package downloads; there is no Worker, package-hosting infrastructure state, or Oracle runtime dependency. Accepted recipe gitlinks on `main`—not moving recipe or AUR branch tips—are the build authority.
 
 ## Packages and sources
 
@@ -19,31 +19,46 @@ The source fork is <https://github.com/vith/oh-my-pi-vith>. Old Forgejo URLs in 
 
 `inputs/` binds exact software identities and native versions. Git inputs include complete reachable history and an explicit authentic tag/ref manifest in immutable, hash-addressed GitHub Release bundles. Builds use verified read-only mirrors instead of resolving moving branches. OMP derives its native package and runtime identities from that frozen ancestry; source-version manifests are not rewritten to create artificial releases.
 
+## Independent recipe histories
+
+This is one GitHub repository, not one repository per package. `main` contains shared policy, source locks, CI and publication tools. Each `recipes/<pkgbase>` is a submodule pointing back to this repository at an exact package-root commit:
+
+The preserved Nasc history contains upstream v1.0.4 binaries and old package metadata that incorrectly claimed MIT. The maintained recipe corrects the license. [Complete corresponding source, upstream GPL license and verified historical binary provenance](https://github.com/vith/arch-packages/releases/tag/history-source-nasc-v1.0.4) accompany those original objects.
+
+- `aur/<pkgbase>` retains authentic upstream AUR history where it exists.
+- `pkg/<pkgbase>` retains our maintained recipe history and corrections.
+- `recipe-updates/<pkgbase>/<watcher>` anchors proposed recipe commits.
+- `updates/<pkgbase>/<watcher>` proposes their gitlinks and source-lock/provenance changes to `main`.
+
+Recipe branches have `PKGBUILD`, `.SRCINFO` and payloads at their root. Existing AUR/maintained history is preserved without rewriting original commits or inventing ancestry. Locally authored recipes with no earlier commits start honestly with a new root. Branch heads do not override accepted gitlinks; CI never uses `submodule update --remote`. The trusted loader verifies same-repository module identity and exports bounded immutable recipe data without executing candidate Git configuration, hooks or scripts.
+
+Candidate review includes the complete underlying recipe diff, modes and history, not just changed SHA values. Rewritten recipe/AUR history fails closed. Maintained branch advancement uses ancestry checks and exact leases and cannot overwrite divergent or pending work. A coordinated `main` commit can pin multiple recipes together, with human approval and every affected package built from that exact candidate.
+
 ## Client configuration
 
-After publication and domain activation, the setup page at <https://arch.packages.n3t.work/> exposes the signed catalog, key, fingerprint, and immutable snapshot routes. Trust the dedicated key only after independently comparing this full fingerprint:
+After verified publication, GitHub's latest-release download URL exposes the signed catalog, public key, databases and packages. Trust the dedicated key only after independently comparing this full fingerprint:
 
 ```text
 C557EA3489AC5820B7C019A9D9CFD8271E0C3DD3
 ```
 
-Public key: <https://arch.packages.n3t.work/repo/n3t-arch.asc>. Pacman configuration:
+Public key: <https://github.com/vith/arch-packages/releases/latest/download/n3t-arch.asc>. Pacman configuration:
 
 ```ini
 [n3t-arch]
 SigLevel = Required
-Server = https://arch.packages.n3t.work/repo
+Server = https://github.com/vith/arch-packages/releases/latest/download
 ```
 
-Strict signatures are never disabled. Separate database/signature requests can straddle an activation; such a pair fails closed. Retry a fresh sync or use `https://arch.packages.n3t.work/snapshots/SNAPSHOT_ID` as the server for a fixed generation. Old snapshot, package, signature, and corresponding-source routes are retained. Binary downloads redirect directly to immutable public GitHub assets; the Worker never fetches or buffers them.
+Strict signatures are never disabled. Separate database/signature requests can straddle latest-release promotion; such a pair fails closed. Retry a fresh sync or use `https://github.com/vith/arch-packages/releases/download/SNAPSHOT_TAG` as the server for a fixed generation. Old snapshot, package, signature and corresponding-source assets are retained. Pacman database/file aliases are uploaded as real signed bytes under the exact requested filenames, not local symlinks or Worker redirects.
 
 ## Approval and builds
 
 The updater runs every six hours and is also manually dispatchable. Routine proposals are per package/watcher. Narrow, independently verified literal source/version/checksum transitions may merge automatically only after exact-head native validation and the deterministic gate. Changes to functions, dependencies, payloads, licenses, architecture, modes, policy, automation, unknown metadata, or multiple packages require human approval through the secret-free `recipe-review` environment and then human merge. A successful build is not approval. No LLM is involved.
 
-`main` requires `recipe-policy` and `candidate-build`, a PR, and an up-to-date base. Changed head/base identities invalidate evidence and approval. Builds receive no write, signing, model, or Cloudflare credentials. All packages affected by one candidate use one exact head; missing or failing outputs prevent acceptance of the entire candidate.
+`main` requires `recipe-policy` and `candidate-build`, a PR, and an up-to-date base. Changed head/base identities invalidate evidence and approval. Builds receive no write, signing or model credentials. All packages affected by one candidate use one exact head and its recipe pins; missing or failing outputs prevent acceptance of the entire candidate.
 
-Publication builds changed input digests only and reuses unchanged packages from the previous signed catalog after verification. A complete snapshot is signed, uploaded, anonymously read back, and verified before the Worker pointer changes. Reusing a filename for different bytes is refused. A failed or stale run cannot replace the active repository.
+Publication builds changed input digests only and reuses unchanged packages from the previous signed catalog after verification. A complete snapshot is signed, uploaded, anonymously read back and verified before GitHub latest-release promotion. Reusing a filename for different bytes is refused. A failed or stale run cannot replace the active repository.
 
 Manual operations use GitHub CLI; these commands are fish-compatible:
 
@@ -55,22 +70,26 @@ gh workflow run verification.yml --repo vith/arch-packages
 
 Native builds and empty-cache installation/runtime proofs run on GitHub, never on the workstation. The official Arch image and third-party Actions are pinned. Native source probes first preserve recipe modes and establish root-owned, read-only frozen Git configuration and mirrors during trusted container setup; recipe execution then drops all capabilities and enables no-new-privileges in a credential-free environment. Hardware-detected compilation concurrency is retained. OMP's temporarily disabled source test suites remain disabled; the retained source gate checks and compiles, then asserts the exact executable identity.
 
-## Cloudflare ownership
+## Release activation and rollback
 
-Standalone `opentofu/` owns only Worker identity/settings and the `arch.packages.n3t.work` Custom Domain. It uses separate encrypted state and a pinned provider; it does not own uploaded code or the active deployment, so infrastructure applies cannot reset the published catalog. The existing OCI OpenTofu project and production DNS are separate.
+`publish.yml` creates a draft snapshot, uploads every expected asset, publishes it with `make_latest=false`, and independently verifies all public bytes/signatures and the complete database. Only then may it promote that exact snapshot with `make_latest=true`. Auxiliary source-bundle releases explicitly remain non-latest and are never package snapshots. There are no Cloudflare credentials, deployment commands or custom-domain changes.
 
-The publisher owns verified Worker version uploads and 100% activation. It records the previous version, reconciles ambiguous responses by reading current state, and retains rollback evidence. CI needs only the account-scoped Worker publishing token, not OpenTofu state, domain-bootstrap credentials, or the workstation.
+Before promotion, the publisher rechecks current `main` and the previous latest ID/tag. It observes the promoted release and signed stable catalog afterward. An ambiguous API response is reconciled against actual public state; it is not permission to roll back an unrelated activation.
 
-First publication uses `publish.yml` with `bootstrap=true`, which signs/uploads/verifies without activating. `python3 -m tools.cloudflare bootstrap` then verifies that signed catalog, applies the Worker identity with native OpenTofu, deploys the complete module, and binds the domain only after verification. Preserve encrypted infrastructure state, its private recovery passphrase, and the final domain-binding variables outside Git. Never replace an unrelated existing hostname/Worker.
+Rollback requires the expected current release ID/tag, independently verifies the retained complete signed snapshot, and promotes that old release without deleting assets or changing the key. From an exact accepted control checkout:
 
-The Worker stays on Free: 100,000 dynamic requests/day and 10 ms CPU/request. There is no KV, R2, paid upgrade, origin service, or Oracle fallback. Quota exhaustion fails rather than weakening signatures or switching origin.
+```fish
+python3 tools/publish.py rollback --target-tag SNAPSHOT_TAG --expected-release-id CURRENT_ID --expected-tag CURRENT_TAG --work-dir ~/.local/state/omp/work/arch-rollback
+```
+
+The workflow's rollback operation provides the same guarded path. Fixed snapshot URLs remain usable without changing latest. No laptop package configuration is changed automatically.
 
 ## Signing and recovery
 
-Only `publish` holds the dedicated private signing key, passphrase, and scoped Cloudflare token. The committed public key/fingerprint is checked before signing. Packages, both pacman databases, and the complete catalog have detached signatures. Corresponding-source/license assets and immutable Git bundle identities are bound by the signed catalog.
+Only `publish` holds the dedicated private signing key and passphrase. The committed public key/fingerprint is checked before signing. Packages, both pacman databases, and the complete catalog have detached signatures. Corresponding-source/license assets and immutable Git bundle identities are bound by the signed catalog.
 
-Private recovery copies are outside this checkout. Never export the production repository key, commit tokens/state/passphrases, blanket-prune volumes, delete old snapshots, or alter client configuration automatically. Rollback selects a previously verified Worker version at 100% without deleting assets or changing the key.
+Private signing recovery copies are outside this checkout. Never export the production repository key, commit tokens/passphrases, blanket-prune volumes, delete old snapshots, or alter client configuration automatically. Rollback selects a previously verified complete GitHub Release without deleting assets or changing the key.
 
 ## Verification
 
-`verification.yml` runs the Python policy/source/publication boundary suite and Node Worker tests with native `vercmp` from the pinned Arch image. Publication/candidate builds validate complete prepared `.SRCINFO`, lock identity, expected outputs, and native runtime evidence. `tools/smoke.sh` installs all six with empty databases/cache and required signatures in a disposable Arch environment and exercises their actual consumers. The Google SDK smoke sends a real SDK request to a local HTTP fixture and checks the decoded response, without credentials or a paid API. Verification is complete only when the corresponding Actions runs and live snapshot evidence exist; checked-in automation alone is not proof of a deployed service.
+`verification.yml` runs the Python gitlink/policy/source/publication boundary suite with native `vercmp` from the pinned Arch image. Publication/candidate builds validate complete prepared `.SRCINFO`, lock identity, expected outputs, and native runtime evidence. `tools/smoke.sh` installs all six with empty databases/cache and required signatures in a disposable Arch environment and exercises their actual consumers. The Google SDK smoke sends a real SDK request to a local HTTP fixture and checks the decoded response, without credentials or a paid API. Verification is complete only when the corresponding Actions runs and live snapshot evidence exist; checked-in automation alone is not proof of a deployed service.

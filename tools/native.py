@@ -78,6 +78,9 @@ def validate_bundle(path: Path) -> dict:
     for key in ('run_id', 'run_attempt'):
         if not str(bundle.get(key, '')).isdigit() or int(bundle[key]) < 1:
             raise ValueError(f'invalid {key}')
+    pins = bundle.get('recipe_pins')
+    if not isinstance(pins, dict) or not pins or any(not re.fullmatch(r'[a-z0-9][a-z0-9+_.-]*', name) or not re.fullmatch(r'[0-9a-f]{40}', str(sha)) for name, sha in pins.items()):
+        raise ValueError('immutable recipe pins required')
     root = path.parent.resolve()
     allowed = {path.name}
     names = set()
@@ -87,6 +90,8 @@ def validate_bundle(path: Path) -> dict:
         if not re.fullmatch(r'[a-z0-9][a-z0-9+_.-]*', name) or name in names:
             raise ValueError('invalid/duplicate pkgbase')
         names.add(name)
+        if package.get('recipe_commit') != pins.get(name):
+            raise ValueError('recipe commit differs from bound control gitlink')
         recipe = contained(root, package['recipe_dir'])
         allowed.add(Path(package['recipe_dir']).parts[0])
         recipe_roots.append(recipe)
@@ -276,7 +281,7 @@ def build(path: Path, output: Path):
             cli = directory / 'pkg' / name / 'usr/bin/omp'
             proof = omp_proof(cli, addons[0], metadata['version'], directory, env)
         metadata['srcinfo'] = prepared
-        receipts.append({'pkgbase': name, 'files': files, 'metadata': metadata, 'source_lock': package['lock'], 'input_digest': package['input_digest'], 'tree_sha': hashlib.sha256(canonical(tree_manifest(original))).hexdigest(), 'run_id': bundle['run_id'], 'run_attempt': bundle['run_attempt'], 'image': bundle['image'], 'harness_sha': bundle['harness_sha'], 'runtime': proof, 'prepare_log': prepared_log, 'build_log': build_log})
+        receipts.append({'pkgbase': name, 'recipe_commit': package['recipe_commit'], 'files': files, 'metadata': metadata, 'source_lock': package['lock'], 'input_digest': package['input_digest'], 'tree_sha': hashlib.sha256(canonical(tree_manifest(original))).hexdigest(), 'run_id': bundle['run_id'], 'run_attempt': bundle['run_attempt'], 'image': bundle['image'], 'harness_sha': bundle['harness_sha'], 'runtime': proof, 'prepare_log': prepared_log, 'build_log': build_log})
     evidence = {key: value for key, value in bundle.items() if key != 'packages'}
     evidence['packages'] = receipts
     (output / 'native-evidence.json').write_bytes(canonical(evidence))

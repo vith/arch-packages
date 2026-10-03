@@ -1,0 +1,24 @@
+[submodule "recipes/archive-mounter"]
+	path = recipes/archive-mounter
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/archive-mounter
+[submodule "recipes/carapace"]
+	path = recipes/carapace
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/carapace
+[submodule "recipes/nasc-tui-bin"]
+	path = recipes/nasc-tui-bin
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/nasc-tui-bin
+[submodule "recipes/cloudflare-speed-cli"]
+	path = recipes/cloudflare-speed-cli
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/cloudflare-speed-cli
+[submodule "recipes/oh-my-pi-vith-git"]
+	path = recipes/oh-my-pi-vith-git
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/oh-my-pi-vith-git
+[submodule "recipes/python-google-genai"]
+	path = recipes/python-google-genai
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/python-google-genai

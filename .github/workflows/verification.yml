@@ -1,4 +1,4 @@
-name: Trusted policy and Worker verification
+name: Trusted recipe and publication verification
 on:
   workflow_dispatch:
 permissions:
@@ -16,9 +16,9 @@ jobs:
         run: |
           set -euo pipefail
           image=$(cat build-image.txt)
-          container=$(docker create --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges "$image" /bin/bash -c 'pacman -Syu --noconfirm --needed -- python git nodejs gnupg && cd /verify && python -m unittest discover -s tests -p "test_*.py" && node --test tests/worker.test.mjs')
+          container=$(docker create --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges "$image" /bin/bash -c 'pacman -Syu --noconfirm --needed -- python git gnupg && cd /verify && python -m unittest discover -s tests -p "test_*.py"')
           trap 'docker rm -f "$container" >/dev/null' EXIT
           mkdir -p .work/verification-root
-          cp -R tools tests worker build-image.txt .work/verification-root/
+          cp -R tools tests build-image.txt .work/verification-root/
           docker cp .work/verification-root "$container:/verify"
           docker start -a "$container"

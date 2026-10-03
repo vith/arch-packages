@@ -9,6 +9,9 @@ on:
         required: false
         type: boolean
         default: false
+env:
+  OMP_WORK: /home/runner/.local/state/omp/work/arch-packages/${{ github.run_id }}/${{ github.run_attempt }}
+  TMPDIR: /home/runner/.local/state/omp/work/arch-packages/${{ github.run_id }}/${{ github.run_attempt }}/tmp
 permissions:
   contents: read
 concurrency:
@@ -21,6 +24,11 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Prepare persistent scratch and trusted validation tools
+        run: |
+          mkdir -p "$OMP_WORK" "$TMPDIR"
+          sudo apt-get update
+          sudo apt-get install --yes libarchive-tools
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: main
@@ -30,15 +38,15 @@ jobs:
           BOOTSTRAP: ${{ inputs.bootstrap }}
         run: |
           if [ "$BOOTSTRAP" = true ]; then
-            python3 -m tools.update bootstrap --directory "$RUNNER_TEMP/discovery"
+            python3 -m tools.update bootstrap --directory "$OMP_WORK/discovery"
           else
-            python3 -m tools.update discover --directory "$RUNNER_TEMP/discovery"
+            python3 -m tools.update discover --directory "$OMP_WORK/discovery"
           fi
-          python3 -m tools.update pack --directory "$RUNNER_TEMP/discovery" --archive "$RUNNER_TEMP/source-data.tar"
+          python3 -m tools.update pack --directory "$OMP_WORK/discovery" --archive "$OMP_WORK/source-data.tar"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: source-receipts
-          path: ${{ runner.temp }}/source-data.tar
+          path: ${{ env.OMP_WORK }}/source-data.tar
           retention-days: 2
           if-no-files-found: error
   write-proposals:
@@ -51,6 +59,11 @@ jobs:
       actions: write
       statuses: write
     steps:
+      - name: Prepare persistent scratch and trusted validation tools
+        run: |
+          mkdir -p "$OMP_WORK" "$TMPDIR"
+          sudo apt-get update
+          sudo apt-get install --yes libarchive-tools
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: main
@@ -58,10 +71,10 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: source-receipts
-          path: ${{ runner.temp }}/receipts
+          path: ${{ env.OMP_WORK }}/receipts
       - name: Validate data and write proposals
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python3 -m tools.update extract --source-receipts --archive "$RUNNER_TEMP/receipts/source-data.tar" --directory "$RUNNER_TEMP/source-data"
-          python3 -m tools.update write --directory "$RUNNER_TEMP/source-data"
+          python3 -m tools.update extract --source-receipts --archive "$OMP_WORK/receipts/source-data.tar" --directory "$OMP_WORK/source-data"
+          python3 -m tools.update write --directory "$OMP_WORK/source-data"
