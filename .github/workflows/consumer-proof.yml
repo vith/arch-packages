@@ -1,0 +1,96 @@
+name: Signed snapshot consumer proof
+on:
+  workflow_dispatch:
+    inputs:
+      publication_run_id:
+        description: Successful publication run containing complete six-package native evidence
+        required: true
+        type: string
+      snapshot_tag:
+        description: Exact signed snapshot to install
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  consumers:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PROOF_WORK: /home/runner/.local/state/omp/work/consumers-${{ github.run_id }}-${{ github.run_attempt }}
+      TMPDIR: /home/runner/.local/state/omp/work/consumers-${{ github.run_id }}-${{ github.run_attempt }}/tmp
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate publication run identity
+        id: publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLICATION_RUN: ${{ inputs.publication_run_id }}
+          SNAPSHOT: ${{ inputs.snapshot_tag }}
+        run: |
+          mkdir -p "$TMPDIR"
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          run = os.environ['PUBLICATION_RUN']
+          snapshot = os.environ['SNAPSHOT']
+          if not re.fullmatch(r'[1-9][0-9]*', run):
+              raise ValueError('invalid publication run')
+          if not re.fullmatch(r'snapshot-[0-9a-f]{40}-[1-9][0-9]*-[1-9][0-9]*', snapshot):
+              raise ValueError('invalid snapshot tag')
+          record = json.loads(subprocess.check_output(['gh', 'api', 'repos/vith/arch-packages/actions/runs/' + run], text=True))
+          if record['conclusion'] != 'success' or record['head_branch'] != 'main' or record['path'] != '.github/workflows/publish.yml':
+              raise ValueError('native evidence must come from successful trusted main publication')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('attempt=' + str(record['run_attempt']) + '\n')
+          PY
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: unsigned-publication-${{ inputs.publication_run_id }}-${{ steps.publication.outputs.attempt }}
+          run-id: ${{ inputs.publication_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ env.PROOF_WORK }}/publication
+      - name: Verify signed snapshot and native evidence
+        env:
+          SNAPSHOT: ${{ inputs.snapshot_tag }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnupg libarchive-tools
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from tools import github_api, publish
+          work = Path(os.environ['PROOF_WORK'])
+          publish.safe_extract(work / 'publication/unsigned.tar', work / 'native')
+          plan = json.loads((work / 'publication/publication-plan.json').read_text())['expected']
+          publish.validate_unsigned(work / 'native', plan)
+          evidence = json.loads((work / 'native/native-evidence.json').read_text())
+          (work / 'verification').mkdir()
+          ring = publish.keyring(work / 'verification')
+          release = github_api.api('repos/vith/arch-packages/releases/tags/' + os.environ['SNAPSHOT'], authenticated=False)
+          if release['draft'] or release['prerelease']:
+              raise ValueError('snapshot is not a public package release')
+          catalog = publish.verified_snapshot({'id': release['id'], 'tag': release['tag_name']}, work / 'snapshot', ring)
+          names = {item['pkgbase'] for item in evidence['packages']}
+          if names != set(catalog['recipes']):
+              raise ValueError('native evidence does not cover the full signed catalog')
+          for package in evidence['packages']:
+              accepted = catalog['recipes'][package['pkgbase']]
+              if package['input_digest'] != accepted['input_digest'] or package['recipe_commit'] != accepted['recipe_commit']:
+                  raise ValueError('native evidence differs from signed snapshot inputs')
+          PY
+      - name: Install all six with required signatures and exercise consumers
+        env:
+          SNAPSHOT: ${{ inputs.snapshot_tag }}
+        run: tools/smoke.sh "$PROOF_WORK/native/native-evidence.json" "$PROOF_WORK/evidence" "$SNAPSHOT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: consumer-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PROOF_WORK }}/evidence
+          if-no-files-found: warn
+          retention-days: 14
