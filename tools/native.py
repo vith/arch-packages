@@ -203,11 +203,11 @@ def build(path: Path, output: Path):
     from tools.recipe_gate import parse_srcinfo, tree_manifest, input_digest, harness_digest
     from tools.sources import materialize_sources
     bundle = validate_bundle(path)
-    cache = {}
+    persistent_cache_env = {}
     if os.environ.get('ARCH_PACKAGE_CACHE') == '1':
         if len(bundle['packages']) != 1:
             raise ValueError('persistent cache requires exactly one package')
-        cache = cache_environment(Path('/ci-cache'))
+        persistent_cache_env = cache_environment(Path('/ci-cache'))
     if harness_digest(Path(__file__).resolve().parent.parent) != bundle['harness_sha']:
         raise ValueError('executing harness differs from bound stable digest')
     output.mkdir(parents=True)
@@ -259,7 +259,7 @@ def build(path: Path, output: Path):
             os.chown(cache_dir, 1000, 1000)
         gitconfig.chmod(0o444)
         env = {'PATH': '/usr/bin', 'HOME': str(home), 'LANG': 'C.UTF-8', 'GOTOOLCHAIN': 'local', 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': str(gitconfig)}
-        env.update(cache)
+        env.update(persistent_cache_env)
         command = ['makepkg', '--config', str(config)]
         prepared_log = builder([*command, '--nobuild', '--noconfirm', '--cleanbuild'], directory, env)
         prepared = builder([*command, '--printsrcinfo'], directory, env)
