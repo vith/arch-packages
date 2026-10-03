@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: afc352b0c2a0f258a36c7832edee5ae42494db26
+          ref: 1930c655de72f7aa727b86d7b835d670fd01655e
           persist-credentials: false
       - name: Select disposable enrollment scope
         env:
