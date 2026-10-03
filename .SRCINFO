@@ -2,7 +2,7 @@ pkgbase = oh-my-pi-vith-git
 	pkgdesc = Oh My Pi coding agent — vith fork
 	pkgver = r25173.c1a969eada61
 	pkgrel = 2
-	url = https://git.n3t.work/vith/oh-my-pi
+	url = https://github.com/vith/oh-my-pi-vith
 	arch = x86_64
 	license = MIT
 	makedepends = git
@@ -34,7 +34,7 @@ pkgbase = oh-my-pi-vith-git
 	noextract = linux-api-headers-7.2-1-x86_64.pkg.tar.zst
 	options = !strip
 	options = !debug
-	source = oh-my-pi::git+https://git.n3t.work/vith/oh-my-pi.git#branch=integration
+	source = oh-my-pi::git+https://github.com/vith/oh-my-pi-vith.git#branch=integration
 	source = https://archive.archlinux.org/packages/g/glibc/glibc-2.44+r50+g1848099f063e-1-x86_64.pkg.tar.zst
 	source = https://archive.archlinux.org/packages/l/libgcc/libgcc-16.2.1+r23+gd564253eb6c8-1-x86_64.pkg.tar.zst
 	source = https://archive.archlinux.org/packages/l/libstdc++/libstdc++-16.2.1+r23+gd564253eb6c8-1-x86_64.pkg.tar.zst
