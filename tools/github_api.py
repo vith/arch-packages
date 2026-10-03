@@ -30,7 +30,7 @@ def _request(url, method="GET", data=None, content_type="application/json", auth
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or parsed.username or parsed.password:
         raise ValueError("credential-free HTTPS required")
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": "n3t-arch-packages", "X-GitHub-Api-Version": "2022-11-28"}
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "arch-packages", "X-GitHub-Api-Version": "2022-11-28"}
     if data is not None:
         headers["Content-Type"] = content_type
     if authenticated:
@@ -70,7 +70,7 @@ def download(url, path, maximum=805306368):
     path.parent.mkdir(parents=True, exist_ok=True)
     staging = path.with_name(path.name + ".part")
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "n3t-arch-packages"}), timeout=120) as response, staging.open("xb") as output:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "arch-packages"}), timeout=120) as response, staging.open("xb") as output:
             final = urllib.parse.urlsplit(response.url)
             if final.scheme != "https":
                 raise ValueError("asset redirect downgraded transport")

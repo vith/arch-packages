@@ -9,7 +9,7 @@ import subprocess
 import urllib.request
 
 MAXIMUM = 805306368
-FIELDS = {'id','kind','source','url','ref','commit','tag_object','peeled_commit','release_id','asset_id','checksums','bundle'}
+FIELDS = {'id','kind','source','url','ref','commit','tag_object','peeled_commit','release_id','asset_id','checksums','git_context'}
 HEX = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$')
 
 
@@ -22,7 +22,7 @@ def public_url(url):
     p = urlsplit(url)
     if p.scheme != 'https' or not p.hostname or p.username or p.password or p.fragment:
         raise ValueError('source URL must be public HTTPS without credentials or fragment')
-    if p.hostname in {'git.n3t.work','ci.n3t.work','arch.n3t.work','localhost'}:
+    if p.hostname=='localhost' or p.hostname.endswith('.localhost'):
         raise ValueError('unsupported runtime origin')
     return url
 
@@ -55,7 +55,7 @@ def refs(repository):
     return sorted(rows,key=lambda r:r['name'])
 
 
-def clone(url, directory):
+def clone(url, directory, reference):
     public_url(url)
     if Path(directory).exists():
         raise ValueError('source clone destination exists')
@@ -64,7 +64,7 @@ def clone(url, directory):
     if lengths not in ({40},{64}):
         raise ValueError('invalid or empty remote object format')
     git('init','--bare','--object-format='+('sha256' if lengths=={64} else 'sha1'),directory)
-    git('fetch','--no-recurse-submodules','--',url,'+refs/heads/*:refs/heads/*','+refs/tags/*:refs/tags/*',cwd=directory)
+    git('fetch','--no-recurse-submodules','--',url,reference+':'+reference,cwd=directory)
     return Path(directory)
 
 
@@ -160,24 +160,55 @@ def discover_release_tag(watcher, accepted):
 
 
 def discover_git(watcher, accepted):
-    repository=clone(watcher['url'],_work(watcher)/'watched.git')
+    repository=clone(watcher['url'],_work(watcher)/'watched.git',watcher['ref'])
     ref=watcher['ref']
     if not ref.startswith('refs/heads/'):
         raise ValueError('watched ref must be full branch ref')
     commit=git('rev-parse','--verify',ref+'^{commit}',cwd=repository)
-    context=refs(repository)
-    digest=hashlib.sha256(canonical(context)).hexdigest()
+    context=version_context(repository,commit)
     old=accepted.get('commit')
-    if old:
-        git('cat-file','-e',old+'^{commit}',cwd=repository)
-    previous_refs=accepted.get('bundle',{}).get('refs',[]) if accepted.get('bundle') else []
-    current={r['name']:r for r in context}
-    authentic=all(r['name'] in current and current[r['name']]==r for r in previous_refs if r['name'].startswith('refs/tags/'))
+    if old and git('cat-file','-e',old+'^{commit}',cwd=repository,check=False).returncode:
+        git('fetch','--no-tags','--no-recurse-submodules','--',watcher['url'],old,cwd=repository)
+    previous_tag=accepted['git_context']['version_tag']
+    advertised=dict(reversed(row.split()) for row in git('ls-remote','--tags',watcher['url']).splitlines())
+    authentic=previous_tag is None or advertised.get(previous_tag['name'])==previous_tag['object']
     if not authentic:
         raise ValueError('accepted authentic tag changed or disappeared')
-    if old==commit and accepted.get('bundle',{}).get('refs_digest')==digest:
+    if old==commit and accepted['git_context']==context:
         return None
-    return {'kind':'git','commit':commit,'ref':ref,'refs_digest':digest,'authentic':authentic,'fast_forward':not old or git('merge-base','--is-ancestor',old,commit,cwd=repository,check=False).returncode==0}
+    return {'kind':'git','commit':commit,'ref':ref,'git_context':context,'authentic':authentic,'fast_forward':not old or git('merge-base','--is-ancestor',old,commit,cwd=repository,check=False).returncode==0}
+
+
+def version_context(repository,commit):
+    described=git('describe','--tags','--match','v[0-9]*','--abbrev=0',commit,cwd=repository,check=False)
+    tag=None
+    if described.returncode==0:
+        reference='refs/tags/'+described.stdout.strip()
+        tag={'name':reference,'object':git('rev-parse',reference,cwd=repository),'commit':git('rev-parse',reference+'^{commit}',cwd=repository)}
+    return {'object_format':git('rev-parse','--show-object-format',cwd=repository),'version_tag':tag}
+
+
+def pinned_refs(source):
+    expected={source['ref']:source['tag_object'] or source['commit']}
+    tag=source['git_context']['version_tag']
+    if tag:
+        if tag['name'] in expected and expected[tag['name']]!=tag['object']:
+            raise ValueError('conflicting pinned tag')
+        expected[tag['name']]=tag['object']
+    return expected
+
+
+def verify_git_source(source,repository):
+    actual={row['name']:row['object'] for row in refs(repository)}
+    if actual!=pinned_refs(source) or git('rev-parse',source['ref']+'^{commit}',cwd=repository)!=source['commit']:
+        raise ValueError('frozen Git commit/ref mismatch')
+    if git('rev-parse','--show-object-format',cwd=repository)!=source['git_context']['object_format']:
+        raise ValueError('frozen Git object format mismatch')
+    tag=source['git_context']['version_tag']
+    if tag:
+        if git('rev-parse',tag['name']+'^{commit}',cwd=repository)!=tag['commit']:
+            raise ValueError('frozen version tag mismatch')
+        git('merge-base','--is-ancestor',tag['commit'],source['commit'],cwd=repository)
 
 
 def freeze_source(spec):
@@ -195,7 +226,7 @@ def freeze_source(spec):
                 raise ValueError('source checksum mismatch')
         return record
     directory=Path(spec['work_dir']); directory.mkdir(parents=True,exist_ok=True)
-    repository=clone(record['url'],directory/'freeze.git')
+    repository=clone(record['url'],directory/'freeze.git',record['ref'])
     target=git('rev-parse','--verify',record['ref']+'^{commit}',cwd=repository)
     if record['commit'] and target!=record['commit']:
         raise ValueError('moving source changed during freeze')
@@ -205,15 +236,16 @@ def freeze_source(spec):
         record['peeled_commit']=target
         if spec.get('tag_object') and spec['tag_object']!=record['tag_object']:
             raise ValueError('tag changed during freeze')
-    context=refs(repository)
-    file=directory/'source.bundle'
-    git('bundle','create',file,'--all',cwd=repository)
-    digest=hashlib.sha256(file.read_bytes()).hexdigest()
-    record['bundle']={'url':spec.get('bundle_url'),'sha256':digest,'object_format':git('rev-parse','--show-object-format',cwd=repository),'refs':context,'refs_digest':hashlib.sha256(canonical(context)).hexdigest()}
+    record['git_context']=version_context(repository,target)
+    expected=pinned_refs(record)
+    for row in refs(repository):
+        if row['name'] not in expected:
+            git('update-ref','-d',row['name'],cwd=repository)
+    verify_git_source(record,repository)
     return record
 
 
-def validate_lock(lock, allow_unpublished=False):
+def validate_lock(lock):
     if set(lock)!= {'schema','version','sources'} or lock['schema']!=1 or not isinstance(lock['version'],str) or not lock['version']:
         raise ValueError('invalid source lock')
     ids=set()
@@ -226,19 +258,17 @@ def validate_lock(lock, allow_unpublished=False):
         if source['kind']!='local':
             public_url(source['url'])
         if source['kind']=='git':
-            bundle=source['bundle']
-            if not isinstance(bundle,dict) or set(bundle)!={'url','sha256','object_format','refs','refs_digest'}:
-                raise ValueError('invalid bundle descriptor')
-            if bundle['url'] is not None or not allow_unpublished:
-                public_url(bundle['url'])
-            if not re.fullmatch(r'[0-9a-f]{64}',bundle['sha256']) or bundle['object_format'] not in {'sha1','sha256'}:
-                raise ValueError('invalid bundle digest/format')
-            rows=bundle['refs']
-            if rows!=sorted(rows,key=lambda r:r['name']) or len({r['name'] for r in rows})!=len(rows) or hashlib.sha256(canonical(rows)).hexdigest()!=bundle['refs_digest']:
-                raise ValueError('invalid complete ref manifest')
-            for row in rows:
-                if set(row)!={'name','object','peeled'} or not row['name'].startswith(('refs/heads/','refs/tags/')) or not HEX.fullmatch(row['object']) or row['peeled'] is not None and not HEX.fullmatch(row['peeled']):
-                    raise ValueError('invalid bundle ref')
+            context=source['git_context']
+            if not isinstance(context,dict) or set(context)!={'object_format','version_tag'} or context['object_format'] not in {'sha1','sha256'}:
+                raise ValueError('invalid Git context')
+            if not isinstance(source['ref'],str) or not source['ref'].startswith(('refs/heads/','refs/tags/')):
+                raise ValueError('invalid pinned Git ref')
+            git('check-ref-format',source['ref'])
+            tag=context['version_tag']
+            if tag is not None:
+                if not isinstance(tag,dict) or set(tag)!={'name','object','commit'} or not tag['name'].startswith('refs/tags/') or not HEX.fullmatch(tag['object']) or not HEX.fullmatch(tag['commit']):
+                    raise ValueError('invalid pinned version tag')
+                git('check-ref-format',tag['name'])
             if not HEX.fullmatch(source['commit'] or ''):
                 raise ValueError('invalid frozen commit')
     return lock
@@ -251,20 +281,13 @@ def materialize_sources(lock, destination):
     for source in lock['sources']:
         if source['kind']!='git':
             continue
-        bundle=source['bundle']; asset=destination/(bundle['sha256']+'.bundle')
-        fetch(bundle['url'],asset)
-        if hashlib.sha256(asset.read_bytes()).hexdigest()!=bundle['sha256']:
-            raise ValueError('immutable source asset tampered')
-        mirror=destination/(bundle['sha256']+'.git')
-        git('init','--bare','--object-format='+bundle['object_format'],mirror)
-        git('bundle','verify',asset,cwd=mirror)
-        git('fetch',asset,'+refs/*:refs/*',cwd=mirror)
-        if refs(mirror)!=bundle['refs'] or git('rev-parse','--show-object-format',cwd=mirror)!=bundle['object_format']:
-            raise ValueError('bundle manifest/object format mismatch')
-        if git('rev-parse',source['ref']+'^{commit}',cwd=mirror)!=source['commit']:
-            raise ValueError('frozen requested ref mismatch')
-        if source['tag_object'] and git('rev-parse',source['ref'],cwd=mirror)!=source['tag_object']:
-            raise ValueError('frozen tag object mismatch')
+        mirror=destination/(source['id']+'.git')
+        git('init','--bare','--object-format='+source['git_context']['object_format'],mirror)
+        objects={source['commit'],*pinned_refs(source).values()}
+        git('fetch','--no-tags','--no-recurse-submodules','--',source['url'],*sorted(objects),cwd=mirror)
+        for reference,object_id in pinned_refs(source).items():
+            git('update-ref',reference,object_id,cwd=mirror)
+        verify_git_source(source,mirror)
         for path in mirror.rglob('*'):
             if path.is_symlink():
                 raise ValueError('unexpected mirror symlink')
@@ -305,8 +328,9 @@ def probe_recipe(recipe_dir, lock, policy, preserve_pkgrel=False):
         for source in lock['sources']:
             if source['kind']=='git':
                 mirror=mapping.get(source['url'])
-                if mirror is None or refs(mirror)!=source['bundle']['refs'] or git('rev-parse',source['ref']+'^{commit}',cwd=mirror)!=source['commit']:
+                if mirror is None:
                     raise ValueError('native mirror context differs from frozen lock')
+                verify_git_source(source,mirror)
     vcs_rules=[r for r in policy['automatic']['checksums'] if next(s for s in lock['sources'] if s['id']==r['source_id'])['kind']=='git']
     if vcs_rules:
         import shlex

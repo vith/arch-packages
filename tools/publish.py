@@ -25,7 +25,7 @@ NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._+~-]*\Z')
 PKG_KEYS = {'pkgname','pkgbase','pkgver','pkgdesc','url','builddate','packager','size','arch','license','replaces','group','depend','optdepend','conflict','provides','backup','xdata','makedepend','checkdepend'}
 
 
-DATABASES = {'n3t-arch.db', 'n3t-arch.db.sig', 'n3t-arch.files', 'n3t-arch.files.sig', 'n3t-arch.asc', 'n3t-arch.db.tar.gz', 'n3t-arch.db.tar.gz.sig', 'n3t-arch.files.tar.gz', 'n3t-arch.files.tar.gz.sig'}
+DATABASES = {'arch-packages.db', 'arch-packages.db.sig', 'arch-packages.files', 'arch-packages.files.sig', 'arch-packages.asc', 'arch-packages.db.tar.gz', 'arch-packages.db.tar.gz.sig', 'arch-packages.files.tar.gz', 'arch-packages.files.tar.gz.sig'}
 SHA256 = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -56,7 +56,7 @@ def validate_catalog(catalog, repository, key_fingerprint):
     if {'catalog.json', 'catalog.json.sig'} & catalog['files'].keys():
         raise ValueError('Self-referential catalog')
 
-    def files(entries, expected_snapshot=None, allow_source_bundle=False):
+    def files(entries, expected_snapshot=None):
         for name, entry in entries.items():
             if not NAME.fullmatch(name) or not isinstance(entry, dict) or not SHA256.fullmatch(entry.get('sha256', '')):
                 raise ValueError('Invalid asset name/hash')
@@ -68,15 +68,13 @@ def validate_catalog(catalog, repository, key_fingerprint):
                     or segments[3:5] != ['releases', 'download']):
                 raise ValueError('Asset outside repository release boundary')
             tag = urllib.parse.unquote(segments[5])
-            source_bundle = (allow_source_bundle and re.fullmatch(r'source-[0-9a-f]{64}', tag)
-                             and name == tag[7:] + '.bundle' and entry['sha256'] == tag[7:])
-            if not NAME.fullmatch(tag) or not (tag.startswith('snapshot-') or source_bundle) or (expected_snapshot and tag != expected_snapshot):
+            if not NAME.fullmatch(tag) or not tag.startswith('snapshot-') or (expected_snapshot and tag != expected_snapshot):
                 raise ValueError('Wrong asset snapshot')
             if url != release_url(repository, tag, name):
                 raise ValueError('Noncanonical asset destination')
     files(catalog['files'])
     files({name: catalog['files'][name] for name in DATABASES}, snapshot)
-    files(catalog['source_assets'], allow_source_bundle=True)
+    files(catalog['source_assets'])
     files(catalog['retained_packages'])
     for old, entry in catalog['retained_snapshots'].items():
         if not NAME.fullmatch(old) or not old.startswith('snapshot-') or not isinstance(entry, dict):
@@ -131,7 +129,7 @@ def current_main(head):
 
 def keyring(work):
     target = work / 'public.gpg'
-    run(['gpg', '--batch', '--yes', '--dearmor', '--output', str(target), str(ROOT / 'keys/n3t-arch.asc')], env=clean_env())
+    run(['gpg', '--batch', '--yes', '--dearmor', '--output', str(target), str(ROOT / 'keys/arch-packages.asc')], env=clean_env())
     listing = run(['gpg', '--batch', '--show-keys', '--with-colons', str(target)], env=clean_env()).decode()
     primary = []
     want = False
@@ -385,12 +383,12 @@ def database(image, packages, output):
     # Explicit env and these two mounts are the entire container boundary. The
     # secret home, checkout, host home, socket and tokens are never mounted.
     output.chmod(0o777)
-    run(['docker','run','--rm','--platform','linux/amd64','--cap-drop=ALL','--security-opt=no-new-privileges','--mount',f'type=bind,src={packages},dst=/packages,readonly','--mount',f'type=bind,src={output},dst=/out',image,'repo-add','--include-sigs','/out/n3t-arch.db.tar.gz', *['/packages/'+p.name for p in sorted(packages.glob('*.pkg.tar.zst'))]], env=clean_env())
+    run(['docker','run','--rm','--platform','linux/amd64','--cap-drop=ALL','--security-opt=no-new-privileges','--mount',f'type=bind,src={packages},dst=/packages,readonly','--mount',f'type=bind,src={output},dst=/out',image,'repo-add','--include-sigs','/out/arch-packages.db.tar.gz', *['/packages/'+p.name for p in sorted(packages.glob('*.pkg.tar.zst'))]], env=clean_env())
     for suffix in ('db','files'):
-        path = output / f'n3t-arch.{suffix}.tar.gz'
+        path = output / f'arch-packages.{suffix}.tar.gz'
         if path.is_symlink() or not path.is_file():
             raise ValueError('repo-add archive missing')
-        alias = output / f'n3t-arch.{suffix}'
+        alias = output / f'arch-packages.{suffix}'
         alias.unlink(missing_ok=True)
         shutil.copyfile(path, alias)
 
@@ -400,7 +398,7 @@ def database(image, packages, output):
 def verify_database(packages, output):
     # Verify the actual database describes exactly the complete package bytes.
     found = {}
-    with tarfile.open(output / 'n3t-arch.db', 'r:gz') as archive:
+    with tarfile.open(output / 'arch-packages.db', 'r:gz') as archive:
         for entry in archive.getmembers():
             if entry.name.endswith('/desc'):
                 values = archive.extractfile(entry).read().decode().splitlines()
@@ -456,7 +454,7 @@ def public_readback(catalog, assets, readback, ring):
     if json.loads((readback / 'catalog.json').read_text()) != catalog:
         raise ValueError('signed readback catalog differs')
     for suffix in ('db','files'):
-        if sha(readback / f'n3t-arch.{suffix}') != sha(readback / f'n3t-arch.{suffix}.tar.gz'):
+        if sha(readback / f'arch-packages.{suffix}') != sha(readback / f'arch-packages.{suffix}.tar.gz'):
             raise ValueError('pacman alias differs from canonical archive')
     verify_database(readback, readback)
 
@@ -571,13 +569,6 @@ def publish(args):
                 check_collisions(previous, filename, sha(unsigned / filename))
                 shutil.copyfile(unsigned / filename, packages / filename)
                 new_names.update((filename, filename+'.sig'))
-        for source in lock['sources']:
-            if source.get('bundle'):
-                entry = source['bundle']
-                asset_name = entry.get('filename') or entry['url'].rsplit('/',1)[-1]
-                if asset_name != entry['sha256'] + '.bundle' or entry['url'] != release_url(REPOSITORY, 'source-' + entry['sha256'], asset_name):
-                    raise ValueError('source bundle outside package repository')
-                catalog['source_assets'][asset_name] = {'url':entry['url'],'sha256':entry['sha256']}
         if name == 'nasc-tui-bin':
             source = next((s for s in lock['sources'] if s['id'] == 'nasc-source' and s['kind'] == 'archive'), None)
             if not source:
@@ -614,9 +605,9 @@ def publish(args):
             signer.sign(packages / name)
             verify(packages / name, packages / (name+'.sig'), ring)
     database(plan['image'], packages, assets)
-    for name in ('n3t-arch.db','n3t-arch.files','n3t-arch.db.tar.gz','n3t-arch.files.tar.gz'):
+    for name in ('arch-packages.db','arch-packages.files','arch-packages.db.tar.gz','arch-packages.files.tar.gz'):
         signer.sign(assets / name)
-    shutil.copyfile(ROOT / 'keys/n3t-arch.asc', assets / 'n3t-arch.asc')
+    shutil.copyfile(ROOT / 'keys/arch-packages.asc', assets / 'arch-packages.asc')
     upload_names = set(new_names) | DATABASES | set(catalog['files']) | set(catalog['source_assets'])
     for name in catalog['source_assets']:
         if name not in new_names:

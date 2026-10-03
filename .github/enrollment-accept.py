@@ -1,7 +1,6 @@
 """One-time trusted receipt validation; never executes returned recipe code."""
 import hashlib
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -65,22 +64,7 @@ def validate(directories, output, omp_commit):
             raise ValueError('probe recipe differs from trusted literal rendering')
         for source in lock['sources']:
             if source['kind'] == 'git':
-                path = work / source['id'] / 'source.bundle'
-                if hashlib.sha256(path.read_bytes()).hexdigest() != source['bundle']['sha256']:
-                    raise ValueError('bundle hash mismatch')
-                mirror = output / name / ('verify-' + source['id'])
-                sources.git('init', '--bare', '--object-format=' + source['bundle']['object_format'], mirror)
-                sources.git('bundle', 'verify', path, cwd=mirror)
-                sources.git('fetch', path, '+refs/*:refs/*', cwd=mirror)
-                if sources.refs(mirror) != source['bundle']['refs'] or sources.git('rev-parse', source['ref'] + '^{commit}', cwd=mirror) != source['commit']:
-                    raise ValueError('immutable bundle context mismatch')
-                remote = sources.git('ls-remote', '--heads', '--tags', source['url']).splitlines()
-                objects = dict(reversed(row.split()) for row in remote)
-                for ref in source['bundle']['refs']:
-                    if objects.get(ref['name']) != ref['object'] or ref['peeled'] and objects.get(ref['name'] + '^{}') != ref['peeled']:
-                        raise ValueError('bundle context is not authentic public context')
-                immutable = output / name / (source['bundle']['sha256'] + '.bundle')
-                shutil.copyfile(path, immutable)
+                sources.materialize_sources({'schema':1,'version':lock['version'],'sources':[source]},output / name / ('verify-' + source['id']))
             elif source['kind'] == 'local':
                 path = rendered / source['source']
                 if not path.resolve().is_relative_to(rendered.resolve()):

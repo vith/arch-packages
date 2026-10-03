@@ -11,7 +11,7 @@ import subprocess
 import tarfile
 
 from tools import sources, recipes
-from tools.github_api import api, download, upload_asset
+from tools.github_api import api, download
 from tools.recipe_gate import classify_recipe_update, input_digest, parse_srcinfo, tree_manifest, harness_digest
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -110,11 +110,11 @@ def extract_tree(archive,destination,allowed=None,source_assets=False):
                     raise ValueError('escaping artifact symlink')
                 links.append((target,link))
                 continue
-            limit=sources.MAXIMUM if source_assets and name.endswith('.bundle') else MAX_FILE
+            limit=MAX_FILE
             if not member.isfile() or member.mode not in {0o644,0o755,0o664,0o775} or member.size>limit:
                 raise ValueError('artifact contains unsafe mode/type/size')
             total+=member.size
-            if total>(2*1024*1024*1024 if source_assets else MAX_TREE):
+            if total>MAX_TREE:
                 raise ValueError('artifact exceeds tree bound')
             target.parent.mkdir(parents=True,exist_ok=True)
             with stream.extractfile(member) as handle:
@@ -194,9 +194,6 @@ def validate_source_policy(lock,policy):
             raise ValueError('source kind changed')
         if source['kind']=='git':
             expression=source['source'].split('#',1)
-            digest=source['bundle']['sha256']
-            if source['bundle']['url']!='https://github.com/'+repository()+'/releases/download/source-'+digest+'/'+digest+'.bundle':
-                raise ValueError('source bundle is not an enrolled hash-addressed Release asset')
             if len(expression)!=2 or '=' not in expression[1]:
                 raise ValueError('Git source must retain enrolled native ref semantics')
             kind,value=expression[1].split('=',1)
@@ -376,11 +373,10 @@ def independent_transition(old,new,name,policy,work):
             previous=next(s for s in oldlock['sources'] if s['id']==source['id'])
             if previous['commit']:
                 fast_forward &= sources.git('merge-base','--is-ancestor',previous['commit'],source['commit'],cwd=mirror,check=False).returncode==0
-            current={r['name']:r for r in source['bundle']['refs']}
-            authentic &= all(current.get(r['name'])==r for r in previous['bundle']['refs'] if r['name'].startswith('refs/tags/'))
             remote_tags=sources.git('ls-remote','--tags',source['url']).splitlines()
             tags={r.split()[1]:r.split()[0] for r in remote_tags}
-            authentic &= all(tags.get(r['name'])==r['object'] and (r['peeled'] is None or tags.get(r['name']+'^{}')==r['peeled']) for r in source['bundle']['refs'] if r['name'].startswith('refs/tags/'))
+            for tag in (previous['git_context']['version_tag'],source['git_context']['version_tag']):
+                authentic &= tag is None or tags.get(tag['name'])==tag['object']
             remote=sources.git('ls-remote',source['url'],source['ref']).splitlines()
             if len(remote)!=1 or remote[0].split()[0]!=(source['tag_object'] or source['commit']):
                 raise ValueError('source transition no longer authentic')
@@ -655,16 +651,12 @@ def align_aur_lock(recipe,lock,policy,work):
             source['ref']=('refs/tags/' if kind=='tag' else 'refs/heads/')+ref
             source['commit']=None;source['tag_object']=None;source['peeled_commit']=None
             source.update(sources.freeze_source({**source,'work_dir':str(work/source['id'])}))
-            digest=source['bundle']['sha256']
-            source['bundle']['url']='https://github.com/'+repository()+'/releases/download/source-'+digest+'/'+digest+'.bundle'
         elif source['kind'] in {'archive','release'}:
             sources.freeze_source(source)
     return metadata
 
 
 def prune_probe_work(work):
-    # Preserve only bounded receipts, recipe payloads and one immutable bundle
-    # per Git source. Never upload duplicated clones or the probe harness.
     for child in list(work.iterdir()):
         if child.name in {'probe','result','watched.git','aur.git','three-way'}:
             shutil.rmtree(child)
@@ -789,9 +781,6 @@ def bootstrap(output):
                     kind,ref=native.split('#',1)[1].split('=',1)
                     record['ref']=('refs/tags/' if kind=='tag' else 'refs/heads/')+ref
                 record=sources.freeze_source({**record,'work_dir':str(work/enrolled['id'])})
-                if record['bundle']:
-                    sha=record['bundle']['sha256']
-                    record['bundle']['url']='https://github.com/'+repository()+'/releases/download/source-'+sha+'/'+sha+'.bundle'
             records.append(record)
         lock={'schema':1,'version':metadata['version'],'sources':records}
         result=native_probe(recipe,lock,policy,work,preserve_pkgrel=True)
@@ -849,7 +838,6 @@ def discover(output):
                         source['ref']=transition['ref'] if 'ref' in transition else 'refs/tags/'+transition['tag']
                         source['commit']=transition.get('commit');source['tag_object']=None;source['peeled_commit']=None
                         source.update(sources.freeze_source({**source,'work_dir':str(work/source['id'])}))
-                        digest=source['bundle']['sha256'];source['bundle']['url']='https://github.com/'+repository()+'/releases/download/source-'+digest+'/'+digest+'.bundle'
                     else:
                         data=sources.fetch(source['url'])
                         for algorithm in source['checksums']:
@@ -883,23 +871,6 @@ def discover(output):
     dump(output/'receipts.json',{'schema':1,'base':base,'receipts':receipts})
 
 
-def persist_bundle(source,path):
-    bundle=source['bundle'];digest=bundle['sha256']
-    if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:
-        raise ValueError('bundle receipt digest mismatch')
-    tag='source-'+digest
-    # List rather than treating arbitrary API errors as a missing release.
-    releases=api(route('/releases?per_page=100'))
-    found=[r for r in releases if r['tag_name']==tag]
-    release=found[0] if found else api(route('/releases'),'POST',{'tag_name':tag,'name':tag,'target_commitish':'main','draft':False,'prerelease':True,'make_latest':'false'})
-    filename=digest+'.bundle';assets=[a for a in release['assets'] if a['name']==filename]
-    if len(assets)>1:
-        raise ValueError('duplicate immutable source asset')
-    if not assets:
-        upload_asset(repository(),release['id'],path,name=filename)
-    data=sources.fetch(bundle['url'])
-    if hashlib.sha256(data).hexdigest()!=digest:
-        raise ValueError('published source bytes differ; never replace asset')
 
 
 def dispatch(number):
@@ -978,22 +949,7 @@ def write_proposals(directory):
             if source!=previous and source['id'] not in allowed_ids and watcher['kind']!='aur':
                 raise ValueError('watcher changed unrelated source')
             if source['kind']=='git' and source!=previous:
-                path=work/source['id']/'source.bundle'
-                # Verify immutable bundle content with trusted Git before upload.
-                mirror=work/('verify-'+source['id']);sources.git('init','--bare','--object-format='+source['bundle']['object_format'],mirror)
-                sources.git('bundle','verify',path,cwd=mirror);sources.git('fetch',path,'+refs/*:refs/*',cwd=mirror)
-                if sources.refs(mirror)!=source['bundle']['refs']:
-                    raise ValueError('source bundle ref receipt mismatch')
-                remote=sources.git('ls-remote','--heads','--tags',source['url']).splitlines()
-                objects={r.split()[1]:r.split()[0] for r in remote}
-                for ref in source['bundle']['refs']:
-                    if objects.get(ref['name'])!=ref['object'] or ref['peeled'] and objects.get(ref['name']+'^{}')!=ref['peeled']:
-                        raise ValueError('bundle context is not authentic public context')
-                if sources.git('rev-parse',source['ref']+'^{commit}',cwd=mirror)!=source['commit']:
-                    raise ValueError('bundle requested commit mismatch')
-                immutable=path.with_name(source['bundle']['sha256']+'.bundle')
-                shutil.copyfile(path,immutable)
-                persist_bundle(source,immutable)
+                sources.materialize_sources({'schema':1,'version':lock['version'],'sources':[source]},work/('verify-'+source['id']))
             elif source['kind'] not in {'local','git'}:
                 sources.freeze_source(source)
             elif source['kind']=='local':

@@ -1,6 +1,6 @@
-# n3t Arch packages
+# Arch packages
 
-Native x86-64 Arch builds on standard GitHub-hosted runners and signed complete GitHub Release snapshots. GitHub hosts the recipes, CI and package downloads; there is no Worker, package-hosting infrastructure state, or Oracle runtime dependency. Accepted recipe gitlinks on `main`—not moving recipe or AUR branch tips—are the build authority.
+Native x86-64 Arch builds on standard GitHub-hosted runners and signed complete GitHub Release snapshots. GitHub hosts the recipes, CI and package downloads. Accepted recipe gitlinks on `main`—not moving recipe or AUR branch tips—are the build authority.
 
 ## Packages and sources
 
@@ -15,9 +15,9 @@ Native x86-64 Arch builds on standard GitHub-hosted runners and signed complete 
 
 The Google SDK recipe removes only the unused `python-sentencepiece` test dependency, which is absent from the official Arch repositories. Its tokenizer tests were already excluded upstream; enabled tests and the optional runtime tokenizer dependency remain unchanged. AUR updates preserve this correction.
 
-The source fork is <https://github.com/vith/oh-my-pi-vith>. Old Forgejo URLs in `upstream/` describe one-time migration provenance only. There are no source credentials or automatic AUR uploads.
+The source fork is <https://github.com/vith/oh-my-pi-vith>. There are no source credentials or automatic AUR uploads.
 
-`inputs/` binds exact software identities and native versions. Git inputs include complete reachable history and an explicit authentic tag/ref manifest in immutable, hash-addressed GitHub Release bundles. Builds use verified read-only mirrors instead of resolving moving branches. OMP derives its native package and runtime identities from that frozen ancestry; source-version manifests are not rewritten to create artificial releases.
+`inputs/` binds exact software identities and native versions. Git inputs pin upstream commits and version tags. Builds fetch those exact objects directly from upstream; this repository does not publish Git source bundles. Builds use verified read-only mirrors instead of resolving moving branches. OMP derives its native package and runtime identities from that frozen ancestry; source-version manifests are not rewritten to create artificial releases.
 
 ## Independent recipe histories
 
@@ -39,18 +39,18 @@ Candidate review includes the complete underlying recipe diff, modes and history
 After verified publication, GitHub's latest-release download URL exposes the signed catalog, public key, databases and packages. Trust the dedicated key only after independently comparing this full fingerprint:
 
 ```text
-C557EA3489AC5820B7C019A9D9CFD8271E0C3DD3
+9C293ABB1F701DA04BA2C0D5711FC9BDDC5AF617
 ```
 
-Public key: <https://github.com/vith/arch-packages/releases/latest/download/n3t-arch.asc>. Pacman configuration:
+Public key: <https://github.com/vith/arch-packages/releases/latest/download/arch-packages.asc>. Pacman configuration:
 
 ```ini
-[n3t-arch]
+[arch-packages]
 SigLevel = Required
 Server = https://github.com/vith/arch-packages/releases/latest/download
 ```
 
-Strict signatures are never disabled. Separate database/signature requests can straddle latest-release promotion; such a pair fails closed. Retry a fresh sync or use `https://github.com/vith/arch-packages/releases/download/SNAPSHOT_TAG` as the server for a fixed generation. Old snapshot, package, signature and corresponding-source assets are retained. Pacman database/file aliases are uploaded as real signed bytes under the exact requested filenames, not local symlinks or Worker redirects.
+Strict signatures are never disabled. Separate database/signature requests can straddle latest-release promotion; such a pair fails closed. Retry a fresh sync or use `https://github.com/vith/arch-packages/releases/download/SNAPSHOT_TAG` as the server for a fixed generation. Old snapshot, package, signature and corresponding-source assets are retained. Pacman database/file aliases are uploaded as real signed bytes under the exact requested filenames, not local symlinks.
 
 ## Approval and builds
 
@@ -68,11 +68,11 @@ gh workflow run candidate.yml --repo vith/arch-packages -f pr_number=PR_NUMBER
 gh workflow run verification.yml --repo vith/arch-packages
 ```
 
-Native builds and empty-cache installation/runtime proofs run on GitHub, never on the workstation. The official Arch image and third-party Actions are pinned. Native source probes first preserve recipe modes and establish root-owned, read-only frozen Git configuration and mirrors during trusted container setup; recipe execution then drops all capabilities and enables no-new-privileges in a credential-free environment. Initial enrollment preserves the accepted native pkgrel even when makepkg derives a new VCS version. Hardware-detected compilation concurrency is retained. OMP's source test suites remain disabled. The x86_64 package build verifies the compiled executable identity and native PipeWire linkage; there is no duplicate ARM source build. Source merges still require human review.
+Native builds and empty-cache installation/runtime proofs run on GitHub, never on the workstation. The official Arch image and third-party Actions are pinned. Native source probes first preserve recipe modes and establish root-owned, read-only frozen Git configuration and mirrors during trusted container setup; recipe execution then drops all capabilities and enables no-new-privileges in a credential-free environment. Initial enrollment preserves the accepted native pkgrel even when makepkg derives a new VCS version. Hardware-detected compilation concurrency is retained. The x86_64 package build verifies the compiled executable identity and native PipeWire linkage.
 
 ## Release activation and rollback
 
-`publish.yml` creates a draft snapshot, uploads every expected asset, publishes it with `make_latest=false`, and independently verifies all public bytes/signatures and the complete database. Only then may it promote that exact snapshot with `make_latest=true`. Auxiliary source-bundle releases explicitly remain non-latest and are never package snapshots. There are no Cloudflare credentials, deployment commands or custom-domain changes.
+`publish.yml` creates a draft snapshot, uploads every expected asset, publishes it with `make_latest=false`, and independently verifies all public bytes/signatures and the complete database. Only then may it promote that exact snapshot with `make_latest=true`. Corresponding-source releases are not package snapshots.
 
 Before promotion, the publisher rechecks current `main` and the previous latest ID/tag. It observes the promoted release and signed stable catalog afterward. An ambiguous API response is reconciled against actual public state; it is not permission to roll back an unrelated activation.
 
@@ -86,9 +86,9 @@ The workflow's rollback operation provides the same guarded path. Fixed snapshot
 
 ## Signing and recovery
 
-Only `publish` holds the dedicated private signing key and passphrase. The committed public key/fingerprint is checked before signing. Packages, both pacman databases, and the complete catalog have detached signatures. Corresponding-source/license assets and immutable Git bundle identities are bound by the signed catalog.
+Only `publish` holds the dedicated private signing key and passphrase. The committed public key/fingerprint is checked before signing. Packages, both pacman databases, and the complete catalog have detached signatures. Corresponding-source/license assets and pinned source identities are bound by the signed catalog.
 
-Private signing recovery copies are outside this checkout. Never export the production repository key, commit tokens/passphrases, blanket-prune volumes, delete old snapshots, or alter client configuration automatically. Rollback selects a previously verified complete GitHub Release without deleting assets or changing the key.
+Private signing recovery copies are outside this checkout. Never commit tokens/passphrases, delete old snapshots, or alter client configuration automatically. Rollback selects a previously verified complete GitHub Release without deleting assets or changing the key.
 
 ## Verification
 

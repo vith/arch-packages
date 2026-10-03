@@ -18,7 +18,7 @@ if [[ ${1:-} != --inside ]]; then
   trap 'docker rm -f "$container" >/dev/null' EXIT
   docker cp "$root/tools/smoke.sh" "$container:/smoke.sh"
   docker cp "$root/tools/native.py" "$container:/native.py"
-  docker cp "$root/keys/n3t-arch.asc" "$container:/key.asc"
+  docker cp "$root/keys/arch-packages.asc" "$container:/key.asc"
   docker cp "$root/keys/fingerprint" "$container:/fingerprint.txt"
   docker cp "$1" "$container:/expected.json"
   docker cp "$root/packages.json" "$container:/enrollment.json"
@@ -66,7 +66,7 @@ LocalFileSigLevel = Required
 Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
 [extra]
 Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
-[n3t-arch]
+[arch-packages]
 SigLevel = Required
 Server = $server
 EOF
@@ -84,7 +84,7 @@ if not names or len(names)!=len(set(names)) or len(observed)!=len(set(observed))
 for name in sorted(names):
     if not re.fullmatch(r'[a-z0-9][a-z0-9@+_.-]*',name):
         raise SystemExit('unsafe enrolled package name')
-    print('n3t-arch/'+name)
+    print('arch-packages/'+name)
 PY
 mapfile -t targets < /evidence/targets.txt
 pacman --config /fresh/pacman.conf -S --noconfirm -- base python util-linux tmux desktop-file-utils binutils ca-certificates "${targets[@]}"
