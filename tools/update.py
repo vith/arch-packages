@@ -529,7 +529,7 @@ def native_probe(recipe,lock,policy,work):
     script='set -euo pipefail\npacman -Syu --noconfirm --needed base-devel git python util-linux\nuseradd -m -u 1000 builder\ncp -a /probe /work\nchown -R builder:builder /work/recipe\ncd /work\nPYTHONPATH=/work python -c '+shlex.quote(install)+'\nsetpriv --reuid=1000 --regid=1000 --clear-groups --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs env -i PATH=/usr/bin:/bin HOME=/home/builder LANG=C.UTF-8 GOTOOLCHAIN=local GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/probe/gitconfig PYTHONPATH=/work python -c '+shlex.quote(execute)+' > /work/result.json\ncp /work/result.json /result/result.json\n'
     (probe/'run.sh').write_text(script)
     result=work/'result';result.mkdir()
-    subprocess.run(['docker','run','--rm','--cap-drop=ALL','--cap-add=CHOWN','--cap-add=SETUID','--cap-add=SETGID','--cap-add=DAC_OVERRIDE','--cap-add=SETPCAP','--security-opt=no-new-privileges','-v',str(probe.resolve())+':/probe:ro','-v',str(result.resolve())+':/result',image,'bash','/probe/run.sh'],check=True,env={k:v for k,v in os.environ.items() if k in {'PATH','HOME','DOCKER_HOST'}})
+    subprocess.run(['docker','run','--rm','--cap-drop=ALL','--cap-add=CHOWN','--cap-add=FOWNER','--cap-add=SETUID','--cap-add=SETGID','--cap-add=DAC_OVERRIDE','--cap-add=SETPCAP','--security-opt=no-new-privileges','-v',str(probe.resolve())+':/probe:ro','-v',str(result.resolve())+':/result',image,'bash','/probe/run.sh'],check=True,env={k:v for k,v in os.environ.items() if k in {'PATH','HOME','DOCKER_HOST'}})
     metadata=load(result/'result.json')
     parse_srcinfo(metadata['srcinfo'])
     return metadata
