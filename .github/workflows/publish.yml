@@ -58,7 +58,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('sha=' + sha + '\n')
           PY
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ steps.target.outputs.sha }}
           persist-credentials: false
@@ -71,7 +71,7 @@ jobs:
         run: |
           mkdir -p "$HOME/.local/state/omp/work"
           python3 tools/publish.py plan --accepted-sha "$ACCEPTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --output-dir "$HOME/.local/state/omp/work/publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: publication-plan-${{ github.run_attempt }}
           path: ~/.local/state/omp/work/publication-${{ github.run_id }}-${{ github.run_attempt }}/publication-plan.json
@@ -81,7 +81,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 -m tools.package_runs collect "$HOME/.local/state/omp/work/publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: unsigned-publication-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -96,7 +96,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: main
           persist-credentials: false
@@ -113,7 +113,7 @@ jobs:
           python3 tools/publish.py rollback --target-tag "$TARGET_TAG" --expected-tag "$EXPECTED_TAG" --expected-release-id "$EXPECTED_RELEASE_ID" --work-dir "$HOME/.local/state/omp/work/rollback-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Record rollback receipt
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: rollback-receipt-${{ github.run_id }}-${{ github.run_attempt }}
           path: ~/.local/state/omp/work/rollback-${{ github.run_id }}-${{ github.run_attempt }}/publication-result.json
@@ -140,13 +140,13 @@ jobs:
           with urllib.request.urlopen(request, timeout=90) as response:
               if json.load(response)['object']['sha'] != sha: raise ValueError('accepted commit is stale')
           PY
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.collect.outputs.accepted_sha }}
           persist-credentials: false
       - name: Install trusted publisher tools before secrets
         run: sudo apt-get update && sudo apt-get install -y gnupg libarchive-tools
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: unsigned-publication-${{ github.run_id }}-${{ github.run_attempt }}
           path: ~/.local/state/omp/work/publication-input-${{ github.run_id }}-${{ github.run_attempt }}
@@ -161,7 +161,7 @@ jobs:
           python3 tools/publish.py publish --accepted-sha "$ACCEPTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --plan "$HOME/.local/state/omp/work/publication-input-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/publication-plan.json" --artifact "$HOME/.local/state/omp/work/publication-input-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/unsigned.tar" --work-dir "$HOME/.local/state/omp/work/signed-publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Record public verification and rollback evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: publication-receipt-${{ github.run_id }}-${{ github.run_attempt }}
           path: ~/.local/state/omp/work/signed-publication-${{ github.run_id }}-${{ github.run_attempt }}/publication-result.json

@@ -32,7 +32,7 @@ jobs:
           mkdir -p "$OMP_WORK" "$TMPDIR"
           sudo apt-get update
           sudo apt-get install --yes libarchive-tools
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: main
           persist-credentials: false
@@ -41,7 +41,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: python3 -m tools.update prepare --pr "$PR_NUMBER" --directory "$OMP_WORK/prepared"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: prepared-candidate
           path: ${{ env.OMP_WORK }}/prepared
@@ -58,11 +58,11 @@ jobs:
           mkdir -p "$OMP_WORK" "$TMPDIR"
           sudo apt-get update
           sudo apt-get install --yes libarchive-tools
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.prepare.outputs.base }}
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: prepared-candidate
           path: ${{ env.OMP_WORK }}/prepared
@@ -70,7 +70,7 @@ jobs:
         run: |
           python3 -m tools.update extract --archive "$OMP_WORK/prepared/bundle.tar" --directory "$OMP_WORK/build-input"
           tools/build.sh "$OMP_WORK/build-input/bundle.json" "$OMP_WORK/outputs"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: native-candidate
           path: ${{ env.OMP_WORK }}/outputs
@@ -89,15 +89,15 @@ jobs:
           mkdir -p "$OMP_WORK" "$TMPDIR"
           sudo apt-get update
           sudo apt-get install --yes libarchive-tools
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.prepare.outputs.base }}
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: prepared-candidate
           path: ${{ env.OMP_WORK }}/prepared
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: native-candidate
           path: ${{ env.OMP_WORK }}/outputs
@@ -118,11 +118,11 @@ jobs:
           mkdir -p "$OMP_WORK" "$TMPDIR"
           sudo apt-get update
           sudo apt-get install --yes libarchive-tools
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.prepare.outputs.base }}
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: prepared-candidate
           path: ${{ env.OMP_WORK }}/prepared
@@ -145,11 +145,11 @@ jobs:
           mkdir -p "$OMP_WORK" "$TMPDIR"
           sudo apt-get update
           sudo apt-get install --yes libarchive-tools
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.prepare.outputs.base }}
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: prepared-candidate
           path: ${{ env.OMP_WORK }}/prepared
@@ -172,15 +172,15 @@ jobs:
           mkdir -p "$OMP_WORK" "$TMPDIR"
           sudo apt-get update
           sudo apt-get install --yes libarchive-tools
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.prepare.outputs.base }}
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: prepared-candidate
           path: ${{ env.OMP_WORK }}/prepared
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: native-candidate
           path: ${{ env.OMP_WORK }}/outputs

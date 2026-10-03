@@ -10,12 +10,12 @@ Native x86-64 Arch builds on standard GitHub-hosted runners and signed complete 
 | carapace | Maintained AUR-derived recipe | Software tags and deterministic three-way AUR integration; conflicts require a human |
 | nasc-tui-bin | Local authoritative recipe | GitHub Release asset plus exact GPLv2 corresponding source |
 | cloudflare-speed-cli | Local authoritative recipe | Authentic software tags, native Git checksum |
-| oh-my-pi-vith-git | Maintained fork recipe | Exact canonical `vith/oh-my-pi-vith` integration commits |
+| oh-my-pi-vith-git | Maintained fork recipe | Exact canonical `vith/oh-my-pi` integration commits |
 | python-google-genai | AUR-derived recipe with a preserved local correction | Deterministic three-way AUR recipe updates; conflicts require a human |
 
 The Google SDK recipe removes only the unused `python-sentencepiece` test dependency, which is absent from the official Arch repositories. Its tokenizer tests were already excluded upstream; enabled tests and the optional runtime tokenizer dependency remain unchanged. AUR updates preserve this correction.
 
-The source fork is <https://github.com/vith/oh-my-pi-vith>. There are no source credentials or automatic AUR uploads.
+The source fork is <https://github.com/vith/oh-my-pi>. There are no source credentials or automatic AUR uploads.
 
 `inputs/` binds exact software identities and native versions. Git inputs pin upstream commits and version tags. Builds fetch those exact objects directly from upstream; this repository does not publish Git source bundles. Builds use verified read-only mirrors instead of resolving moving branches. OMP derives its native package and runtime identities from that frozen ancestry; source-version manifests are not rewritten to create artificial releases.
 
