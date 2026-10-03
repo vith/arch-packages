@@ -224,7 +224,7 @@ def build(path: Path, output: Path):
         for p in [directory, *directory.rglob('*')]:
             if not p.is_symlink():
                 os.chown(p, 1000, 1000)
-        for cache in ('.cache', '.cargo', '.rustup', '.bun', '.config'):
+        for cache in ('.cache', '.cargo', '.rustup', '.bun', '.config', 'go'):
             cache_dir = home / cache
             cache_dir.mkdir()
             os.chown(cache_dir, 1000, 1000)
