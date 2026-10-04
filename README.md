@@ -76,8 +76,13 @@ on a main-branch PR. Changed package contents require a version or `pkgrel` bump
 Source updates are checked every six hours. Automatic merges are limited to
 verified version/source/checksum changes. Other changes require approval in the
 `recipe-review` environment and a human merge. Main requires passing tests,
-candidate checks and an up-to-date PR. Candidate validation starts after PR tests;
-it can also be started manually:
+candidate checks and an up-to-date PR. Mechanical updates require no workflow or
+recipe-review approval: the updater dispatches trusted-main validation directly.
+For other PRs, a metadata-only PR event handler dispatches the same pipeline.
+It runs the exact candidate's tests in a disposable container without credentials
+or host mounts, then validates and builds the frozen package inputs. A newer
+candidate run supersedes an older run, including an obsolete review wait.
+Validation can also be started manually:
 
 ```sh
 gh workflow run candidate.yml --repo vith/arch-packages -f pr_number=NUMBER

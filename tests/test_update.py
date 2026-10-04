@@ -198,7 +198,7 @@ class CandidateBoundaries(unittest.TestCase):
                     pins.update(example=('1' if sha=='a'*40 else '2')*40)
                     return Path(shutil.copytree(fixture/('old' if sha=='a'*40 else 'new'),destination))
                 evidence={'srcinfo':(recipe/'.SRCINFO').read_text(),'checksums':{},'source_templates_verified':True,'lock_verified':True,'auxiliary_inputs_verified':True,'authentic':True,'fast_forward':True}
-                with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'},clear=True),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'independent_transition',return_value=evidence),patch.object(update.recipes,'is_ancestor',return_value=mutation!='rewrite'),patch('tools.recipe_gate._compare',return_value=1),patch.object(update,'status'):
+                with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'},clear=True),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'run_candidate_tests'),patch.object(update,'independent_transition',return_value=evidence),patch.object(update.recipes,'is_ancestor',return_value=mutation!='rewrite'),patch('tools.recipe_gate._compare',return_value=1),patch.object(update,'status'):
                     record=update.prepare(1,fixture/'prepared')
                 self.assertEqual(record['mechanical'],mutation=='version')
                 self.assertEqual(record['packages'][0]['recipe_commit'],'2'*40)
@@ -240,15 +240,47 @@ class CandidateBoundaries(unittest.TestCase):
     def test_human_candidate_never_auto_merges(self):
         record,evidence,path=self.record();record['mechanical']=False
         update.dump(self.root/'candidate.json',record)
-        states=[{'context':'candidate-build','state':'success'},{'context':'recipe-policy','state':'success'}]
+        states=[{'context':name,'state':'success'} for name in ('verify','candidate-build','recipe-policy')]
         with patch.object(update,'pr_identity'),patch.object(update,'validate_build'),patch.object(update,'api',return_value=states) as api,patch.object(update,'repository',return_value='owner/repo'):
             result=update.finalize(1,record['base'],record['head'],self.root/'candidate.json',self.root)
         self.assertFalse(result['merged'])
         self.assertTrue(all(call.args[0].endswith('/statuses') for call in api.call_args_list))
 
+    def test_mechanical_merge_requires_successful_exact_head_verification(self):
+        record, evidence, path = self.record()
+        update.dump(self.root/'candidate.json', record)
+        for state in (None, 'pending', 'failure'):
+            states = [{'context': name, 'state': 'success'} for name in ('candidate-build', 'recipe-policy')]
+            if state is not None:
+                states.append({'context': 'verify', 'state': state})
+            with self.subTest(state=state), patch.object(update, 'pr_identity'), patch.object(update, 'validate_build'), patch.object(update, 'repository', return_value='owner/repo'), patch.object(update, 'api', side_effect=[states, {'merged': True, 'sha': 'f'*40}, None]) as api:
+                with self.assertRaisesRegex(ValueError, 'statuses missing'):
+                    update.finalize(1, record['base'], record['head'], self.root/'candidate.json', self.root)
+                self.assertFalse(any(call.args[1:2] == ('PUT',) for call in api.call_args_list))
+
+    def test_cleanup_removes_readonly_mirror_without_touching_symlink_target(self):
+        mirror = self.root/'verification'/'mirror.git'
+        mirror.mkdir(parents=True)
+        (mirror/'object').write_bytes(b'git object')
+        outside = self.root/'outside'
+        outside.mkdir()
+        (outside/'keep').write_bytes(b'outside')
+        (mirror/'link').symlink_to(outside, target_is_directory=True)
+        mirror.chmod(0o555)
+        outside.chmod(0o555)
+        try:
+            update.remove_verification_tree(mirror.parent)
+            self.assertFalse(mirror.parent.exists())
+            self.assertEqual((outside/'keep').read_bytes(), b'outside')
+            self.assertEqual(outside.stat().st_mode & 0o777, 0o555)
+        finally:
+            outside.chmod(0o755)
+            if mirror.exists():
+                mirror.chmod(0o755)
+
     def test_mechanical_merge_has_expected_head_and_explicit_dispatch(self):
         record,evidence,path=self.record();update.dump(self.root/'candidate.json',record)
-        responses=[[{'context':'candidate-build','state':'success'},{'context':'recipe-policy','state':'success'}],{'merged':True,'sha':'f'*40},None]
+        responses=[[{'context':name,'state':'success'} for name in ('verify','candidate-build','recipe-policy')],{'merged':True,'sha':'f'*40},None]
         with patch.object(update,'pr_identity'),patch.object(update,'validate_build'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'api',side_effect=responses) as api:
             update.finalize(1,record['base'],record['head'],self.root/'candidate.json',self.root)
         self.assertEqual(api.call_args_list[1].args[2],{'sha':record['head'],'merge_method':'merge'})
