@@ -126,7 +126,8 @@ if actual != expected: raise SystemExit('archive-mounter exact MIME mismatch: '+
 PY
 # Share installed ApexShot checks with the credential-free candidate proof.
 cp /apexshot-smoke.sh /fresh/root/apexshot-smoke.sh
-pacman --config /fresh/pacman.conf -Ql apexshot > /fresh/root/apexshot-files.txt
+# Keep the explicit /fresh/db database, but report paths as seen inside the chroot.
+pacman --config /fresh/pacman.conf --root / -Ql apexshot > /fresh/root/apexshot-files.txt
 apexshot_version=$(python - <<'PY'
 import json
 package=next(x for x in json.load(open('/expected.json'))['packages'] if x['pkgbase']=='apexshot')
