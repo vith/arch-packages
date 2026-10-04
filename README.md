@@ -13,10 +13,16 @@ as signed GitHub Releases.
 | `cloudflare-speed-cli` | Upstream source tags |
 | `oh-my-pi-vith-git` | [vith/oh-my-pi](https://github.com/vith/oh-my-pi) |
 | `python-google-genai` | AUR-derived recipe |
+| `apexshot` | [Upstream source tags](https://github.com/apex-shot/apexshot), maintained source-build recipe |
 
 The Google SDK recipe omits the unavailable `python-sentencepiece` build/test
 dependency. Upstream already excludes tokenizer tests; the optional runtime
 dependency is unchanged.
+
+ApexShot includes its native capture overlay and optional GNOME Shell integration
+for Shell 48–50. The extension is installed system-wide but is not enabled
+automatically. Log out and back in after installation, then enable **ApexShot**
+in GNOME Extensions if desired. The package does not enable desktop autostart.
 
 ## Install
 
@@ -80,6 +86,9 @@ before updating `latest`. Older snapshots remain available. The manual
 `consumer-proof.yml` workflow installs a snapshot in a clean Arch container and
 exercises the packages; it is separate from publication and needs only the snapshot
 tag, not expiring workflow artifacts.
+ApexShot consumer checks cover CLI version/help, native messaging, shared-library
+resolution, desktop assets and extension files. They do not verify interactive
+capture or recording in a live GNOME/Wayland session.
 
 ## Administration
 

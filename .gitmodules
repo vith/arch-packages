@@ -22,3 +22,7 @@
 	path = recipes/python-google-genai
 	url = https://github.com/vith/arch-packages.git
 	branch = pkg/python-google-genai
+[submodule "recipes/apexshot"]
+	path = recipes/apexshot
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/apexshot

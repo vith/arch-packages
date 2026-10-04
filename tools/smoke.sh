@@ -17,6 +17,7 @@ if [[ ${1:-} != --inside ]]; then
   container=$(docker create --platform linux/amd64 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_CHROOT --cap-add SYS_ADMIN --cap-add MKNOD --security-opt no-new-privileges --security-opt apparmor=unconfined "$image" /bin/bash /smoke.sh --inside "$snapshot")
   trap 'docker rm -f "$container" >/dev/null' EXIT
   docker cp "$root/tools/smoke.sh" "$container:/smoke.sh"
+  docker cp "$root/tools/apexshot-smoke.sh" "$container:/apexshot-smoke.sh"
   docker cp "$root/tools/native.py" "$container:/native.py"
   docker cp "$root/keys/arch-packages.asc" "$container:/key.asc"
   docker cp "$root/keys/fingerprint" "$container:/fingerprint.txt"
@@ -123,6 +124,19 @@ expected={'application/x-cd-image','application/x-bzip-compressed-tar','applicat
 actual=set(filter(None,d['MimeType'].split(';')))
 if actual != expected: raise SystemExit('archive-mounter exact MIME mismatch: '+repr(actual))
 PY
+# Share installed ApexShot checks with the credential-free candidate proof.
+cp /apexshot-smoke.sh /fresh/root/apexshot-smoke.sh
+pacman --config /fresh/pacman.conf -Ql apexshot > /fresh/root/apexshot-files.txt
+apexshot_version=$(python - <<'PY'
+import json
+package=next(x for x in json.load(open('/expected.json'))['packages'] if x['pkgbase']=='apexshot')
+print(package['source_lock']['version'])
+PY
+)
+apexshot_status=0
+consumer bash /apexshot-smoke.sh "$apexshot_version" /fresh/data/apexshot /apexshot-files.txt || apexshot_status=$?
+cp -a /fresh/root/fresh/data/apexshot/. /evidence/
+[[ $apexshot_status == 0 ]] || exit "$apexshot_status"
 consumer carapace --list --names > /evidence/carapace-list.txt
 consumer carapace git export git checko > /evidence/carapace-completion.json
 python - <<'PY'
