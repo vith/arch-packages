@@ -14,7 +14,7 @@ if [[ ${1:-} != --inside ]]; then
   existing=("$output"/*)
   ((${#existing[@]} == 0)) || { echo 'smoke evidence directory must be empty' >&2; exit 1; }
   shopt -u nullglob dotglob
-  container=$(docker create --platform linux/amd64 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_CHROOT --cap-add SYS_ADMIN --cap-add MKNOD --security-opt no-new-privileges "$image" /bin/bash /smoke.sh --inside "$snapshot")
+  container=$(docker create --platform linux/amd64 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_CHROOT --cap-add SYS_ADMIN --cap-add MKNOD --security-opt no-new-privileges --security-opt apparmor=unconfined "$image" /bin/bash /smoke.sh --inside "$snapshot")
   trap 'docker rm -f "$container" >/dev/null' EXIT
   docker cp "$root/tools/smoke.sh" "$container:/smoke.sh"
   docker cp "$root/tools/native.py" "$container:/native.py"
