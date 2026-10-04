@@ -1,7 +1,8 @@
-# Arch packages
+# vith-gh
 
 Personal x86_64 Arch Linux packages, built on GitHub Actions and distributed
-as signed GitHub Releases.
+as signed GitHub Releases. Packages appear as `vith-gh/<package>` in pacman and
+paru. The source project remains at `vith/arch-packages` on GitHub.
 
 ## Packages
 
@@ -41,7 +42,7 @@ sudo pacman-key --lsign-key 9C293ABB1F701DA04BA2C0D5711FC9BDDC5AF617
 Add to `/etc/pacman.conf`, then run `sudo pacman -Syu`:
 
 ```ini
-[arch-packages]
+[vith-gh]
 SigLevel = Required
 Server = https://github.com/vith/arch-packages/releases/latest/download
 ```
@@ -50,6 +51,15 @@ Packages and repository databases are signed. If a database/signature download
 straddles a release update, retry a fresh sync; do not disable signature checking.
 For a fixed snapshot, replace `releases/latest/download` with
 `releases/download/SNAPSHOT_TAG`.
+
+If you previously configured `[arch-packages]`, rename that section to
+`[vith-gh]` after the new database is published. Keep its server URL and
+`SigLevel = Required`; the signing key is unchanged. Do not rename a separate
+`[vith-arch]` repository.
+
+Historical snapshots retain their original database filenames. When selecting
+one explicitly, use `[arch-packages]` if it contains `arch-packages.db`, or
+`[vith-gh]` if it contains `vith-gh.db`.
 
 ## Development
 
@@ -108,6 +118,8 @@ by Git. Privately back up `~/.local/state/arch-packages/tofu-passphrase` and
 To roll back, run `publish.yml` with `operation=rollback`, the retained
 `target_tag`, and the current `expected_tag` and `expected_release_id`. It verifies
 the retained snapshot before changing `latest`; it does not delete releases.
+Rolling back across the repository rename also requires clients to use the
+repository section name matching that snapshot's database.
 
 The preserved Nasc history includes old binaries whose metadata incorrectly said
 MIT. The maintained recipe corrects this to GPLv2; [corresponding source and the

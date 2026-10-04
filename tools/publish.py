@@ -26,8 +26,28 @@ NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._+~-]*\Z')
 PKG_KEYS = {'pkgname','pkgbase','pkgver','pkgdesc','url','builddate','packager','size','arch','license','replaces','group','depend','optdepend','conflict','provides','backup','xdata','makedepend','checkdepend'}
 
 
-DATABASES = {'arch-packages.db', 'arch-packages.db.sig', 'arch-packages.files', 'arch-packages.files.sig', 'arch-packages.asc', 'arch-packages.db.tar.gz', 'arch-packages.db.tar.gz.sig', 'arch-packages.files.tar.gz', 'arch-packages.files.tar.gz.sig'}
+PACMAN_REPOSITORY = 'vith-gh'
+# Historical signed snapshots remain immutable and verifiable under their old name.
+SNAPSHOT_REPOSITORIES = (PACMAN_REPOSITORY, 'arch-packages')
 SHA256 = re.compile(r'[0-9a-f]{64}\Z')
+
+
+def database_assets(repository):
+    return {'arch-packages.asc'} | {
+        repository + suffix for suffix in (
+            '.db', '.db.sig', '.files', '.files.sig',
+            '.db.tar.gz', '.db.tar.gz.sig', '.files.tar.gz', '.files.tar.gz.sig')
+    }
+
+
+DATABASES = database_assets(PACMAN_REPOSITORY)
+
+
+def catalog_database_name(catalog):
+    names = [name for name in SNAPSHOT_REPOSITORIES if name + '.db' in catalog['files']]
+    if len(names) != 1:
+        raise ValueError('Missing or ambiguous pacman repository database')
+    return names[0]
 
 
 def release_url(repository, snapshot, filename):
@@ -52,7 +72,8 @@ def validate_catalog(catalog, repository, key_fingerprint):
     for key in ('files', 'source_assets', 'retained_packages', 'retained_snapshots'):
         if not isinstance(catalog.get(key), dict):
             raise ValueError('Missing catalog map: ' + key)
-    if not DATABASES <= catalog['files'].keys():
+    databases = database_assets(catalog_database_name(catalog))
+    if not databases <= catalog['files'].keys():
         raise ValueError('Incomplete database/key assets')
     if {'catalog.json', 'catalog.json.sig'} & catalog['files'].keys():
         raise ValueError('Self-referential catalog')
@@ -74,14 +95,15 @@ def validate_catalog(catalog, repository, key_fingerprint):
             if url != release_url(repository, tag, name):
                 raise ValueError('Noncanonical asset destination')
     files(catalog['files'])
-    files({name: catalog['files'][name] for name in DATABASES}, snapshot)
+    files({name: catalog['files'][name] for name in databases}, snapshot)
     files(catalog['source_assets'])
     files(catalog['retained_packages'])
+    historical_databases = set().union(*(database_assets(name) for name in SNAPSHOT_REPOSITORIES))
     for old, entry in catalog['retained_snapshots'].items():
         if not NAME.fullmatch(old) or not old.startswith('snapshot-') or not isinstance(entry, dict):
             raise ValueError('Invalid retained snapshot')
         files(entry['files'])
-        files({name: value for name, value in entry['files'].items() if name in DATABASES}, old)
+        files({name: value for name, value in entry['files'].items() if name in historical_databases}, old)
     for name in catalog['files'].keys() & catalog['retained_packages'].keys():
         if catalog['files'][name] != catalog['retained_packages'][name]:
             raise ValueError('Retained filename was retargeted')
@@ -89,9 +111,9 @@ def validate_catalog(catalog, repository, key_fingerprint):
     if not any(name.endswith('.pkg.tar.zst') for name in catalog['files']):
         raise ValueError('Snapshot contains no packages')
     for name in all_packages:
-        if name not in DATABASES and not re.fullmatch(r'.+\.pkg\.tar\.(?:zst|xz|gz)(?:\.sig)?', name):
+        if name not in databases and not re.fullmatch(r'.+\.pkg\.tar\.(?:zst|xz|gz)(?:\.sig)?', name):
             raise ValueError('Non-package repo asset')
-        if name not in DATABASES and name.endswith(('.zst', '.xz', '.gz')) and name + '.sig' not in all_packages:
+        if name not in databases and name.endswith(('.zst', '.xz', '.gz')) and name + '.sig' not in all_packages:
             raise ValueError('Missing package signature')
     return catalog
 
@@ -399,22 +421,22 @@ def database(image, packages, output):
     # Explicit env and these two mounts are the entire container boundary. The
     # secret home, checkout, host home, socket and tokens are never mounted.
     output.chmod(0o777)
-    run(['docker','run','--rm','--platform','linux/amd64','--cap-drop=ALL','--security-opt=no-new-privileges','--mount',f'type=bind,src={packages},dst=/packages,readonly','--mount',f'type=bind,src={output},dst=/out',image,'repo-add','--include-sigs','/out/arch-packages.db.tar.gz', *['/packages/'+p.name for p in sorted(packages.glob('*.pkg.tar.zst'))]], env=clean_env())
+    run(['docker','run','--rm','--platform','linux/amd64','--cap-drop=ALL','--security-opt=no-new-privileges','--mount',f'type=bind,src={packages},dst=/packages,readonly','--mount',f'type=bind,src={output},dst=/out',image,'repo-add','--include-sigs',f'/out/{PACMAN_REPOSITORY}.db.tar.gz', *['/packages/'+p.name for p in sorted(packages.glob('*.pkg.tar.zst'))]], env=clean_env())
     for suffix in ('db','files'):
-        path = output / f'arch-packages.{suffix}.tar.gz'
+        path = output / f'{PACMAN_REPOSITORY}.{suffix}.tar.gz'
         if path.is_symlink() or not path.is_file():
             raise ValueError('repo-add archive missing')
-        alias = output / f'arch-packages.{suffix}'
+        alias = output / f'{PACMAN_REPOSITORY}.{suffix}'
         alias.unlink(missing_ok=True)
         shutil.copyfile(path, alias)
 
     verify_database(packages, output)
 
 
-def verify_database(packages, output):
+def verify_database(packages, output, repository=PACMAN_REPOSITORY):
     # Verify the actual database describes exactly the complete package bytes.
     found = {}
-    with tarfile.open(output / 'arch-packages.db', 'r:gz') as archive:
+    with tarfile.open(output / f'{repository}.db', 'r:gz') as archive:
         for entry in archive.getmembers():
             if entry.name.endswith('/desc'):
                 values = archive.extractfile(entry).read().decode().splitlines()
@@ -469,10 +491,11 @@ def public_readback(catalog, assets, readback, ring):
     verify(readback / 'catalog.json', readback / 'catalog.json.sig', ring)
     if json.loads((readback / 'catalog.json').read_text()) != catalog:
         raise ValueError('signed readback catalog differs')
+    repository = catalog_database_name(catalog)
     for suffix in ('db','files'):
-        if sha(readback / f'arch-packages.{suffix}') != sha(readback / f'arch-packages.{suffix}.tar.gz'):
+        if sha(readback / f'{repository}.{suffix}') != sha(readback / f'{repository}.{suffix}.tar.gz'):
             raise ValueError('pacman alias differs from canonical archive')
-    verify_database(readback, readback)
+    verify_database(readback, readback, repository)
 
 
 def verified_snapshot(release, work, ring):
@@ -628,8 +651,9 @@ def publish(args):
             signer.sign(packages / name)
             verify(packages / name, packages / (name+'.sig'), ring)
     database(plan['image'], packages, assets)
-    for name in ('arch-packages.db','arch-packages.files','arch-packages.db.tar.gz','arch-packages.files.tar.gz'):
-        signer.sign(assets / name)
+    for name in sorted(DATABASES - {'arch-packages.asc'}):
+        if not name.endswith('.sig'):
+            signer.sign(assets / name)
     shutil.copyfile(ROOT / 'keys/arch-packages.asc', assets / 'arch-packages.asc')
     upload_names = set(new_names) | DATABASES | set(catalog['files']) | set(catalog['source_assets'])
     for name in catalog['source_assets']:

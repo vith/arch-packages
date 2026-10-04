@@ -181,17 +181,48 @@ class PublicationBoundaries(unittest.TestCase):
             publish.promote(target,old,catalog,self.root/'ring',self.root/'observed')
         self.assertEqual(api.call_count,1)
 
-    def test_complete_catalog_requires_exact_pacman_aliases_and_canonical_archives(self):
-        files = {name:{'url':publish.release_url(publish.REPOSITORY,'snapshot-fixture',name),'sha256':'a'*64} for name in publish.DATABASES}
+    def catalog_fixture(self, repository, snapshot='snapshot-fixture'):
+        databases = {'arch-packages.asc'}
+        databases.update(repository + suffix for suffix in (
+            '.db', '.db.sig', '.db.tar.gz', '.db.tar.gz.sig',
+            '.files', '.files.sig', '.files.tar.gz', '.files.tar.gz.sig'))
+        files = {name:{'url':publish.release_url(publish.REPOSITORY,snapshot,name),'sha256':'a'*64} for name in databases}
         for name in ('example-1-1-any.pkg.tar.zst','example-1-1-any.pkg.tar.zst.sig'):
-            files[name] = {'url':publish.release_url(publish.REPOSITORY,'snapshot-fixture',name),'sha256':'b'*64}
-        catalog = {'schema':1,'repository':publish.REPOSITORY,'snapshot':'snapshot-fixture','accepted_sha':'a'*40,'key_fingerprint':'A'*40,'recipes':{'example':{'recipe_commit':'e'*40}},'files':files,'source_assets':{},'retained_packages':{},'retained_snapshots':{}}
+            files[name] = {'url':publish.release_url(publish.REPOSITORY,snapshot,name),'sha256':'b'*64}
+        return {'schema':1,'repository':publish.REPOSITORY,'snapshot':snapshot,'accepted_sha':'a'*40,'key_fingerprint':'A'*40,'recipes':{'example':{'recipe_commit':'e'*40}},'files':files,'source_assets':{},'retained_packages':{},'retained_snapshots':{}}
+
+    def test_complete_catalog_requires_exact_pacman_aliases_and_canonical_archives(self):
+        for repository in ('vith-gh', 'arch-packages'):
+            catalog = self.catalog_fixture(repository)
+            publish.validate_catalog(catalog,publish.REPOSITORY,'A'*40)
+            for name in catalog['files']:
+                if '.pkg.tar.' in name:
+                    continue
+                broken = copy.deepcopy(catalog)
+                del broken['files'][name]
+                with self.subTest(repository=repository,asset=name), self.assertRaises(ValueError):
+                    publish.validate_catalog(broken,publish.REPOSITORY,'A'*40)
+
+    def test_renamed_catalog_retains_immutable_historical_database_urls(self):
+        catalog = self.catalog_fixture('vith-gh')
+        old = self.catalog_fixture('arch-packages','snapshot-old')
+        catalog['retained_snapshots']['snapshot-old'] = {'files':old['files']}
         publish.validate_catalog(catalog,publish.REPOSITORY,'A'*40)
-        for name in publish.DATABASES:
-            broken = copy.deepcopy(catalog)
-            del broken['files'][name]
-            with self.subTest(asset=name), self.assertRaisesRegex(ValueError,'Incomplete database'):
-                publish.validate_catalog(broken,publish.REPOSITORY,'A'*40)
+        entry = catalog['retained_snapshots']['snapshot-old']['files']['arch-packages.db']
+        entry['url'] = publish.release_url(publish.REPOSITORY,'snapshot-fixture','arch-packages.db')
+        with self.assertRaisesRegex(ValueError,'Wrong asset snapshot'):
+            publish.validate_catalog(catalog,publish.REPOSITORY,'A'*40)
+
+    def test_catalog_rejects_mixed_repository_names_and_database_retargeting(self):
+        catalog = self.catalog_fixture('vith-gh')
+        old = self.catalog_fixture('arch-packages')
+        catalog['files'].update(old['files'])
+        with self.assertRaises(ValueError):
+            publish.validate_catalog(catalog,publish.REPOSITORY,'A'*40)
+        catalog = self.catalog_fixture('vith-gh')
+        catalog['files']['vith-gh.db']['url'] = publish.release_url(publish.REPOSITORY,'snapshot-old','vith-gh.db')
+        with self.assertRaisesRegex(ValueError,'Wrong asset snapshot'):
+            publish.validate_catalog(catalog,publish.REPOSITORY,'A'*40)
 
     def test_stale_main_is_rejected_before_checkout_or_activation(self):
         with patch.object(publish.github_api,'api',return_value={'object':{'sha':'b'*40}}), self.assertRaisesRegex(ValueError,'stale'):

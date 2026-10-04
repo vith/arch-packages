@@ -2,7 +2,7 @@
 set -euo pipefail
 if [[ ${1:-} != --inside ]]; then
   [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_OS:-} == Linux && ${RUNNER_ENVIRONMENT:-} == github-hosted && $(uname -m) == x86_64 ]] || { echo 'smoke requires disposable GitHub Linux x86_64 runner' >&2; exit 1; }
-  [[ $# == 2 || $# == 3 ]] || { echo 'usage: tools/smoke.sh native-evidence.json output-dir [snapshot-id]' >&2; exit 2; }
+  [[ $# == 2 || $# == 3 ]] || { echo 'usage: tools/smoke.sh expected.json output-dir [snapshot-id]' >&2; exit 2; }
   root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
   image=$(<"$root/build-image.txt")
   [[ $image =~ ^ghcr.io/archlinux/archlinux@sha256:[0-9a-f]{64}$ ]] || exit 1
@@ -54,6 +54,14 @@ pacman-key --gpgdir /fresh/gnupg --add /key.asc
 pacman-key --gpgdir /fresh/gnupg --lsign-key "$expected"
 server=https://github.com/vith/arch-packages/releases/latest/download
 [[ -z $snapshot ]] || server="https://github.com/vith/arch-packages/releases/download/$snapshot"
+repository=$(python - <<'PY'
+import json
+name=json.load(open('/expected.json'))['pacman_repository']
+if name not in ('vith-gh','arch-packages'):
+    raise SystemExit('unsupported snapshot repository name')
+print(name)
+PY
+)
 cat >/fresh/pacman.conf <<EOF
 [options]
 RootDir = /fresh/root
@@ -67,7 +75,7 @@ LocalFileSigLevel = Required
 Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
 [extra]
 Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
-[arch-packages]
+[$repository]
 SigLevel = Required
 Server = $server
 EOF
@@ -85,7 +93,7 @@ if not names or len(names)!=len(set(names)) or len(observed)!=len(set(observed))
 for name in sorted(names):
     if not re.fullmatch(r'[a-z0-9][a-z0-9@+_.-]*',name):
         raise SystemExit('unsafe enrolled package name')
-    print('arch-packages/'+name)
+    print(expected['pacman_repository']+'/'+name)
 PY
 mapfile -t targets < /evidence/targets.txt
 pacman --config /fresh/pacman.conf -S --noconfirm -- base python util-linux tmux desktop-file-utils binutils ca-certificates "${targets[@]}"
@@ -126,7 +134,8 @@ if actual != expected: raise SystemExit('archive-mounter exact MIME mismatch: '+
 PY
 # Share installed ApexShot checks with the credential-free candidate proof.
 cp /apexshot-smoke.sh /fresh/root/apexshot-smoke.sh
-pacman --config /fresh/pacman.conf -Ql apexshot > /fresh/root/apexshot-files.txt
+# Keep the explicit /fresh/db database, but report paths as seen inside the chroot.
+pacman --config /fresh/pacman.conf --root / -Ql apexshot > /fresh/root/apexshot-files.txt
 apexshot_version=$(python - <<'PY'
 import json
 package=next(x for x in json.load(open('/expected.json'))['packages'] if x['pkgbase']=='apexshot')
