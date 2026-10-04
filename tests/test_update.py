@@ -16,6 +16,15 @@ SRCINFO='pkgbase = example\n\tpkgver = 1.0\n\tpkgrel = 1\n\tarch = x86_64\npkgna
 
 
 class CandidateBoundaries(unittest.TestCase):
+    def test_retry_reuses_only_exact_commit_content_and_history(self):
+        commit = {'tree': {'sha': 'a'*40}, 'parents': [{'sha': 'b'*40}], 'message': 'update'}
+        with patch.object(update, 'repository', return_value='owner/repo'), patch.object(update, 'api', return_value=commit):
+            self.assertTrue(update.matches_commit('c'*40, 'a'*40, ['b'*40], 'update'))
+            self.assertFalse(update.matches_commit('c'*40, 'd'*40, ['b'*40], 'update'))
+            self.assertFalse(update.matches_commit('c'*40, 'a'*40, ['d'*40], 'update'))
+            self.assertFalse(update.matches_commit('c'*40, 'a'*40, ['b'*40], 'manual work'))
+            self.assertFalse(update.matches_commit(None, 'a'*40, ['b'*40], 'update'))
+
     def test_documentation_changes_need_review_without_package_builds(self):
         with tempfile.TemporaryDirectory() as session:
             old = Path(session) / 'old'

@@ -30,6 +30,19 @@ class SourceContracts(unittest.TestCase):
         with patch.object(sources,'public_url',lambda value:value):
             return sources.freeze_source({'id':'code','kind':'git','source':'git+'+self.url+'#branch=integration','url':self.url,'ref':'refs/heads/integration','commit':self.head,'checksums':{'sha256':'SKIP'},'work_dir':str(directory)})
 
+    def test_fetch_does_not_recurse_into_exported_recipe_directories(self):
+        (self.repo / '.gitmodules').write_text('[submodule "recipes/example"]\npath = recipes/example\nurl = ' + self.url + '\n')
+        sources.git('add', '.gitmodules', cwd=self.repo)
+        sources.git('update-index', '--add', '--cacheinfo', '160000,' + self.head + ',recipes/example', cwd=self.repo)
+        sources.git('commit', '-m', 'control', cwd=self.repo)
+        checkout = self.root / 'checkout'
+        sources.git('clone', self.repo, checkout)
+        (checkout / 'recipes/example/PKGBUILD').write_text('exported recipe')
+        sources.git('update-index', '--cacheinfo', '160000,' + 'a'*40 + ',recipes/example', cwd=self.repo)
+        sources.git('commit', '-m', 'new pin', cwd=self.repo)
+        sources.git('fetch', self.repo, 'HEAD', cwd=checkout)
+        self.assertEqual(sources.git('rev-parse', 'FETCH_HEAD', cwd=checkout), sources.git('rev-parse', 'HEAD', cwd=self.repo))
+
     def test_version_tag_context_changes_even_with_same_commit(self):
         frozen=self.freeze(self.root/'first')
         sources.git('tag','-a','v1.0.1','-m','new version',cwd=self.repo)

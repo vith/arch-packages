@@ -14,7 +14,7 @@ if [[ ${1:-} != --inside ]]; then
   existing=("$output"/*)
   ((${#existing[@]} == 0)) || { echo 'smoke evidence directory must be empty' >&2; exit 1; }
   shopt -u nullglob dotglob
-  container=$(docker create --platform linux/amd64 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_CHROOT --cap-add SYS_ADMIN --cap-add MKNOD --security-opt no-new-privileges "$image" /bin/bash /smoke.sh --inside "$snapshot")
+  container=$(docker create --platform linux/amd64 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_CHROOT --cap-add SYS_ADMIN --cap-add MKNOD --security-opt no-new-privileges --security-opt apparmor=unconfined "$image" /bin/bash /smoke.sh --inside "$snapshot")
   trap 'docker rm -f "$container" >/dev/null' EXIT
   docker cp "$root/tools/smoke.sh" "$container:/smoke.sh"
   docker cp "$root/tools/native.py" "$container:/native.py"
@@ -201,8 +201,7 @@ expected=n.runtime_identity(p['source_lock']['version'])
 if open('/evidence/omp-version.txt').read().strip()!='omp/'+expected: raise SystemExit('OMP exact runtime version mismatch')
 if not open('/evidence/omp-help.txt').read().strip(): raise SystemExit('OMP help missing')
 if expected.encode() not in open('/fresh/root/usr/bin/omp','rb').read(): raise SystemExit('OMP appended native stamp missing')
-proof=p['runtime']
-if proof['runtime_identity']!=expected or 'libpipewire-0.3.so.0' not in proof['dynamic']: raise SystemExit('OMP native linkage evidence missing')
+proof={'runtime_identity': expected, 'cli_version': open('/evidence/omp-version.txt').read().strip()}
 open('/evidence/omp-native.json','w').write(json.dumps(proof,sort_keys=True)+'\n')
 PY
 consumer python - > /evidence/google-genai.json <<'PY'

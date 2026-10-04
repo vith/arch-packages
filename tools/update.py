@@ -699,6 +699,15 @@ def ref_head(branch):
     return rows[0].split()[0] if rows else None
 
 
+def matches_commit(sha, tree, parents, message):
+    if not sha:
+        return False
+    candidate = api(route('/git/commits/' + sha))
+    return (candidate['tree']['sha'] == tree
+            and [parent['sha'] for parent in candidate['parents']] == parents
+            and candidate['message'] == message)
+
+
 def pin_at(control,name):
     commit=api(route('/git/commits/'+control))
     tree=api(route('/git/trees/'+commit['tree']['sha']+'?recursive=1'))
@@ -983,11 +992,12 @@ def write_proposals(directory):
         if aur_parent and aur_parent not in parents:
             parents.append(aur_parent)
         recipe_sha=None
+        recipe_branch='recipe-updates/'+name+'/'+watcher_id
+        recipe_tip=ref_head(recipe_branch)
         previous_recipe=pin_at(existing['head']['sha'],name) if existing else None
-        if previous_recipe:
-            candidate=api(route('/git/commits/'+previous_recipe))
-            if candidate['tree']['sha']==recipe_tree['sha'] and [p['sha'] for p in candidate['parents']]==parents and candidate['message']==f'Update {name} via {watcher_id}':
-                recipe_sha=previous_recipe
+        reusable = previous_recipe if existing else recipe_tip
+        if matches_commit(reusable, recipe_tree['sha'], parents, f'Update {name} via {watcher_id}'):
+            recipe_sha = reusable
         if recipe_sha is None:
             recipe_commit=api(route('/git/commits'),'POST',{'message':f'Update {name} via {watcher_id}','tree':recipe_tree['sha'],'parents':parents,'author':{'name':'github-actions[bot]','email':'41898282+github-actions[bot]@users.noreply.github.com'}})
             recipe_sha=recipe_commit['sha']
@@ -1006,10 +1016,8 @@ def write_proposals(directory):
                 if any(latest.get(context) in {None,'failure','error'} for context in ('recipe-policy','candidate-build')):
                     dispatch(existing['number'])
                 continue
-        recipe_branch='recipe-updates/'+name+'/'+watcher_id
-        recipe_tip=ref_head(recipe_branch)
         if recipe_tip:
-            if existing and recipe_tip!=previous_recipe or not existing and not recipes.is_ancestor(repository(),recipe_tip,pins[name]):
+            if existing and recipe_tip!=previous_recipe or not existing and recipe_tip!=recipe_sha and not recipes.is_ancestor(repository(),recipe_tip,pins[name]):
                 raise ValueError('user-edited recipe proposal ref; refusing overwrite')
         sources.git('fetch','https://github.com/'+repository()+'.git',recipe_sha,cwd=ROOT)
         push_ref(ROOT,recipe_sha,recipe_branch,recipe_tip)
@@ -1028,7 +1036,9 @@ def write_proposals(directory):
             number=existing['number']
         else:
             proposal_tip=ref_head(branch)
-            if proposal_tip and not recipes.is_ancestor(repository(),proposal_tip,base):
+            if matches_commit(proposal_tip, tree['sha'], [base], message):
+                commit = {'sha': proposal_tip}
+            elif proposal_tip and not recipes.is_ancestor(repository(),proposal_tip,base):
                 raise ValueError('closed proposal branch has unaccepted/manual work')
             sources.git('fetch','https://github.com/'+repository()+'.git',commit['sha'],cwd=ROOT)
             push_ref(ROOT,commit['sha'],branch,proposal_tip)

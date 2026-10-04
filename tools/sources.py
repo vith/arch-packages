@@ -43,7 +43,7 @@ def git(*args, cwd=None, check=True):
     env={k:v for k,v in os.environ.items() if k in {'PATH','HOME','LANG','LC_ALL','TMPDIR'}}
     env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_TERMINAL_PROMPT='0', GIT_ALLOW_PROTOCOL='https:file')
     safe=['-c','safe.directory='+str(Path(cwd).resolve())] if cwd is not None else []
-    result=subprocess.run(['git',*safe,'-c','core.hooksPath=/dev/null','-c','credential.helper=','-c','protocol.file.allow=always',*map(str,args)],cwd=cwd,env=env,check=check,capture_output=True,text=True)
+    result=subprocess.run(['git',*safe,'-c','core.hooksPath=/dev/null','-c','credential.helper=','-c','fetch.recurseSubmodules=false','-c','protocol.file.allow=always',*map(str,args)],cwd=cwd,env=env,check=check,capture_output=True,text=True)
     return result.stdout.strip() if check else result
 
 
