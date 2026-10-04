@@ -15,7 +15,8 @@ class SignedConsumerInputs(unittest.TestCase):
         self.filename = 'example-1-1-any.pkg.tar.zst'
         (self.directory / self.filename).write_bytes(b'package')
         self.catalog = {'recipes': {'example': {'version': '1-1', 'sources': []}},
-                        'files': {self.filename: {'sha256': hashlib.sha256(b'package').hexdigest()}}}
+                        'files': {self.filename: {'sha256': hashlib.sha256(b'package').hexdigest()},
+                                  'vith-gh.db': {'sha256': 'a' * 64}}}
         self.policies = [{'pkgbase': 'example', 'outputs': [{'name': 'example', 'arch': 'any'}]}]
         self.identity = {'pkgname': 'example', 'pkgver': '1-1', 'arch': 'any'}
 
@@ -25,6 +26,14 @@ class SignedConsumerInputs(unittest.TestCase):
         package = result['packages'][0]
         self.assertEqual(package['source_lock'], {'schema': 1, 'version': '1-1', 'sources': []})
         self.assertEqual(package['files'][0]['name'], 'example')
+
+    def test_consumer_selects_the_repository_from_the_signed_snapshot(self):
+        with patch.object(consumer.publish, 'pkginfo', return_value=self.identity):
+            current = consumer.snapshot_inputs(self.catalog, self.directory, self.policies)
+            self.catalog['files']['arch-packages.db'] = self.catalog['files'].pop('vith-gh.db')
+            historical = consumer.snapshot_inputs(self.catalog, self.directory, self.policies)
+        self.assertEqual(current['pacman_repository'], 'vith-gh')
+        self.assertEqual(historical['pacman_repository'], 'arch-packages')
 
     def test_corrupt_package_is_rejected(self):
         (self.directory / self.filename).write_bytes(b'changed')

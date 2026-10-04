@@ -28,7 +28,7 @@ def snapshot_inputs(catalog, directory, policies):
                 raise ValueError('snapshot package identity mismatch')
             files.append({'name': output['name'], 'version': version, 'arch': output['arch'], 'filename': filename})
         packages.append({'pkgbase': name, 'source_lock': {'schema': 1, 'version': version, 'sources': recipe['sources']}, 'files': files})
-    return {'packages': packages}
+    return {'pacman_repository': publish.catalog_database_name(catalog), 'packages': packages}
 
 
 def prepare(snapshot, work):
