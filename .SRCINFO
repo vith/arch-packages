@@ -1,15 +1,15 @@
 pkgbase = nasc-tui-bin
 	pkgdesc = The Not a Soulver Clone TUI
-	pkgver = 1.0.4
+	pkgver = 1.0.7
 	pkgrel = 1
 	url = https://github.com/parnoldx/nascTUI
 	arch = x86_64
 	license = GPL-2.0-only
 	depends = libqalculate
-	noextract = nascTUI-1.0.4.tar.gz
-	source = https://github.com/parnoldx/nascTUI/releases/download/v1.0.4/nasc-linux-amd64
-	source = nascTUI-1.0.4.tar.gz::https://github.com/parnoldx/nascTUI/archive/refs/tags/v1.0.4.tar.gz
-	sha256sums = 65a27edfdfd5eb37987397f24b0c83b98dd3cdc79b840e50664dce5c43b491da
-	sha256sums = 55e20b26f48dbc75d500a65abb6566ca5a35a7eb6d73495d4931527af4c5fa47
+	noextract = nascTUI-1.0.7.tar.gz
+	source = https://github.com/parnoldx/nascTUI/releases/download/v1.0.7/nasc-linux-amd64
+	source = nascTUI-1.0.7.tar.gz::https://github.com/parnoldx/nascTUI/archive/refs/tags/v1.0.7.tar.gz
+	sha256sums = 28ea3de1bc4d99e77d0c0908d6c9872a2dc505d72a9b3a0522973ed62843f13a
+	sha256sums = db12a62028c986c161b86844920452ab997f208ff45a8b3757f58a7f27ac1219
 
 pkgname = nasc-tui-bin
