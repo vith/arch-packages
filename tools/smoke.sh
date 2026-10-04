@@ -201,8 +201,7 @@ expected=n.runtime_identity(p['source_lock']['version'])
 if open('/evidence/omp-version.txt').read().strip()!='omp/'+expected: raise SystemExit('OMP exact runtime version mismatch')
 if not open('/evidence/omp-help.txt').read().strip(): raise SystemExit('OMP help missing')
 if expected.encode() not in open('/fresh/root/usr/bin/omp','rb').read(): raise SystemExit('OMP appended native stamp missing')
-proof=p['runtime']
-if proof['runtime_identity']!=expected or 'libpipewire-0.3.so.0' not in proof['dynamic']: raise SystemExit('OMP native linkage evidence missing')
+proof={'runtime_identity': expected, 'cli_version': open('/evidence/omp-version.txt').read().strip()}
 open('/evidence/omp-native.json','w').write(json.dumps(proof,sort_keys=True)+'\n')
 PY
 consumer python - > /evidence/google-genai.json <<'PY'

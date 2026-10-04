@@ -78,7 +78,8 @@ package with new tooling, bump its `pkgrel`.
 Publication verifies packages, signs the snapshot and checks public downloads
 before updating `latest`. Older snapshots remain available. The manual
 `consumer-proof.yml` workflow installs a snapshot in a clean Arch container and
-exercises the packages; it is separate from publication.
+exercises the packages; it is separate from publication and needs only the snapshot
+tag, not expiring workflow artifacts.
 
 ## Administration
 
