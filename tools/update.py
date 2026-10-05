@@ -1,4 +1,4 @@
-"""Trusted-main update controller. Candidate Git trees are data, never code."""
+"""Trusted-main update controller. Candidate code runs only in isolated containers."""
 import argparse
 import base64
 import hashlib
@@ -146,9 +146,34 @@ def checkout_data(sha,destination,pins=None):
 
 
 def status(head,context,state,description):
-    if not SHA.fullmatch(head) or context not in {'recipe-policy','candidate-build'}:
+    if not SHA.fullmatch(head) or context not in {'verify','recipe-policy','candidate-build'}:
         raise ValueError('invalid status identity')
     api(route('/statuses/'+head),'POST',{'state':state,'context':context,'description':description[:140]})
+
+
+def run_candidate_tests(root, image):
+    """Execute candidate tests only inside a disposable, credential-free container."""
+    environment = {k: v for k, v in os.environ.items() if k in {'PATH', 'HOME', 'DOCKER_HOST', 'TMPDIR'}}
+    command = 'pacman -Syu --noconfirm --needed -- python git gnupg && cd /verify && python -m unittest discover -s tests -p "test_*.py"'
+    container = subprocess.check_output([
+        'docker', 'create', '--cap-drop=ALL', '--cap-add=CHOWN',
+        '--cap-add=DAC_OVERRIDE', '--cap-add=FOWNER', '--cap-add=SETUID',
+        '--cap-add=SETGID', '--security-opt=no-new-privileges',
+        image, '/bin/bash', '-c', command,
+    ], text=True, env=environment).strip()
+    try:
+        subprocess.run(['docker', 'cp', str(root) + '/.', container + ':/verify'], check=True, env=environment)
+        subprocess.run(['docker', 'start', '-a', container], check=True, env=environment)
+    finally:
+        subprocess.run(['docker', 'rm', '-f', container], check=True, env=environment)
+
+
+def remove_verification_tree(root):
+    """Restore directory permissions only after trusted source verification ends."""
+    root = Path(root)
+    for directory, _, _ in os.walk(root, followlinks=False):
+        Path(directory).chmod(0o755)
+    shutil.rmtree(root)
 
 
 def policy_at(root):
@@ -225,6 +250,14 @@ def prepare(number,output):
     image=(old/'build-image.txt').read_text().strip()
     if not re.fullmatch(r'ghcr.io/archlinux/archlinux@sha256:[0-9a-f]{64}',image):
         raise ValueError('build image is not pinned official Arch')
+    status(head,'verify','pending','Testing exact candidate in an isolated container')
+    try:
+        run_candidate_tests(new,image)
+        pr_identity(number,base,head)
+    except Exception:
+        status(head,'verify','failure','Exact candidate verification failed')
+        raise
+    status(head,'verify','success','Exact candidate regression tests passed')
     harness=harness_digest(old)
     packages=[];decisions=[]
     for name in names:
@@ -264,7 +297,7 @@ def prepare(number,output):
     # Only bounded explicit data goes to the build. Neither candidate automation
     # nor base/head full trees leave the control artifact directory.
     for path in output.glob('verify-*'):
-        shutil.rmtree(path)
+        remove_verification_tree(path)
     shutil.rmtree(old);shutil.rmtree(new)
     return record
 
@@ -446,7 +479,7 @@ def finalize(number,base,head,record_path,directory):
     validate_build(record,directory)
     pr_identity(number,base,head)
     states={s['context']:s['state'] for s in reversed(api(route('/commits/'+head+'/statuses')))}
-    if any(states.get(k)!='success' for k in ('candidate-build','recipe-policy')):
+    if any(states.get(k)!='success' for k in ('verify','candidate-build','recipe-policy')):
         raise ValueError('required exact-head statuses missing')
     if not record['mechanical']:
         return {'merged':False,'reason':'Human merge required'}
@@ -662,11 +695,7 @@ def prune_probe_work(work):
         elif child.is_dir() and child.name!='recipe':
             for nested in list(child.iterdir()):
                 if nested.name.endswith('.git'):
-                    for path in nested.rglob('*'):
-                        if path.is_dir():
-                            path.chmod(0o755)
-                    nested.chmod(0o755)
-                    shutil.rmtree(nested)
+                    remove_verification_tree(nested)
 
 
 def control_checkout():
@@ -882,9 +911,6 @@ def discover(output):
 
 
 def dispatch(number):
-    candidate = api(route('/pulls/' + str(number)))
-    if candidate['head']['repo']['full_name'] == repository():
-        api(route('/actions/workflows/verification.yml/dispatches'), 'POST', {'ref': candidate['head']['ref']})
     api(route('/actions/workflows/candidate.yml/dispatches'),'POST',{'ref':'main','inputs':{'pr_number':str(number)}})
 
 

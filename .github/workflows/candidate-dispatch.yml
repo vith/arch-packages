@@ -1,30 +1,28 @@
 name: Start candidate validation
 on:
-  workflow_run:
-    workflows: [Trusted recipe and publication verification]
-    types: [completed]
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened]
 permissions:
   contents: read
   actions: write
   pull-requests: read
 jobs:
   dispatch:
-    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
+      # This job never checks out or executes candidate code. The dispatched
+      # main workflow fetches immutable candidate data and isolates its tests.
       - env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           python3 - <<'PY'
           import json, os, subprocess
-          event = json.load(open(os.environ['GITHUB_EVENT_PATH']))
           repository = os.environ['GITHUB_REPOSITORY']
-          for candidate in event['workflow_run']['pull_requests']:
-              number = str(int(candidate['number']))
-              current = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/pulls/{number}']))
-              if current['state'] != 'open' or current['base']['ref'] != 'main':
-                  continue
-              if current['head']['sha'] != event['workflow_run']['head_sha']:
-                  continue
-              subprocess.run(['gh', 'workflow', 'run', 'candidate.yml', '--repo', repository, '--ref', 'main', '-f', 'pr_number=' + number], check=True)
+          number = str(int(os.environ['PR_NUMBER']))
+          current = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/pulls/{number}']))
+          if current['state'] != 'open' or current['base']['ref'] != 'main':
+              raise SystemExit('Not an open main candidate')
+          subprocess.run(['gh', 'workflow', 'run', 'candidate.yml', '--repo', repository, '--ref', 'main', '-f', 'pr_number=' + number], check=True)
           PY
