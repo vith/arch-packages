@@ -68,6 +68,10 @@ class SignedConsumerInputs(unittest.TestCase):
                 patch.object(consumer.github_api, 'api', side_effect=api):
             consumer.prepare(snapshot, work)
 
+        self.assertEqual(
+            json.loads((work / 'enrollment.json').read_text()),
+            {'packages': self.policies},
+        )
         result = json.loads((work / 'expected.json').read_text())
         self.assertEqual(result['pacman_repository'], 'vith-gh')
         self.assertEqual(result['packages'], [{
@@ -89,6 +93,7 @@ class SignedConsumerInputs(unittest.TestCase):
                 ]), self.assertRaises(binascii.Error):
             consumer.prepare(snapshot, work)
         self.assertFalse((work / 'expected.json').exists())
+        self.assertFalse((work / 'enrollment.json').exists())
 
     def test_corrupt_package_is_rejected(self):
         (self.directory / self.filename).write_bytes(b'changed')

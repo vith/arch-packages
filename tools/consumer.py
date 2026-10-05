@@ -46,8 +46,9 @@ def prepare(snapshot, work):
         authenticated=False,
     )
     content = enrollment['content'].replace('\n', '').replace('\r', '')
-    policies = json.loads(base64.b64decode(content, validate=True))['packages']
-    expectations = snapshot_inputs(catalog, work / 'snapshot/complete', policies)
+    enrollment = json.loads(base64.b64decode(content, validate=True))
+    expectations = snapshot_inputs(catalog, work / 'snapshot/complete', enrollment['packages'])
+    (work / 'enrollment.json').write_bytes(github_api.canonical(enrollment))
     (work / 'expected.json').write_bytes(github_api.canonical(expectations))
 
 

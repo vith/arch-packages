@@ -1,0 +1,109 @@
+name: carapace enrollment proof
+on:
+  push:
+    branches: [source-only-packages]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  carapace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      WORK: /home/runner/.local/state/arch-packages/carapace-proof
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare exact recipe and frozen inputs
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORK/input/recipes/carapace"
+          recipe=$(git ls-tree HEAD recipes/carapace | cut -f1 | cut -d' ' -f3)
+          test "$recipe" = 609bc2d8b341192961e3dc40c9da1ea3b7e5bb3d
+          git -c fetch.recurseSubmodules=false fetch --no-tags --no-recurse-submodules origin "$recipe"
+          git archive "$recipe" | tar -x -C "$WORK/input/recipes/carapace"
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          from tools.recipe_gate import harness_digest, input_digest
+          from tools.update import validate_source_policy
+          root = Path.cwd()
+          work = Path(os.environ['WORK'])
+          name = 'carapace'
+          policy = next(p for p in json.loads((root / 'packages.json').read_text())['packages'] if p['pkgbase'] == name)
+          lock = json.loads((root / 'inputs/carapace.json').read_text())
+          validate_source_policy(lock, policy)
+          pin = subprocess.check_output(['git', 'ls-tree', 'HEAD', 'recipes/carapace'], text=True).split()[2]
+          image = (root / 'build-image.txt').read_text().strip()
+          harness = harness_digest(root)
+          recipe = work / 'input/recipes/carapace'
+          head = os.environ['GITHUB_SHA']
+          package = {'pkgbase': name, 'recipe_commit': pin, 'recipe_dir': 'recipes/carapace', 'lock': lock, 'policy': policy, 'input_digest': input_digest(recipe, lock, policy, image, harness)}
+          bundle = {'schema': 1, 'repository': 'vith/arch-packages', 'base': head, 'head': head, 'recipe_pins': {name: pin}, 'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'image': image, 'harness_sha': harness, 'packages': [package]}
+          (work / 'input/bundle.json').write_text(json.dumps(bundle))
+          PY
+      - name: Build from source without credentials or caches
+        run: |
+          set -euo pipefail
+          tools/build.sh "$WORK/input/bundle.json" "$WORK/output" 2>&1 | tee "$WORK/build.log"
+      - name: Install and exercise in a fresh unprivileged consumer container
+        run: |
+          set -euo pipefail
+          image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image"])' "$WORK/input/bundle.json")
+          cat >"$WORK/consumer.sh" <<'SH'
+          set -euo pipefail
+          mkdir -p /evidence
+          pacman -Syu --noconfirm --needed -- python util-linux git
+          pacman -U --noconfirm -- /packages/*.pkg.tar.zst
+          useradd --uid 1000 --create-home --shell /bin/bash consumer
+          mkdir -p /home/consumer/config /home/consumer/data /home/consumer/runtime
+          chmod 700 /home/consumer/runtime
+          chown -R consumer:consumer /home/consumer /evidence
+          setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs -- env -i PATH=/usr/bin HOME=/home/consumer XDG_CONFIG_HOME=/home/consumer/config XDG_DATA_HOME=/home/consumer/data XDG_RUNTIME_DIR=/home/consumer/runtime LANG=C.UTF-8 TERM=xterm-256color bash /carapace-smoke.sh
+          SH
+          cat >"$WORK/carapace-smoke.sh" <<'SH'
+          set -euo pipefail
+          pacman -Q carapace > /evidence/installed.txt
+          pacman -Qi carapace > /evidence/package-metadata.txt
+          carapace --list --names > /evidence/carapace-list.txt
+          carapace git export git checko > /evidence/carapace-completion.json
+          python - <<'PY'
+          import json, re
+          from pathlib import Path
+          evidence = Path('/evidence')
+          if (evidence / 'installed.txt').read_text().strip() != 'carapace 1.8.0-2':
+              raise SystemExit('carapace exact installed version mismatch')
+          metadata = (evidence / 'package-metadata.txt').read_text()
+          optional = re.search(r'^Optional Deps[ \t]*:[ \t]*(.*(?:\n[ \t]+.*)*)', metadata, re.MULTILINE)
+          if optional is None:
+              raise SystemExit('carapace optional dependency metadata missing')
+          if '-bin' in optional.group(1):
+              raise SystemExit('carapace still recommends optional -bin dependencies')
+          if 'git' not in (evidence / 'carapace-list.txt').read_text().split():
+              raise SystemExit('carapace git missing')
+          value = json.loads((evidence / 'carapace-completion.json').read_text())
+          if not isinstance(value, dict) or not isinstance(value.get('values'), list):
+              raise SystemExit('unexpected carapace export format')
+          values = {x['value'] for x in value['values']}
+          if not {'checkout', 'checkout-index'} <= values:
+              raise SystemExit('missing real git checkout completions')
+          PY
+          printf 'carapace 1.8.0-2 installed; no optional -bin recommendations; git listed; checkout and checkout-index completed.\n' > /evidence/result.txt
+          SH
+          container=$(docker create --platform linux/amd64 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --security-opt no-new-privileges "$image" bash /consumer.sh)
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          docker cp "$WORK/output/." "$container:/packages"
+          docker cp "$WORK/consumer.sh" "$container:/consumer.sh"
+          docker cp "$WORK/carapace-smoke.sh" "$container:/carapace-smoke.sh"
+          result=0
+          docker start -a "$container" 2>&1 | tee "$WORK/consumer.log" || result=$?
+          docker cp "$container:/evidence" "$WORK/consumer-evidence" || true
+          exit "$result"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: carapace-enrollment-proof
+          path: ${{ env.WORK }}
+          if-no-files-found: error
+          retention-days: 7

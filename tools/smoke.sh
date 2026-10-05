@@ -2,14 +2,14 @@
 set -euo pipefail
 if [[ ${1:-} != --inside ]]; then
   [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_OS:-} == Linux && ${RUNNER_ENVIRONMENT:-} == github-hosted && $(uname -m) == x86_64 ]] || { echo 'smoke requires disposable GitHub Linux x86_64 runner' >&2; exit 1; }
-  [[ $# == 2 || $# == 3 ]] || { echo 'usage: tools/smoke.sh expected.json output-dir [snapshot-id]' >&2; exit 2; }
+  [[ $# == 3 || $# == 4 ]] || { echo 'usage: tools/smoke.sh expected.json enrollment.json output-dir [snapshot-id]' >&2; exit 2; }
   root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
   image=$(<"$root/build-image.txt")
   [[ $image =~ ^ghcr.io/archlinux/archlinux@sha256:[0-9a-f]{64}$ ]] || exit 1
-  snapshot=${3:-}
+  snapshot=${4:-}
   [[ -z $snapshot || $snapshot =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo 'invalid snapshot' >&2; exit 1; }
-  mkdir -p -- "$2"
-  output=$(realpath -- "$2")
+  mkdir -p -- "$3"
+  output=$(realpath -- "$3")
   shopt -s nullglob dotglob
   existing=("$output"/*)
   ((${#existing[@]} == 0)) || { echo 'smoke evidence directory must be empty' >&2; exit 1; }
@@ -22,7 +22,7 @@ if [[ ${1:-} != --inside ]]; then
   docker cp "$root/keys/arch-packages.asc" "$container:/key.asc"
   docker cp "$root/keys/fingerprint" "$container:/fingerprint.txt"
   docker cp "$1" "$container:/expected.json"
-  docker cp "$root/packages.json" "$container:/enrollment.json"
+  docker cp "$2" "$container:/enrollment.json"
   status=0
   docker start -a "$container" || status=$?
   docker cp "$container:/evidence/." "$output" || { [[ $status != 0 ]] || exit 1; }
