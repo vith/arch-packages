@@ -228,10 +228,17 @@ def classify_recipe_update(old_dir, new_dir, policy):
         if rendered != new_text:
             return verdict("manual", "unenrolled recipe bytes changed")
         # Native probe binds all proposed expanded source/checksum values. Only
-        # version and explicitly mapped source/checksum fields may differ;
+        # version, explicitly mapped source/checksum fields and noextract names
+        # following the same unambiguous source alias may differ;
         # retain original order, scope, unknown keys and every other field.
         if len(old_meta["fields"]) != len(new_meta["fields"]):
             return verdict("manual", "metadata layout changed")
+        source_aliases = [
+            (ov.split("::", 1)[0], nv.split("::", 1)[0])
+            for (os, ok, ov), (ns, nk, nv) in zip(old_meta["fields"], new_meta["fields"])
+            if (os, ok) == (ns, nk) and (ok == "source" or ok.startswith("source_"))
+            and "::" in ov and "::" in nv
+        ]
         allowed = {"pkgver", "pkgrel"}
         allowed.update(entry["algorithm"] + "sums" for entry in policy.get("automatic", {}).get("checksums", []))
         for (os, ok, ov), (ns, nk, nv) in zip(old_meta["fields"], new_meta["fields"]):
@@ -242,6 +249,10 @@ def classify_recipe_update(old_dir, new_dir, policy):
             if ok == "source" or ok.startswith("source_"):
                 if not evidence.get("source_templates_verified"):
                     return verdict("manual", "expanded source transition unenrolled")
+            elif ok == "noextract":
+                renamed = [new for old, new in source_aliases if old == ov]
+                if not evidence.get("source_templates_verified") or renamed != [nv]:
+                    return verdict("manual", "noextract does not follow one verified source alias")
             elif ok in allowed:
                 # Full independently generated metadata already equals proposal.
                 continue

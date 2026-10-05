@@ -74,7 +74,10 @@ Change recipe code on its `pkg/*` branch, then update its gitlink and source loc
 on a main-branch PR. Changed package contents require a version or `pkgrel` bump.
 
 Source updates are checked every six hours. Automatic merges are limited to
-verified version/source/checksum changes. Other changes require approval in the
+verified version/source/checksum changes. A `noextract` filename may follow the
+same uniquely identified, verified source alias as its version changes; adding
+entries or changing which source is excluded still requires review.
+Other changes require approval in the
 `recipe-review` environment and a human merge. Main requires passing tests,
 candidate checks and an up-to-date PR. Mechanical updates require no workflow or
 recipe-review approval: the updater dispatches trusted-main validation directly.

