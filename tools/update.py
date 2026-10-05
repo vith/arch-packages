@@ -244,8 +244,12 @@ def prepare(number,output):
     oldpins={};newpins={}
     old=checkout_data(base,output/'base-tree',oldpins);new=checkout_data(head,output/'head-tree',newpins)
     policies=policy_at(old)
+    proposed=policy_at(new)
+    if set(proposed)!=set(newpins):
+        raise ValueError('candidate package enrollment and recipe pins differ')
+    retired=set(policies)-set(proposed)
     names,shared=affected_packages(old,new,policies)
-    names=sorted(set(names)|{name for name in policies if oldpins.get(name)!=newpins.get(name)})
+    names=sorted((set(names)|{name for name in policies if oldpins.get(name)!=newpins.get(name)})-retired)
     shared |= oldpins.keys()!=newpins.keys()
     image=(old/'build-image.txt').read_text().strip()
     if not re.fullmatch(r'ghcr.io/archlinux/archlinux@sha256:[0-9a-f]{64}',image):
@@ -259,7 +263,8 @@ def prepare(number,output):
         raise
     status(head,'verify','success','Exact candidate regression tests passed')
     harness=harness_digest(old)
-    packages=[];decisions=[]
+    packages=[]
+    decisions=[{'pkgbase':name,'decision':'manual','reason':'Package enrollment retired'} for name in sorted(retired)]
     for name in names:
         lock=load(new/'inputs'/f'{name}.json')
         validate_source_policy(lock,policies[name])

@@ -206,6 +206,27 @@ class CandidateBoundaries(unittest.TestCase):
                 if mutation not in {'version','modules'}:
                     self.assertNotEqual(record['decisions'][0]['decision'],'mechanical')
 
+    def test_retired_enrollment_is_not_built_and_requires_review(self):
+        kept = {'pkgbase': 'kept', 'sources': [], 'automatic': {}}
+        retired = {'pkgbase': 'retired', 'sources': [], 'automatic': {}}
+        def checkout(sha, destination, pins):
+            destination.mkdir()
+            is_old = sha == 'a'*40
+            pins.update({'kept': '1'*40, **({'retired': '2'*40} if is_old else {})})
+            update.dump(destination/'packages.json', {'schema': 1, 'packages': [kept, retired] if is_old else [kept]})
+            (destination/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:'+'e'*64)
+            update.dump(destination/'inputs/kept.json', {'schema': 1, 'version': '1.0-1', 'sources': []})
+            recipe = destination/'recipes/kept'
+            recipe.mkdir(parents=True)
+            (recipe/'PKGBUILD').write_text('pkgver=1.0\npkgrel=1\n')
+            (recipe/'.SRCINFO').write_text(SRCINFO.replace('example', 'kept'))
+            return destination
+        with patch.dict(os.environ, {'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1'}), patch.object(update, 'repository', return_value='owner/repo'), patch.object(update, 'pr_identity', return_value=({}, 'a'*40, 'b'*40)), patch.object(update, 'checkout_data', side_effect=checkout), patch.object(update, 'harness_digest', return_value='e'*64), patch.object(update, 'run_candidate_tests'), patch.object(update, 'independent_transition', return_value=None), patch.object(update, 'status'):
+            record = update.prepare(1, self.root/'prepared-retirement')
+        self.assertEqual([package['pkgbase'] for package in record['packages']], ['kept'])
+        self.assertFalse(record['mechanical'])
+        self.assertIn({'pkgbase': 'retired', 'decision': 'manual', 'reason': 'Package enrollment retired'}, record['decisions'])
+
     def test_pin_lookup_rejects_flattened_or_wrong_gitlink(self):
         for mode,kind,sha in [('100644','blob','1'*40),('040000','tree','1'*40),('160000','commit','not-a-sha')]:
             with self.subTest(mode=mode,sha=sha),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'api',side_effect=[{'tree':{'sha':'a'*40}},{'tree':[{'path':'recipes/example','mode':mode,'type':kind,'sha':sha}]}]),self.assertRaisesRegex(ValueError,'gitlink'):
