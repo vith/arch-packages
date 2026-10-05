@@ -82,6 +82,11 @@ For other PRs, a metadata-only PR event handler dispatches the same pipeline.
 It runs the exact candidate's tests in a disposable container without credentials
 or host mounts, then validates and builds the frozen package inputs. A newer
 candidate run supersedes an older run, including an obsolete review wait.
+Retiring a package requires human review. Candidate validation excludes retired
+enrollments from builds and requires the proposed package list to match its recipe
+pins. New enrollments need a separate hosted build and consumer proof before merge,
+because candidate build policies come from trusted main.
+
 Validation can also be started manually:
 
 ```sh
