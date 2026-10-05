@@ -2,14 +2,14 @@
 set -euo pipefail
 if [[ ${1:-} != --inside ]]; then
   [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_OS:-} == Linux && ${RUNNER_ENVIRONMENT:-} == github-hosted && $(uname -m) == x86_64 ]] || { echo 'smoke requires disposable GitHub Linux x86_64 runner' >&2; exit 1; }
-  [[ $# == 2 || $# == 3 ]] || { echo 'usage: tools/smoke.sh expected.json output-dir [snapshot-id]' >&2; exit 2; }
+  [[ $# == 3 || $# == 4 ]] || { echo 'usage: tools/smoke.sh expected.json enrollment.json output-dir [snapshot-id]' >&2; exit 2; }
   root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
   image=$(<"$root/build-image.txt")
   [[ $image =~ ^ghcr.io/archlinux/archlinux@sha256:[0-9a-f]{64}$ ]] || exit 1
-  snapshot=${3:-}
+  snapshot=${4:-}
   [[ -z $snapshot || $snapshot =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo 'invalid snapshot' >&2; exit 1; }
-  mkdir -p -- "$2"
-  output=$(realpath -- "$2")
+  mkdir -p -- "$3"
+  output=$(realpath -- "$3")
   shopt -s nullglob dotglob
   existing=("$output"/*)
   ((${#existing[@]} == 0)) || { echo 'smoke evidence directory must be empty' >&2; exit 1; }
@@ -22,7 +22,7 @@ if [[ ${1:-} != --inside ]]; then
   docker cp "$root/keys/arch-packages.asc" "$container:/key.asc"
   docker cp "$root/keys/fingerprint" "$container:/fingerprint.txt"
   docker cp "$1" "$container:/expected.json"
-  docker cp "$root/packages.json" "$container:/enrollment.json"
+  docker cp "$2" "$container:/enrollment.json"
   status=0
   docker start -a "$container" || status=$?
   docker cp "$container:/evidence/." "$output" || { [[ $status != 0 ]] || exit 1; }
@@ -159,18 +159,20 @@ if not {'checkout','checkout-index'} <= values: raise SystemExit('missing real g
 PY
 python - <<'PY'
 import hashlib,json,pathlib,subprocess
-package=next(x for x in json.load(open('/expected.json'))['packages'] if x['pkgbase']=='nasc-tui-bin')
+# Historical snapshots retain the old binary package; current snapshots use nasctui.
+package=next(x for x in json.load(open('/expected.json'))['packages'] if x['pkgbase'] in {'nasctui','nasc-tui-bin'})
+name=package['pkgbase']
 sources=[s for s in package['source_lock']['sources'] if s['source'].startswith('nascTUI-') and '::' in s['source']]
 if len(sources)!=1: raise SystemExit('nasc corresponding-source lock absent/ambiguous')
 source=sources[0]; filename=source['source'].split('::',1)[0]
-archive=pathlib.Path('/fresh/root/usr/share/doc/nasc-tui-bin')/filename
+archive=pathlib.Path('/fresh/root/usr/share/doc')/name/filename
 digest=hashlib.sha256(archive.read_bytes()).hexdigest()
 if digest!=source['checksums']['sha256']: raise SystemExit('installed nasc corresponding-source hash mismatch')
 members=subprocess.check_output(['bsdtar','-tf',str(archive)],text=True).splitlines()
 licenses=[m for m in members if m.count('/')==1 and m.endswith('/LICENSE')]
 if len(licenses)!=1: raise SystemExit('corresponding source LICENSE absent/ambiguous')
 license_bytes=subprocess.check_output(['bsdtar','-xOf',str(archive),licenses[0]])
-if license_bytes!=pathlib.Path('/fresh/root/usr/share/licenses/nasc-tui-bin/LICENSE').read_bytes(): raise SystemExit('installed nasc license differs from corresponding source')
+if license_bytes!=(pathlib.Path('/fresh/root/usr/share/licenses')/name/'LICENSE').read_bytes(): raise SystemExit('installed nasc license differs from corresponding source')
 with open('/evidence/nasc-source.json','w') as file:
     print(json.dumps({'filename':filename,'sha256':digest,'source':source},sort_keys=True),file=file)
 PY

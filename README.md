@@ -1,7 +1,8 @@
 # vith-gh
 
 Personal x86_64 Arch Linux packages, built on GitHub Actions and distributed
-as signed GitHub Releases. Packages appear as `vith-gh/<package>` in pacman and
+as signed GitHub Releases. All executable packages are built from source, not
+repackaged upstream binaries. Packages appear as `vith-gh/<package>` in pacman and
 paru. The source project remains at `vith/arch-packages` on GitHub.
 
 ## Packages
@@ -10,11 +11,16 @@ paru. The source project remains at `vith/arch-packages` on GitHub.
 | --- | --- |
 | `archive-mounter` | AUR recipe |
 | `carapace` | AUR-derived recipe, updated from upstream tags |
-| `nasc-tui-bin` | Upstream release binary and corresponding GPL source |
+| `nasctui` | Upstream Go/C++ source tags, linked against system libqalculate |
 | `cloudflare-speed-cli` | Upstream source tags |
 | `oh-my-pi-vith-git` | [vith/oh-my-pi](https://github.com/vith/oh-my-pi) |
 | `python-google-genai` | AUR-derived recipe |
 | `apexshot` | [Upstream source tags](https://github.com/apex-shot/apexshot), maintained source-build recipe |
+
+`nasctui` replaces `nasc-tui-bin` and keeps the `nasc` command. The archive-mounter
+package contains a desktop entry rather than a compiled program. Carapace is
+compiled from Go source; `carapace-bin` is the upstream source repository's name,
+not a prebuilt package input.
 
 The Google SDK recipe omits the unavailable `python-sentencepiece` build/test
 dependency. Upstream already excludes tokenizer tests; the optional runtime
@@ -105,7 +111,8 @@ Publication verifies packages, signs the snapshot and checks public downloads
 before updating `latest`. Older snapshots remain available. The manual
 `consumer-proof.yml` workflow installs a snapshot in a clean Arch container and
 exercises the packages; it is separate from publication and needs only the snapshot
-tag, not expiring workflow artifacts.
+tag, not expiring workflow artifacts. Historical consumer checks use the package
+enrollment at the signed snapshot's accepted commit, not today's package list.
 ApexShot consumer checks cover CLI version/help, native messaging, shared-library
 resolution, desktop assets and extension files. They do not verify interactive
 capture or recording in a live GNOME/Wayland session.

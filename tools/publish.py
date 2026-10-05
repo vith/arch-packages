@@ -615,7 +615,7 @@ def publish(args):
                 check_collisions(previous, filename, sha(unsigned / filename))
                 shutil.copyfile(unsigned / filename, packages / filename)
                 new_names.update((filename, filename+'.sig'))
-        if name == 'nasc-tui-bin':
+        if name == 'nasctui':
             source = next((s for s in lock['sources'] if s['id'] == 'nasc-source' and s['kind'] == 'archive'), None)
             if not source:
                 raise ValueError('nasc corresponding source lock required')

@@ -6,10 +6,10 @@
 	path = recipes/carapace
 	url = https://github.com/vith/arch-packages.git
 	branch = pkg/carapace
-[submodule "recipes/nasc-tui-bin"]
-	path = recipes/nasc-tui-bin
+[submodule "recipes/nasctui"]
+	path = recipes/nasctui
 	url = https://github.com/vith/arch-packages.git
-	branch = pkg/nasc-tui-bin
+	branch = pkg/nasctui
 [submodule "recipes/cloudflare-speed-cli"]
 	path = recipes/cloudflare-speed-cli
 	url = https://github.com/vith/arch-packages.git

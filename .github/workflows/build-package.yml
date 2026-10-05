@@ -12,7 +12,7 @@ on:
         description: Package to build
         required: true
         type: choice
-        options: [archive-mounter, carapace, nasc-tui-bin, cloudflare-speed-cli, oh-my-pi-vith-git, python-google-genai, apexshot]
+        options: [archive-mounter, carapace, nasctui, cloudflare-speed-cli, oh-my-pi-vith-git, python-google-genai, apexshot]
       publication_run:
         description: Publication plan run ID
         required: true

@@ -30,7 +30,7 @@ jobs:
       - name: Install every package with required signatures and exercise consumers
         env:
           SNAPSHOT: ${{ inputs.snapshot_tag }}
-        run: tools/smoke.sh "$PROOF_WORK/verified/expected.json" "$PROOF_WORK/evidence" "$SNAPSHOT"
+        run: tools/smoke.sh "$PROOF_WORK/verified/expected.json" "$PROOF_WORK/verified/enrollment.json" "$PROOF_WORK/evidence" "$SNAPSHOT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
