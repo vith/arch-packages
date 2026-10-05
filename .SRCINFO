@@ -1,15 +1,12 @@
 pkgbase = carapace
 	pkgdesc = Multi-shell multi-command argument completer
 	pkgver = 1.8.0
-	pkgrel = 1
+	pkgrel = 2
 	url = https://carapace.sh/
 	arch = x86_64
 	license = MIT
 	makedepends = go>=1.26.2
 	depends = glibc
-	optdepends = carapace-aws-bin: enriched AWS completion
-	optdepends = carapace-ffmpeg-bin: FFmpeg completion
-	optdepends = carapace-magick-bin: ImageMagick completion
 	conflicts = carapace-bin
 	options = !strip
 	options = !debug

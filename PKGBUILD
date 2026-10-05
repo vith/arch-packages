@@ -1,16 +1,13 @@
 # Adapted from the AUR carapace source package.
 pkgname=carapace
 pkgver=1.8.0
-pkgrel=1
+pkgrel=2
 pkgdesc='Multi-shell multi-command argument completer'
 arch=('x86_64')
 url='https://carapace.sh/'
 license=('MIT')
 depends=('glibc')
 makedepends=('go>=1.26.2')
-optdepends=('carapace-aws-bin: enriched AWS completion'
-            'carapace-ffmpeg-bin: FFmpeg completion'
-            'carapace-magick-bin: ImageMagick completion')
 conflicts=('carapace-bin')
 options=('!strip' '!debug')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/carapace-sh/carapace-bin/archive/refs/tags/v${pkgver}.tar.gz")
