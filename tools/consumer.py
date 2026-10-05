@@ -1,5 +1,6 @@
 """Derive clean-install expectations from a verified signed snapshot."""
 import argparse
+import base64
 import json
 from pathlib import Path
 import re
@@ -40,7 +41,12 @@ def prepare(snapshot, work):
     if release['draft'] or release['prerelease'] or release['tag_name'] != snapshot:
         raise ValueError('snapshot is not a public package release')
     catalog = publish.verified_snapshot({'id': release['id'], 'tag': snapshot}, work / 'snapshot', ring)
-    policies = json.loads((publish.ROOT / 'packages.json').read_text())['packages']
+    enrollment = github_api.api(
+        f"repos/vith/arch-packages/contents/packages.json?ref={catalog['accepted_sha']}",
+        authenticated=False,
+    )
+    content = enrollment['content'].replace('\n', '').replace('\r', '')
+    policies = json.loads(base64.b64decode(content, validate=True))['packages']
     expectations = snapshot_inputs(catalog, work / 'snapshot/complete', policies)
     (work / 'expected.json').write_bytes(github_api.canonical(expectations))
 

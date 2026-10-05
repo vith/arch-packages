@@ -111,7 +111,8 @@ Publication verifies packages, signs the snapshot and checks public downloads
 before updating `latest`. Older snapshots remain available. The manual
 `consumer-proof.yml` workflow installs a snapshot in a clean Arch container and
 exercises the packages; it is separate from publication and needs only the snapshot
-tag, not expiring workflow artifacts.
+tag, not expiring workflow artifacts. Historical consumer checks use the package
+enrollment at the signed snapshot's accepted commit, not today's package list.
 ApexShot consumer checks cover CLI version/help, native messaging, shared-library
 resolution, desktop assets and extension files. They do not verify interactive
 capture or recording in a live GNOME/Wayland session.
