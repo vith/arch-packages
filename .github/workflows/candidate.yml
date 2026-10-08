@@ -1,9 +1,14 @@
 name: Exact candidate validation
+run-name: Candidate PR ${{ inputs.pr_number }} head ${{ inputs.expected_head }}
 on:
   workflow_dispatch:
     inputs:
       pr_number:
         description: Numeric PR number; control and harness always come from main
+        required: true
+        type: string
+      expected_head:
+        description: Exact full PR head SHA; stale dispatches fail closed
         required: true
         type: string
 env:
@@ -20,13 +25,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read
+      contents: write
+      actions: read
       pull-requests: read
       statuses: write
     outputs:
       base: ${{ steps.prepare.outputs.base }}
       head: ${{ steps.prepare.outputs.head }}
       mechanical: ${{ steps.prepare.outputs.mechanical }}
+      review_environment: ${{ steps.prepare.outputs.review_environment }}
     steps:
       - name: Prepare persistent scratch and trusted validation tools
         run: |
@@ -35,12 +42,13 @@ jobs:
           sudo apt-get install --yes libarchive-tools
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
       - id: prepare
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
         run: python3 -m tools.update prepare --pr "$PR_NUMBER" --directory "$ARCH_WORK/prepared"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -87,7 +95,8 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      actions: read
       pull-requests: read
       statuses: write
     steps:
@@ -139,11 +148,12 @@ jobs:
   manual-review:
     name: Review PR ${{ inputs.pr_number }} head ${{ needs.prepare.outputs.head }} base ${{ needs.prepare.outputs.base }}
     needs: [prepare, validate]
-    if: needs.prepare.outputs.mechanical != 'true'
-    environment: recipe-review
+    if: needs.prepare.outputs.review_environment != ''
+    environment: ${{ needs.prepare.outputs.review_environment }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      actions: read
       pull-requests: read
       statuses: write
     steps:

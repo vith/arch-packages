@@ -50,7 +50,9 @@ def prepare(directory, name, parent, attempt, kind='publication'):
         selected = select(plan, name)
         update.extract_tree(directory / 'bundle.tar', directory / 'frozen', {'recipes', 'bundle.json'})
         bundle = update.load(directory / 'frozen/bundle.json')
-        if bundle['packages'] != plan['packages']:
+        identity = ('schema', 'repository', 'base', 'head', 'run_id', 'run_attempt',
+                    'image', 'harness_sha', 'recipe_pins', 'previous_recipe_pins', 'packages')
+        if any(bundle[key] != plan[key] for key in identity):
             raise ValueError('candidate bundle differs from plan')
         target = directory / 'input'
         target.mkdir()
@@ -91,6 +93,8 @@ def collect(directory, timeout=10800, kind='publication'):
     output = directory / 'unsigned'
     output.mkdir()
     evidence = {**{key: value for key, value in plan.items() if key != 'packages'}, 'packages': []}
+    if candidate:
+        evidence['package_runs'] = []
     deadline = time.monotonic() + timeout
     failures = []
     while pending:
@@ -110,6 +114,10 @@ def collect(directory, timeout=10800, kind='publication'):
                 failures.append(name)
                 continue
             validate_run(record, plan, name)
+            if candidate:
+                evidence['package_runs'].append({
+                    'pkgbase': name, 'run_id': str(record['id']),
+                    'run_attempt': str(record['run_attempt'])})
             artifact = directory / ('download-' + name)
             env = {**os.environ, 'GH_TOKEN': os.environ['GITHUB_TOKEN']}
             subprocess.run(['gh', 'run', 'download', str(record['id']), '--repo', REPOSITORY, '--name', 'package-' + name, '--dir', str(artifact)], env=env, check=True)

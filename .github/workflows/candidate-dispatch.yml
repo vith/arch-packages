@@ -2,7 +2,7 @@ name: Start candidate validation
 on:
   pull_request_target:
     branches: [main]
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
 permissions:
   contents: read
   actions: write
@@ -11,8 +11,10 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     steps:
-      # This job never checks out or executes candidate code. The dispatched
-      # main workflow fetches immutable candidate data and isolates its tests.
+      # Only main-targeting PRs use this metadata event. Recipe-root branches
+      # contain no workflows: the trusted writer explicitly dispatches them,
+      # and the scheduled/main update reconciliation recovers missed events.
+      # This job never checks out or executes candidate code.
       - env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -24,5 +26,5 @@ jobs:
           current = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/pulls/{number}']))
           if current['state'] != 'open' or current['base']['ref'] != 'main':
               raise SystemExit('Not an open main candidate')
-          subprocess.run(['gh', 'workflow', 'run', 'candidate.yml', '--repo', repository, '--ref', 'main', '-f', 'pr_number=' + number], check=True)
+          subprocess.run(['gh', 'workflow', 'run', 'candidate.yml', '--repo', repository, '--ref', 'main', '-f', 'pr_number=' + number, '-f', 'expected_head=' + current['head']['sha']], check=True)
           PY

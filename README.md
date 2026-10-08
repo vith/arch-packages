@@ -76,18 +76,27 @@ one explicitly, use `[arch-packages]` if it contains `arch-packages.db`, or
 - `opentofu/`: settings for this GitHub repository only.
 
 Clone with `git clone --recurse-submodules https://github.com/vith/arch-packages.git`.
-Change recipe code on its `pkg/*` branch, then update its gitlink and source lock
-on a main-branch PR. Changed package contents require a version or `pkgrel` bump.
+Propose recipe changes in a PR targeting `pkg/<package>`. GitHub's **Files changed**
+tab contains the actual `PKGBUILD`, patches, install scripts and other recipe
+files, not generated main-branch records or copied description diffs. Changed
+package contents require a version or `pkgrel` bump.
 
-Source updates are checked every six hours. Automatic merges are limited to
-verified version/source/checksum changes. Other changes require approval in the
-`recipe-review` environment and a human merge. Main requires passing tests,
-candidate checks and an up-to-date PR. Mechanical updates require no workflow or
-recipe-review approval: the updater dispatches trusted-main validation directly.
-For other PRs, a metadata-only PR event handler dispatches the same pipeline.
-It runs the exact candidate's tests in a disposable container without credentials
-or host mounts, then validates and builds the frozen package inputs. A newer
-candidate run supersedes an older run, including an obsolete review wait.
+Source updates are checked every six hours. Verified mechanical
+version/source/checksum changes merge automatically on the recipe branch.
+Non-mechanical recipe changes require approval in the `recipe-review` environment
+and a human recipe-branch merge. Recipe branches require passing validation and
+an up-to-date PR; merge commits preserve the reviewed and upstream histories.
+
+After a recipe merge, automation validates the accepted recipe against its exact
+source and build evidence, then records its gitlink, source lock and provenance
+on protected main. This generated bookkeeping merges automatically without a
+second human approval. Changes to main's automation or policy instead require
+the separate `code-review` approval and a human merge.
+
+Validation uses trusted-main tools and frozen recipe inputs in disposable
+containers without credentials or host mounts. Metadata-only events and explicit
+dispatches start the pipeline; scheduled reconciliation recovers missed events.
+A newer candidate run supersedes an older run, including an obsolete review wait.
 Retiring a package requires human review. Candidate validation excludes retired
 enrollments from builds and requires the proposed package list to match its recipe
 pins. New enrollments need a separate hosted build and consumer proof before merge,
@@ -95,8 +104,9 @@ because candidate build policies come from trusted main.
 
 Validation can also be started manually:
 
-```sh
-gh workflow run candidate.yml --repo vith/arch-packages -f pr_number=NUMBER
+```fish
+set head (gh pr view NUMBER --repo vith/arch-packages --json headRefOid --jq .headRefOid)
+gh workflow run candidate.yml --repo vith/arch-packages -f pr_number=NUMBER -f expected_head=$head
 gh workflow run update.yml --repo vith/arch-packages
 python -m unittest discover -s tests -p 'test_*.py'
 ```
