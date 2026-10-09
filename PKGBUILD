@@ -1,7 +1,7 @@
 # Adapted from the upstream-maintained AUR crush source package.
 pkgname=crush
 pkgver=0.97.1
-pkgrel=1
+pkgrel=2
 pkgdesc='Terminal-based AI coding assistant'
 arch=('x86_64')
 url='https://charm.sh/crush'
@@ -25,19 +25,14 @@ build() {
   export CGO_ENABLED=0 GOFLAGS='-mod=readonly -modcacherw'
   local ldflags="-s -w -X github.com/charmbracelet/crush/internal/version.Version=v${pkgver}"
 
-  # Only the native helper executes during the build. The installed executable
-  # is independently cross-compiled, using upstream's pure-Go release mode.
-  GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" \
-    go build -trimpath -ldflags="$ldflags" -o crush-host .
-  mkdir -p completions manpages
-  ./crush-host completion bash > completions/crush.bash
-  ./crush-host completion zsh > completions/crush.zsh
-  ./crush-host completion fish > completions/crush.fish
-  ./crush-host man > manpages/crush.1
-  gzip -n -f manpages/crush.1
-
-  GOOS=linux GOARCH=amd64 GOAMD64=v1 go build -trimpath -buildmode=pie \
+  GOAMD64=v1 go build -trimpath -buildmode=pie \
     -ldflags="$ldflags" -o crush .
+  mkdir -p completions manpages
+  ./crush completion bash > completions/crush.bash
+  ./crush completion zsh > completions/crush.zsh
+  ./crush completion fish > completions/crush.fish
+  ./crush man > manpages/crush.1
+  gzip -n -f manpages/crush.1
 }
 
 package() {
