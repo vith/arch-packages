@@ -22,6 +22,10 @@ package contains a desktop entry rather than a compiled program. Carapace is
 compiled from Go source; `carapace-bin` is the upstream source repository's name,
 not a prebuilt package input.
 
+`oh-my-pi-vith-git` follows the fork's `integration` branch. Each validated build
+and signed snapshot records an exact source commit for reproducibility; that
+per-build pin does not permanently freeze future Git updates.
+
 The Google SDK recipe omits the unavailable `python-sentencepiece` build/test
 dependency. Upstream already excludes tokenizer tests; the optional runtime
 dependency is unchanged.
