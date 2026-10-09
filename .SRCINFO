@@ -1,7 +1,7 @@
 pkgbase = mdevctl
 	pkgdesc = A mediated device management utility for Linux
 	pkgver = 1.4.0
-	pkgrel = 2
+	pkgrel = 3
 	url = https://github.com/mdevctl/mdevctl
 	arch = x86_64
 	license = LGPL-2.1-only
