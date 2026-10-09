@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import string
 import subprocess
 import urllib.request
 
@@ -15,6 +16,16 @@ HEX = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$')
 
 def canonical(value):
     return (json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)+'\n').encode()
+
+
+def _format_version_fields(template, values):
+    if not isinstance(template,str):
+        raise ValueError('invalid source version template')
+    for _,field,spec,conversion in string.Formatter().parse(template):
+        if field is not None and (field not in values or spec or conversion):
+            raise ValueError('unsupported source version template field')
+    return template.format_map(values)
+
 
 
 def public_url(url):
@@ -159,7 +170,33 @@ def aur_files(repository,commit):
     return files
 
 
+def _version_prefix(watcher):
+    prefix=watcher.get('version_prefix','')
+    if not isinstance(prefix,str) or prefix and not re.fullmatch(r'[A-Za-z]{1,16}',prefix):
+        raise ValueError('invalid watcher version prefix')
+    return prefix
+
+
+def release_asset_name(watcher, version, source_id=None):
+    """Select an enrolled release asset without sharing primary asset identity."""
+    if 'asset_templates' in watcher:
+        templates=watcher['asset_templates']
+        source_id=watcher.get('source_id') if source_id is None else source_id
+        if not isinstance(templates,dict) or not templates or source_id not in templates:
+            raise ValueError('release source lacks enrolled asset template')
+        template=templates[source_id]
+        if not isinstance(template,str) or not 1<=len(template)<=512:
+            raise ValueError('invalid release asset template')
+        name=_format_version_fields(template,{'version':version})
+    else:
+        name=watcher.get('asset')
+    if not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,254}',name):
+        raise ValueError('invalid release asset filename')
+    return name
+
+
 def discover_release_tag(watcher, accepted):
+    prefix=_version_prefix(watcher)
     repository=watcher['repository']
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',repository):
         raise ValueError('invalid release repository')
@@ -185,11 +222,23 @@ def discover_release_tag(watcher, accepted):
             raise ValueError('tag grammar must provide numeric version groups')
         return tuple(map(int,components))
     selected=max(choices,key=order)
+    version=prefix+'.'.join(map(str,order(selected)))
+    if watcher.get('kind')=='release':
+        release_asset_name(watcher,version)
+        ids=watcher['asset_templates'] if 'asset_templates' in watcher else (None,)
+        names=set()
+        for source_id in ids:
+            name=release_asset_name(watcher,version,source_id)
+            if name in names:
+                raise ValueError('release sources share an enrolled asset')
+            names.add(name)
+            if len([a for a in selected['assets'] if a['name']==name])!=1:
+                raise ValueError('enrolled release asset missing or duplicated')
     if selected['tag_name']==accepted.get('tag'):
         if selected.get('id')!=accepted.get('release_id') and watcher.get('kind')=='release':
             raise ValueError('release identity changed')
         if watcher.get('kind')=='release':
-            matches=[a for a in selected['assets'] if a['name']==watcher['asset']]
+            matches=[a for a in selected['assets'] if a['name']==release_asset_name(watcher,version)]
             if len(matches)!=1 or accepted.get('asset_id') and matches[0]['id']!=accepted['asset_id']:
                 raise ValueError('accepted release asset replaced or missing')
         # Verify tag object even when version did not advance.
@@ -197,7 +246,7 @@ def discover_release_tag(watcher, accepted):
         if len(rows)!=1 or accepted.get('tag_object') and rows[0].split()[0]!=accepted['tag_object']:
             raise ValueError('accepted tag retargeted or missing')
         return None
-    return {'kind':watcher['kind'],'tag':selected['tag_name'],'version':'.'.join(map(str,order(selected))),'release_id':selected.get('id'),'assets':selected.get('assets',[]),'previous':accepted.get('tag')}
+    return {'kind':watcher['kind'],'tag':selected['tag_name'],'version':version,'release_id':selected.get('id'),'assets':selected.get('assets',[]),'previous':accepted.get('tag')}
 
 
 def discover_git(watcher, accepted):
@@ -286,6 +335,27 @@ def frozen_ancestry_version(source, repository, template):
     if not re.fullmatch(r'[A-Za-z0-9.+_]+',rendered) or not re.fullmatch(template,rendered):
         raise ValueError('unsupported static ancestry template')
     return rendered
+
+
+def _frozen_git_version(source, repository, rules):
+    """Derive enrolled Git versions from verified immutable source objects."""
+    if rules['derivation']=='frozen-authentic-tag-ancestry':
+        return frozen_ancestry_version(source,repository,rules['template'])
+    if rules['derivation']!='frozen-git-revision-count':
+        raise ValueError('unsupported frozen Git version derivation')
+    verify_git_source(source,repository)
+    if not source['ref'].startswith('refs/heads/'):
+        raise ValueError('revision count version requires a frozen branch')
+    if git('rev-parse','--is-shallow-repository',cwd=repository)!='false':
+        raise ValueError('revision count version requires full Git history')
+    if rules['template']!=r'^r[0-9]+\.[0-9a-f]{7,40}$':
+        raise ValueError('unsupported revision count template')
+    count=git('rev-list','--count',source['commit'],cwd=repository)
+    abbreviation=git('rev-parse','--short=7',source['commit'],cwd=repository)
+    version='r'+count+'.'+abbreviation
+    if not re.fullmatch(rules['template'],version):
+        raise ValueError('unsupported revision count version')
+    return version
 
 
 def git_checksums(source, repository):

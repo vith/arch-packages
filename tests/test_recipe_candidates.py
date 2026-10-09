@@ -59,7 +59,7 @@ class RecipeCandidateBoundaries(unittest.TestCase):
         update.dump(old/'upstream'/'example.json', provenance)
         (old/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:'+'f'*64)
         repo = Path(candidates.__file__).parents[1]
-        for filename in set(recipe_state.CONTROLS) | {'tools/build.sh', 'tools/native.py', 'tools/sources.py', 'tools/recipe_gate.py', 'tools/github_api.py'}:
+        for filename in set(recipe_state.CONTROLS) | {'tools/build.sh', 'tools/native.py', 'tools/sources.py', 'tools/recipe_gate.py', 'tools/github_api.py', 'tools/dependency_repo.py', 'keys/arch-packages.asc', 'keys/n3t.asc'}:
             destination = old/filename
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(repo/filename, destination)
@@ -808,6 +808,118 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             with patch.object(candidates, 'verify_authorization'), patch.object(recipe_state, 'assert_recipe_identity'), patch.object(recipe_state, 'load', return_value=candidates.frozen_record(record)):
                 with self.assertRaisesRegex(ValueError, 'extra'):
                     candidates.validate_build(record, directory, report=False)
+
+    def release_edit_fixture(self, *, grouped=True, prefix=''):
+        old_version, new_version = prefix+'1.0', prefix+'2.0'
+        source_ids = ['code', 'font'] if grouped else ['code']
+        previous = {'version': old_version+'-1', 'sources': [
+            {'id': source_id, 'kind': 'release',
+             'url': 'https://example.test/'+old_version+'/'+source_id+'.zip',
+             'release_id': 10, 'asset_id': index+20}
+            for index, source_id in enumerate(source_ids)]}
+        edited = copy.deepcopy(previous)
+        edited['version'] = '3:'+new_version+'-2'
+        for source in edited['sources']:
+            source['url'] = 'https://example.test/'+new_version+'/'+source['id']+'.zip'
+        watcher = {'id': 'release', 'kind': 'release', 'source_id': 'code',
+                   'related_source_ids': source_ids[1:],
+                   'url': 'https://example.test/repo.git', 'repository': 'owner/repo',
+                   'tag_pattern': r'^v([0-9]+)\.([0-9]+)$',
+                   'accepted_tag': 'v1.0', 'accepted_tag_object': 'a'*40,
+                   'accepted_peeled_commit': 'a'*40, 'release_id': 10, 'asset_id': 20,
+                   'version_prefix': prefix,
+                   'asset_templates': {source_id: source_id+'-{version}.zip' for source_id in source_ids}}
+        release = {'id': 11, 'draft': False, 'prerelease': False, 'assets': [
+            {'id': index+30, 'name': source_id+'-'+new_version+'.zip',
+             'browser_download_url': source['url']}
+            for index, (source_id, source) in enumerate(zip(source_ids, edited['sources']))]}
+        return previous, edited, {'aur': None, 'watchers': [watcher]}, release
+
+    def test_edited_grouped_release_authenticates_distinct_native_version_assets(self):
+        previous, edited, provenance, release = self.release_edit_fixture(prefix='B')
+        rows = 'b'*40+'\trefs/tags/v2.0\n'+'c'*40+'\trefs/tags/v2.0^{}\n'
+        with patch.object(update.sources, 'git', return_value=rows), patch.object(update.sources, 'fetch', return_value=json.dumps(release)):
+            result, selected = candidates.manual_provenance(previous, edited, provenance)
+            for source in edited['sources']:
+                update._live_tag_provenance(provenance['watchers'][0], result['watchers'][0], source)
+        self.assertEqual(selected, ['release'])
+        self.assertEqual(result['watchers'][0]['accepted_tag'], 'v2.0')
+        self.assertEqual(result['watchers'][0]['asset_id'], 30)
+        self.assertEqual([(s['release_id'], s['asset_id']) for s in edited['sources']], [(11, 30), (11, 31)])
+
+    def test_edited_related_release_alone_retains_primary_authentication(self):
+        previous, edited, provenance, release = self.release_edit_fixture()
+        edited['version'] = previous['version']
+        edited['sources'][0] = copy.deepcopy(previous['sources'][0])
+        release['assets'][0]['browser_download_url'] = edited['sources'][0]['url']
+        for asset in release['assets']:
+            asset['name'] = asset['name'].replace('2.0', '1.0')
+        rows = 'a'*40+'\trefs/tags/v1.0\n'
+        with patch.object(update.sources, 'git', return_value=rows), patch.object(update.sources, 'fetch', return_value=json.dumps(release)):
+            result = candidates.edited_provenance(previous, edited, provenance, 'release')
+        self.assertEqual(result['watchers'][0]['asset_id'], 30)
+        self.assertEqual(edited['sources'][1]['asset_id'], 31)
+
+    def test_edited_release_rejects_wrong_or_duplicate_assets_and_urls(self):
+        for mutation in ('name', 'url', 'duplicate', 'shared_id', 'draft', 'prerelease'):
+            with self.subTest(mutation=mutation):
+                previous, edited, provenance, release = self.release_edit_fixture()
+                if mutation == 'name':
+                    release['assets'][1]['name'] = 'unenrolled.zip'
+                elif mutation == 'url':
+                    release['assets'][1]['browser_download_url'] = 'https://example.test/wrong.zip'
+                elif mutation == 'duplicate':
+                    release['assets'].append(copy.deepcopy(release['assets'][1]))
+                elif mutation == 'shared_id':
+                    release['assets'][1]['id'] = release['assets'][0]['id']
+                else:
+                    release[mutation] = True
+                with patch.object(update.sources, 'git', return_value='b'*40+'\trefs/tags/v2.0\n'), patch.object(update.sources, 'fetch', return_value=json.dumps(release)):
+                    with self.assertRaises(ValueError):
+                        candidates.edited_provenance(previous, edited, provenance, 'release')
+
+    def test_edited_release_identity_checks_cover_each_related_asset(self):
+        previous, edited, provenance, release = self.release_edit_fixture()
+        with patch.object(update.sources, 'git', return_value='b'*40+'\trefs/tags/v2.0\n'), patch.object(update.sources, 'fetch', return_value=json.dumps(release)):
+            result = candidates.edited_provenance(previous, edited, provenance, 'release')
+            for source_index in (0, 1):
+                for field in ('release_id', 'asset_id', 'url'):
+                    with self.subTest(source=source_index, field=field):
+                        forged = copy.deepcopy(edited['sources'][source_index])
+                        forged[field] = 'wrong'
+                        with self.assertRaisesRegex(ValueError, 'identity mismatch'):
+                            update._live_tag_provenance(provenance['watchers'][0], result['watchers'][0], forged)
+
+    def test_edited_release_rejects_ambiguous_related_watcher(self):
+        previous, edited, provenance, _ = self.release_edit_fixture()
+        other = copy.deepcopy(provenance['watchers'][0])
+        other.update(id='other', source_id='font', related_source_ids=[])
+        provenance['watchers'].append(other)
+        for derive in (
+                lambda: candidates.manual_provenance(previous, edited, provenance),
+                lambda: candidates.edited_provenance(previous, edited, provenance, 'release')):
+            with self.assertRaisesRegex(ValueError, 'ambiguous watcher'):
+                derive()
+
+    def test_edited_literal_release_asset_contract_is_unchanged(self):
+        previous, edited, provenance, release = self.release_edit_fixture(grouped=False)
+        watcher = provenance['watchers'][0]
+        del watcher['asset_templates']
+        watcher['asset'] = 'code.zip'
+        release['assets'][0]['name'] = 'code.zip'
+        with patch.object(update.sources, 'git', return_value='b'*40+'\trefs/tags/v2.0\n'), patch.object(update.sources, 'fetch', return_value=json.dumps(release)):
+            result = candidates.edited_provenance(previous, edited, provenance, 'release')
+            update._live_tag_provenance(watcher, result['watchers'][0], edited['sources'][0])
+            release['assets'][0]['name'] = 'code-2.0.zip'
+            with patch.object(update.sources, 'fetch', return_value=json.dumps(release)):
+                with self.assertRaisesRegex(ValueError, 'exact authentic asset'):
+                    candidates.edited_provenance(previous, edited, provenance, 'release')
+
+    def test_edited_release_rejects_missing_native_version_prefix(self):
+        previous, edited, provenance, _ = self.release_edit_fixture(prefix='B')
+        edited['version'] = '2.0-1'
+        with self.assertRaisesRegex(ValueError, 'version prefix'):
+            candidates.edited_provenance(previous, edited, provenance, 'release')
 
     def test_edited_enrolled_tag_derives_authentic_new_provenance(self):
         previous = {'schema': 1, 'version': '1.0-1', 'sources': [{'id': 'code', 'kind': 'git', 'ref': 'refs/tags/v1.0'}]}

