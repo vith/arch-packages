@@ -7,7 +7,6 @@ pkgbase = microsandbox
 	license = Apache-2.0
 	makedepends = cargo
 	makedepends = cmake
-	makedepends = git
 	depends = glibc
 	depends = libgcc
 	depends = libcap-ng
@@ -17,19 +16,8 @@ pkgbase = microsandbox
 	options = !lto
 	source = microsandbox-0.7.4.crate::https://crates.io/api/v1/crates/microsandbox/0.7.4/download
 	source = microsandbox-runtime.tar.gz::https://github.com/superradcompany/microsandbox/releases/download/v0.7.4/microsandbox-linux-x86_64.tar.gz
-	source = microsandbox-runtime-source::git+https://github.com/superradcompany/microsandbox.git#tag=v0.7.4
-	source = libkrunfw-source-cf4c22b9.tar.gz::https://github.com/superradcompany/libkrunfw/archive/cf4c22b9f05c680928e6d96a9d198f5845573a87.tar.gz
-	source = linux-6.12.109.tar.gz::https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.109.tar.gz
-	source = libkrun-source-2bd0f84a.tar.gz::https://github.com/zerocore-ai/libkrun/archive/2bd0f84ad0956f3032e0490d3b8512b6851eca12.tar.gz
 	noextract = microsandbox-runtime.tar.gz
-	noextract = libkrunfw-source-cf4c22b9.tar.gz
-	noextract = linux-6.12.109.tar.gz
-	noextract = libkrun-source-2bd0f84a.tar.gz
 	sha256sums = d2d4d6223c59456b82cb98cb7a020bf2dc23dc8d3de6d5ed74c04ed0e9bed856
 	sha256sums = a3689a2fb4cc9dd88e36f7c11883bb2bdf98b1c1ffd2f41a414224e4cd89bf59
-	sha256sums = SKIP
-	sha256sums = d4b49702674f08626fd1b9c55eb1e1c3010e7e0fc43d1e14778a5e1144a64eec
-	sha256sums = e81af28f5941db1c7f356151dfbab2ca5786c8be76474f7d42ea306cdeb445cd
-	sha256sums = 88e95efa9f3883fbc6793641694f75ad64b9e0006509bedafc0fd62b0c822765
 
 pkgname = microsandbox
