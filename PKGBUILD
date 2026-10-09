@@ -3,7 +3,7 @@ _name=sentencepiece
 pkgbase="${_name}"
 pkgname=("${pkgbase}" "python-${pkgbase}")
 pkgver=0.2.2
-pkgrel=2
+pkgrel=3
 pkgdesc="Unsupervised text tokenizer for Neural Network-based text generation"
 arch=('x86_64')
 url="https://github.com/google/sentencepiece"
@@ -31,9 +31,9 @@ source=(
   "${_name}::git+${url}.git#tag=v${pkgver}"
   'dont-include-data-files-in-python-pkg.patch'
 )
-sha512sums=(
-  '8a1b21e382b7e4649e406ed6d9cc2121df12c4c8b3e35524eaedc794539d1031afbd06e826aa25463ceb71ed556b2a4cd804253c4eb012b6ceca9ba79e644f42'
-  '6fd675cf0187c2ddc0919e7c1aeb47768d4e3a0d7d8613215896678d489fb815de8473f6e6d6b611b4c269f135f7feca5c70b69c9e331123026caa3cd1afd871'
+sha256sums=(
+  '3b781cc234d419de51245501c02fe8c1dc03eba9b79a8eefaf032046348edf05'
+  '85e56e6d2345dddb9717d028ce78eb428d9190a150a1929ca43d60aaf1895b37'
 )
 
 prepare() {
