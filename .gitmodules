@@ -26,3 +26,15 @@
 	path = recipes/apexshot
 	url = https://github.com/vith/arch-packages.git
 	branch = pkg/apexshot
+[submodule "recipes/carapace-bridge"]
+	path = recipes/carapace-bridge
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/carapace-bridge
+[submodule "recipes/regclient"]
+	path = recipes/regclient
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/regclient
+[submodule "recipes/carapace-spec-man"]
+	path = recipes/carapace-spec-man
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/carapace-spec-man

@@ -11,6 +11,9 @@ paru. The source project remains at `vith/arch-packages` on GitHub.
 | --- | --- |
 | `archive-mounter` | AUR recipe |
 | `carapace` | AUR-derived recipe, updated from upstream tags |
+| `carapace-bridge` | [Upstream Go source tags](https://github.com/carapace-sh/carapace-bridge), maintained recipe |
+| `carapace-spec-man` | [Upstream Go source tags](https://github.com/carapace-sh/carapace-spec-man), maintained recipe |
+| `regclient-regctl`, `regclient-regsync`, `regclient-regbot` | [regclient Go source tags](https://github.com/regclient/regclient), AUR-derived split recipe |
 | `nasctui` | Upstream Go/C++ source tags, linked against system libqalculate |
 | `cloudflare-speed-cli` | Upstream source tags |
 | `oh-my-pi-vith-git` | [vith/oh-my-pi](https://github.com/vith/oh-my-pi) |
@@ -21,6 +24,12 @@ paru. The source project remains at `vith/arch-packages` on GitHub.
 package contains a desktop entry rather than a compiled program. Carapace is
 compiled from Go source; `carapace-bin` is the upstream source repository's name,
 not a prebuilt package input.
+
+`carapace-bridge` adapts shell completions and `carapace-spec-man` generates
+completion specifications from manpages. The regclient packages provide registry
+access (`regctl`), mirroring (`regsync`) and automation (`regbot`), including Bash,
+Fish and Zsh completions. Installing them does not enable a service or schedule
+registry operations.
 
 `oh-my-pi-vith-git` follows the fork's `integration` branch. Updates resolve its
 current commit and derive the package version from that checkout. Each signed

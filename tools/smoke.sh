@@ -118,7 +118,10 @@ PY
 chroot /fresh/root useradd --uid 1000 --home-dir /fresh/home --shell /bin/bash smoke
 chown -R 1000:1000 /fresh/root/fresh/home /fresh/root/fresh/config /fresh/root/fresh/data /fresh/root/fresh/runtime
 # Consumers receive no ambient CI environment and no privileges.
-consumer() { chroot /fresh/root /usr/bin/setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs -- env -i PATH=/usr/bin HOME=/fresh/home XDG_CONFIG_HOME=/fresh/config XDG_DATA_HOME=/fresh/data XDG_RUNTIME_DIR=/fresh/runtime LANG=C.UTF-8 TERM=xterm-256color "$@"; }
+consumer_namespace=()
+consumer() { "${consumer_namespace[@]}" chroot /fresh/root /usr/bin/setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs -- env -i PATH=/usr/bin HOME=/fresh/home XDG_CONFIG_HOME=/fresh/config XDG_DATA_HOME=/fresh/data XDG_RUNTIME_DIR=/fresh/runtime LANG=C.UTF-8 TERM=xterm-256color "$@"; }
+# These CLI proofs cannot reach any registry, even if upstream behavior changes.
+offline_consumer() { local -a consumer_namespace=(unshare --net); consumer "$@"; }
 desktop=/fresh/root/usr/share/applications/mount-archive.desktop
 desktop-file-validate "$desktop"
 cp "$desktop" /evidence/mount-archive.desktop
@@ -146,6 +149,108 @@ apexshot_status=0
 consumer bash /apexshot-smoke.sh "$apexshot_version" /fresh/data/apexshot /apexshot-files.txt || apexshot_status=$?
 cp -a /fresh/root/fresh/data/apexshot/. /evidence/
 [[ $apexshot_status == 0 ]] || exit "$apexshot_status"
+# Gate on signed snapshot outputs, not executables supplied by dependencies.
+# Historical snapshots without these enrollments retain their original proof set.
+python - <<'PY' > /evidence/aur-cli-targets.txt
+import json
+names={item['name'] for package in json.load(open('/expected.json'))['packages'] for item in package['files']}
+for name in sorted(names & {'carapace-bridge','carapace-spec-man','regclient-regctl','regclient-regsync','regclient-regbot'}):
+    print(name)
+PY
+mapfile -t cli_targets < /evidence/aur-cli-targets.txt
+for name in "${cli_targets[@]}"; do
+  case "$name" in
+    carapace-bridge)
+      offline_consumer carapace-bridge --version > /evidence/carapace-bridge-version.txt
+      # The root completion protocol takes the executable directly, without an empty argument.
+      offline_consumer carapace-bridge _carapace export carapace-bridge ba > /evidence/carapace-bridge-completion.json
+      offline_consumer bash --noprofile --norc -c 'source <(carapace-bridge _carapace bash); COMP_LINE="carapace-bridge ba"; COMP_POINT=${#COMP_LINE}; COMP_TYPE=9; _carapace-bridge_completion; printf "%s\n" "${COMPREPLY[@]}"' > /evidence/carapace-bridge-bash-completion.txt
+      [[ $(</evidence/carapace-bridge-bash-completion.txt) == bash ]] || { echo 'carapace-bridge Bash callback completion mismatch' >&2; exit 1; }
+      python - <<'PY'
+import json
+value=json.load(open('/evidence/carapace-bridge-completion.json'))
+values={x['value'] for x in value.get('values',[])}
+if values != {'bash'}:
+    raise SystemExit('carapace-bridge failed to complete its bash subcommand: '+repr(values))
+PY
+      ;;
+    regclient-regctl)
+      offline_consumer regctl version > /evidence/regctl-version.txt
+      offline_consumer regctl ref localhost:5000/consumer/proof:offline --format '{{.Registry}}|{{.Repository}}|{{.Tag}}' > /evidence/regctl-reference.txt
+      [[ $(</evidence/regctl-reference.txt) == 'localhost:5000|consumer/proof|offline' ]] || { echo 'regctl reference parsing mismatch' >&2; exit 1; }
+      ;;
+    regclient-regsync)
+      offline_consumer regsync version > /evidence/regsync-version.txt
+      offline_consumer bash -c 'cat > /fresh/data/regsync.yaml' <<'YAML'
+version: 1
+defaults:
+  skipDockerConfig: true
+sync: []
+YAML
+      cp /fresh/root/fresh/data/regsync.yaml /evidence/regsync-input.yaml
+      offline_consumer regsync config --config /fresh/data/regsync.yaml > /evidence/regsync-config.yaml
+      python - <<'PY'
+import re
+text=open('/evidence/regsync-config.yaml').read()
+for pattern in (r'^version: 1$',r'^sync: \[\]$',r'^\s+skipDockerConfig: true$'):
+    if not re.search(pattern,text,re.M):
+        raise SystemExit('regsync failed to load safe empty config: '+pattern)
+PY
+      offline_consumer regsync check --config /fresh/data/regsync.yaml > /evidence/regsync-check.txt 2>&1
+      # A future unsupported config version must be rejected, not silently ignored.
+      if offline_consumer regsync check --config - > /evidence/regsync-invalid.txt 2>&1 <<<'version: 999'; then
+        echo 'regsync accepted an unsupported config version' >&2; exit 1
+      fi
+      [[ $(</evidence/regsync-invalid.txt) == *'unsupported config version'* ]] || { echo 'regsync failed for an unexpected reason' >&2; exit 1; }
+      ;;
+    regclient-regbot)
+      offline_consumer regbot version > /evidence/regbot-version.txt
+      offline_consumer bash -c 'cat > /fresh/data/regbot.yaml' <<'YAML'
+version: 1
+defaults:
+  skipDockerConfig: true
+scripts: []
+YAML
+      cp /fresh/root/fresh/data/regbot.yaml /evidence/regbot-input.yaml
+      offline_consumer regbot once --dry-run --config /fresh/data/regbot.yaml > /evidence/regbot-dry-run.txt 2>&1
+      if offline_consumer regbot once --dry-run --config - > /evidence/regbot-invalid.txt 2>&1 <<<'version: 999'; then
+        echo 'regbot accepted an unsupported config version' >&2; exit 1
+      fi
+      [[ $(</evidence/regbot-invalid.txt) == *'unsupported config version'* ]] || { echo 'regbot failed for an unexpected reason' >&2; exit 1; }
+      ;;
+    carapace-spec-man)
+      offline_consumer carapace-spec-man --version > /evidence/carapace-spec-man-version.txt
+      # An actual indexed manpage, not a replacement man command or host man database.
+      offline_consumer mkdir -p /fresh/data/man/man1
+      offline_consumer bash -c 'cat > /fresh/data/man/man1/aurproof.1' <<'ROFF'
+.TH AURPROOF 1 "2026-01-01" "consumer proof"
+.SH NAME
+aurproof \- demonstrate offline completion conversion
+.SH SYNOPSIS
+.B aurproof
+.RI [ options ]
+.SH OPTIONS
+.TP
+.B \-\-offline
+Use local files only.
+ROFF
+      cp /fresh/root/fresh/data/man/man1/aurproof.1 /evidence/carapace-spec-man-input.1
+      offline_consumer env MANPATH=/fresh/data/man mandb --quiet --create /fresh/data/man > /evidence/carapace-spec-man-mandb.txt 2>&1
+      offline_consumer env MANPATH=/fresh/data/man MANWIDTH=80 carapace-spec-man aurproof > /evidence/carapace-spec-man.yaml
+      python - <<'PY'
+import re
+text=open('/evidence/carapace-spec-man.yaml').read()
+if not re.search(r'^name: aurproof$',text,re.M):
+    raise SystemExit('carapace-spec-man lost manpage command name')
+if not re.search(r'^description: demonstrate offline completion conversion$',text,re.M):
+    raise SystemExit('carapace-spec-man lost indexed NAME description')
+if not re.search(r'^    --offline: Use local files only\.?$',text,re.M):
+    raise SystemExit('carapace-spec-man failed to parse manpage offline flag')
+PY
+      ;;
+  esac
+  printf '%s offline consumer proof passed\n' "$name" >> /evidence/aur-cli-result.txt
+done
 consumer carapace --list --names > /evidence/carapace-list.txt
 consumer carapace git export git checko > /evidence/carapace-completion.json
 python - <<'PY'
