@@ -1,0 +1,61 @@
+name: Reviewed frozen Git repair
+run-name: Reviewed frozen Git / C a7dbfd05495efcbb298a72cdef5106ef3485f88f / H ${{ github.sha }}
+on:
+  push:
+    branches: [repair/frozen-git]
+permissions:
+  contents: read
+  actions: write
+  statuses: write
+jobs:
+  reviewed-harness:
+    name: Protected reviewed harness
+    if: github.ref == 'refs/heads/repair/frozen-git'
+    environment: code-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      WORK: /home/runner/.local/state/arch-packages/reviewed-${{ github.run_id }}-${{ github.run_attempt }}
+      TMPDIR: /home/runner/.local/state/arch-packages/reviewed-${{ github.run_id }}-${{ github.run_attempt }}/tmp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install unsigned archive inspection tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libarchive-tools python3-yaml
+      - name: Verify protected authority and prepare accepted C inputs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$TMPDIR"
+          unset ARCH_BUILD_CACHE ARCH_PACKAGE_CACHE ARCH_NATIVE_CACHE
+          python3 -m tools.reviewed_harness prepare "$WORK/prepared"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reviewed-harness-${{ github.run_attempt }}
+          path: |
+            ${{ env.WORK }}/prepared/candidate.json
+            ${{ env.WORK }}/prepared/bundle.tar
+          if-no-files-found: error
+          retention-days: 7
+      - name: Execute seven independent protected hosted runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          unset ARCH_BUILD_CACHE ARCH_PACKAGE_CACHE ARCH_NATIVE_CACHE
+          python3 -m tools.package_runs collect "$WORK/prepared" --kind reviewed-harness
+      - name: Validate actual child proof and report human-merge checks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m tools.reviewed_harness report "$WORK/prepared"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reviewed-unsigned-${{ github.run_attempt }}
+          path: |
+            ${{ env.WORK }}/prepared/candidate.json
+            ${{ env.WORK }}/prepared/unsigned.tar
+          if-no-files-found: error
+          retention-days: 7
