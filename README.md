@@ -112,6 +112,8 @@ automatically without a second human approval or another build. Automation,
 workflow, policy and documentation changes also validate and merge automatically.
 Source-only changes run isolated exact-revision tests and verify unchanged package
 inputs, with zero package compilations and no approval prompt.
+Automatic main-source merging is limited to branches in this repository; external
+forks are rejected by that route rather than given another approval gate.
 
 Validation can also be started manually:
 

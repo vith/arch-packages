@@ -353,7 +353,7 @@ class CandidateBoundaries(unittest.TestCase):
                     pins.update(example=('1' if sha=='a'*40 else '2')*40)
                     return Path(shutil.copytree(fixture/('old' if sha=='a'*40 else 'new'),destination))
                 evidence={'srcinfo':(recipe/'.SRCINFO').read_text(),'checksums':{},'source_templates_verified':True,'lock_verified':True,'auxiliary_inputs_verified':True,'authentic':True,'fast_forward':True}
-                with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'},clear=True),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'run_candidate_tests'),patch.object(update,'independent_transition',return_value=evidence),patch.object(update.recipes,'is_ancestor',return_value=mutation!='rewrite'),patch('tools.recipe_gate._compare',return_value=1),patch.object(update,'status'):
+                with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'},clear=True),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({'head':{'repo':{'full_name':'owner/repo'}}},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'run_candidate_tests'),patch.object(update,'independent_transition',return_value=evidence),patch.object(update.recipes,'is_ancestor',return_value=mutation!='rewrite'),patch('tools.recipe_gate._compare',return_value=1),patch.object(update,'status'):
                     with patch.object(update,'run_candidate_tests',side_effect=AssertionError('unapproved execution')),patch.object(recipe_state,'load_optional',return_value=None):
                         if mutation == 'rewrite':
                             with self.assertRaisesRegex(ValueError, 'fast-forward'):
@@ -366,6 +366,37 @@ class CandidateBoundaries(unittest.TestCase):
                 self.assertEqual(record['packages'][0]['previous_recipe_commit'],'1'*40)
                 if mutation not in {'version','modules'}:
                     self.assertNotEqual(record['decisions'][0]['decision'],'mechanical')
+
+    def test_source_only_main_automatic_authority_rejects_external_or_missing_head_repository(self):
+        from tools import recipe_candidates
+        policy = {'pkgbase': 'example', 'sources': [], 'automatic': {}}
+        def checkout(sha, destination, pins):
+            self.copy_trusted_controller(destination)
+            pins['example'] = '1'*40
+            update.dump(destination/'packages.json', {'schema': 1, 'packages': [policy]})
+            update.dump(destination/'inputs/example.json', {'schema': 1, 'version': '1.0-1', 'sources': []})
+            recipe = destination/'recipes/example'
+            recipe.mkdir(parents=True)
+            (recipe/'PKGBUILD').write_text('pkgver=1.0\npkgrel=1\n')
+            (recipe/'.SRCINFO').write_text(SRCINFO)
+            (destination/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:'+'e'*64)
+            (destination/'tools/controller-change.py').write_text('accepted' if sha == 'a'*40 else 'new tooling')
+            return destination
+        same_repo = {'head': {'repo': {'full_name': 'owner/repo'}}}
+        with patch.dict(os.environ, {'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1'}), patch.object(update, 'api', return_value={'base': {'ref': 'main'}}), patch.object(update.sources, 'git', return_value='a'*40), patch('tools.recipe_acceptance.validate_bookkeeping', return_value=None), patch.object(update, 'repository', return_value='owner/repo'), patch.object(update, 'pr_identity', return_value=(same_repo, 'a'*40, 'b'*40)) as identity, patch.object(update, 'checkout_data', side_effect=checkout), patch.object(update, 'run_candidate_tests', side_effect=AssertionError('prepare cannot execute source')), patch.object(update, 'status'), patch.object(recipe_state, 'load_optional', return_value=None), patch.object(recipe_state, 'save') as save, patch.object(recipe_state, 'attest'):
+            record = update.prepare(1, self.root/'owned-source')
+            self.assertEqual(record['packages'], [])
+            self.assertEqual(record['review_environment'], '')
+            for index, head in enumerate(({'repo': {'full_name': 'outsider/repo'}}, {'repo': None}, {})):
+                with self.subTest(head=head):
+                    foreign_pr = {'head': head}
+                    identity.return_value = (foreign_pr, 'a'*40, 'b'*40)
+                    save.reset_mock()
+                    with self.assertRaisesRegex(ValueError, 'same-repository'):
+                        update.prepare(1, self.root/f'foreign-source-{index}')
+                    save.assert_not_called()
+                    with patch.object(update, 'api', return_value=foreign_pr), self.assertRaisesRegex(ValueError, 'same-repository'):
+                        recipe_candidates._verify_inputs(record, True, update.independent_transition, update.static_metadata)
 
     def test_retired_enrollment_is_not_built_and_requires_no_review(self):
         kept = {'pkgbase': 'kept', 'sources': [], 'automatic': {}}
@@ -383,7 +414,7 @@ class CandidateBoundaries(unittest.TestCase):
             (recipe/'PKGBUILD').write_text('pkgver=1.0\npkgrel=1\n')
             (recipe/'.SRCINFO').write_text(SRCINFO.replace('example', 'kept'))
             return destination
-        with patch.dict(os.environ, {'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1'}),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'), patch.object(update, 'repository', return_value='owner/repo'), patch.object(update, 'pr_identity', return_value=({}, 'a'*40, 'b'*40)), patch.object(update, 'checkout_data', side_effect=checkout), patch.object(update, 'harness_digest', return_value='e'*64), patch.object(update, 'run_candidate_tests'), patch.object(update, 'independent_transition', return_value=None), patch.object(update, 'status'):
+        with patch.dict(os.environ, {'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1'}),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'), patch.object(update, 'repository', return_value='owner/repo'), patch.object(update, 'pr_identity', return_value=({'head': {'repo': {'full_name': 'owner/repo'}}}, 'a'*40, 'b'*40)), patch.object(update, 'checkout_data', side_effect=checkout), patch.object(update, 'harness_digest', return_value='e'*64), patch.object(update, 'run_candidate_tests'), patch.object(update, 'independent_transition', return_value=None), patch.object(update, 'status'):
             with patch.object(recipe_state, 'load_optional', return_value=None):
                 record = update.prepare(1, self.root/'prepared-retirement')
         self.assertEqual(record['packages'], [])
@@ -408,7 +439,7 @@ class CandidateBoundaries(unittest.TestCase):
                 (recipe/'PKGBUILD').write_text('pkgver=1.0\\npkgrel=1\\n')
                 (recipe/'.SRCINFO').write_text(SRCINFO.replace('example',name))
             return destination
-        with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'}),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'run_candidate_tests',side_effect=AssertionError('unapproved execution')),patch.object(update,'status'):
+        with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'}),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({'head':{'repo':{'full_name':'owner/repo'}}},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'run_candidate_tests',side_effect=AssertionError('unapproved execution')),patch.object(update,'status'):
             with patch.object(recipe_state,'load_optional',return_value=None):
                 record=update.prepare(1,self.root/'prepared-enrollment')
         self.assertEqual([package['pkgbase'] for package in record['packages']],['added'])

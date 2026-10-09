@@ -819,6 +819,8 @@ def _verify_inputs(record, automatic, transition_verifier, metadata_verifier):
             from tools.recipe_acceptance import validate_bookkeeping
             pr = u.api(u.route('/pulls/' + str(record['pr_number'])))
             bookkeeping = validate_bookkeeping(pr, record['base'], record['head'], old, new)
+            if automatic and bookkeeping is None and ((pr.get('head') or {}).get('repo') or {}).get('full_name') != u.repository():
+                raise ValueError('automatic main source requires same-repository head')
             if bookkeeping is not None:
                 names = []
             if names != sorted(package['pkgbase'] for package in record['packages']):

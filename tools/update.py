@@ -324,6 +324,8 @@ def prepare(number,output):
         packages.append({'pkgbase':name,'recipe_commit':newpins[name],'previous_recipe_commit':oldpins.get(name),'recipe_dir':f'recipes/{name}','tree_sha':recipe_state.digest(tree_manifest(recipe)),'lock':lock,'policy':proposed[name],'input_digest':digest,'expected_srcinfo':(recipe/'.SRCINFO').read_text()})
     needs_review=any(recipe_gate.needs_pkgbuild_review(old/'recipes'/name,new/'recipes'/name,policies.get(name,proposed[name])) for name in names)
     auto_merge=not needs_review
+    if auto_merge and acceptance is None and ((pr.get('head') or {}).get('repo') or {}).get('full_name')!=repository():
+        raise ValueError('automatic main source requires same-repository head')
     mechanical=False
     bundle={'schema':1,'repository':repository(),'base':base,'head':head,'recipe_pins':newpins,'previous_recipe_pins':oldpins,'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'image':image,'harness_sha':harness,'packages':packages}
     dump(output/'bundle'/'bundle.json',bundle)
