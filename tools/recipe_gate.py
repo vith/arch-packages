@@ -1,4 +1,5 @@
 """Fail-closed mechanical recipe classifier; never evaluates shell recipes."""
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -14,6 +15,9 @@ VERSION = re.compile(r"[A-Za-z0-9._+~]+\Z")
 FIELD = re.compile(r"\s*([a-zA-Z][a-zA-Z0-9_]*)\s*=\s*(\S.*)\Z")
 SINGLE = {"pkgbase", "pkgver", "pkgrel", "epoch", "pkgdesc", "url", "install", "changelog"}
 CHECKSUMS = {"md5": 32, "sha1": 40, "sha224": 56, "sha256": 64, "sha384": 96, "sha512": 128, "b2": 128}
+HARNESS_FILES = ("tools/build.sh", "tools/native.py", "tools/sources.py",
+                 "tools/recipe_gate.py", "tools/github_api.py",
+                 "tools/dependency_repo.py", "keys/arch-packages.asc", "keys/n3t.asc")
 
 
 def parse_srcinfo(text):
@@ -101,16 +105,81 @@ def tree_manifest(directory):
     return result
 
 
+def _harness_path(root, name):
+    path = root / name
+    if any(parent.is_symlink() for parent in (path, *path.parents) if parent != root and parent.is_relative_to(root)):
+        raise ValueError("trusted build-harness file missing")
+    if not path.is_file():
+        raise ValueError("trusted build-harness file missing")
+    return path
+
+
+def _harness_files(root):
+    # Historical source is data, not executable policy. Its declaration is
+    # authenticated along with the other entries by including recipe_gate.py.
+    source = _harness_path(root, "tools/recipe_gate.py")
+    try:
+        tree = ast.parse(source.read_bytes(), filename=str(source))
+    except (SyntaxError, ValueError) as error:
+        raise ValueError("invalid build-harness declaration") from error
+    current = [node for node in ast.walk(tree)
+               if isinstance(node, ast.Name) and node.id == "HARNESS_FILES"
+               and isinstance(node.ctx, (ast.Store, ast.Del))]
+    functions = [node for node in tree.body
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and node.name == "harness_digest"]
+    legacy = [node for function in functions for node in ast.walk(function)
+              if isinstance(node, ast.Name) and node.id == "files"
+              and isinstance(node.ctx, (ast.Store, ast.Del))]
+    if current and not legacy:
+        statements, name, writes = tree.body, "HARNESS_FILES", current
+    elif legacy and not current and len(functions) == 1:
+        statements, name, writes = functions[0].body, "files", legacy
+    else:
+        raise ValueError("ambiguous or missing build-harness declaration")
+    declarations = [node for node in statements
+                    if isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name]
+    if len(writes) != 1 or len(declarations) != 1:
+        raise ValueError("ambiguous build-harness declaration")
+    scope = tree if name == "HARNESS_FILES" else functions[0]
+    for node in ast.walk(scope):
+        if ((isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+             and node.name == name)
+                or (isinstance(node, ast.alias) and (node.asname or node.name.split(".")[0]) == name)
+                or (isinstance(node, ast.ExceptHandler) and node.name == name)):
+            raise ValueError("ambiguous build-harness declaration")
+        if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            expression = node if isinstance(node, ast.Call) else node.value
+            if expression is not None and any(
+                    isinstance(reference, ast.Name) and reference.id == name
+                    for reference in ast.walk(expression)):
+                raise ValueError("dynamic build-harness declaration")
+        if isinstance(node, (ast.Attribute, ast.Subscript)) and any(
+                isinstance(reference, ast.Name) and reference.id == name
+                for reference in ast.walk(node.value)):
+            raise ValueError("dynamic build-harness declaration")
+    value = declarations[0].value
+    if not isinstance(value, (ast.List, ast.Tuple)) or any(
+            not isinstance(item, ast.Constant) or not isinstance(item.value, str)
+            for item in value.elts):
+        raise ValueError("nonliteral build-harness declaration")
+    files = [item.value for item in value.elts]
+    if not files or len(set(files)) != len(files) or "tools/recipe_gate.py" not in files:
+        raise ValueError("invalid build-harness manifest")
+    for name in files:
+        if (not name or "\\" in name or any(ord(char) < 32 for char in name)
+                or any(part in ("", ".", "..") for part in name.split("/"))
+                or Path(name).is_absolute()):
+            raise ValueError("unsafe build-harness path")
+    return files
+
+
 def harness_digest(root):
     root = Path(root)
-    files = ["tools/build.sh", "tools/native.py", "tools/sources.py",
-             "tools/recipe_gate.py", "tools/github_api.py",
-             "tools/dependency_repo.py", "keys/arch-packages.asc", "keys/n3t.asc"]
     manifest = []
-    for name in files:
-        path = root / name
-        if not path.is_file() or path.is_symlink():
-            raise ValueError("trusted build-harness file missing")
+    for name in _harness_files(root):
+        path = _harness_path(root, name)
         manifest.append({"path": name, "mode": stat.S_IMODE(path.stat().st_mode),
                          "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
     return hashlib.sha256(canonical(manifest)).hexdigest()
