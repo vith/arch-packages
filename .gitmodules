@@ -26,3 +26,107 @@
 	path = recipes/apexshot
 	url = https://github.com/vith/arch-packages.git
 	branch = pkg/apexshot
+[submodule "recipes/airgorah"]
+	path = recipes/airgorah
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/airgorah
+[submodule "recipes/asleap"]
+	path = recipes/asleap
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/asleap
+[submodule "recipes/captiveportalautologin-vith-git"]
+	path = recipes/captiveportalautologin-vith-git
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/captiveportalautologin-vith-git
+[submodule "recipes/carapace-bridge"]
+	path = recipes/carapace-bridge
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/carapace-bridge
+[submodule "recipes/carapace-spec"]
+	path = recipes/carapace-spec
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/carapace-spec
+[submodule "recipes/carapace-spec-man"]
+	path = recipes/carapace-spec-man
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/carapace-spec-man
+[submodule "recipes/computer-use-linux"]
+	path = recipes/computer-use-linux
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/computer-use-linux
+[submodule "recipes/crush"]
+	path = recipes/crush
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/crush
+[submodule "recipes/fresh-editor"]
+	path = recipes/fresh-editor
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/fresh-editor
+[submodule "recipes/i915ovmf"]
+	path = recipes/i915ovmf
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/i915ovmf
+[submodule "recipes/looking-glass"]
+	path = recipes/looking-glass
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/looking-glass
+[submodule "recipes/mdevctl"]
+	path = recipes/mdevctl
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/mdevctl
+[submodule "recipes/microsandbox"]
+	path = recipes/microsandbox
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/microsandbox
+[submodule "recipes/pi"]
+	path = recipes/pi
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/pi
+[submodule "recipes/podcheck"]
+	path = recipes/podcheck
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/podcheck
+[submodule "recipes/prek"]
+	path = recipes/prek
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/prek
+[submodule "recipes/regclient"]
+	path = recipes/regclient
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/regclient
+[submodule "recipes/sentencepiece"]
+	path = recipes/sentencepiece
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/sentencepiece
+[submodule "recipes/spotify-adblock"]
+	path = recipes/spotify-adblock
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/spotify-adblock
+[submodule "recipes/spotify-remove-ad-banner"]
+	path = recipes/spotify-remove-ad-banner
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/spotify-remove-ad-banner
+[submodule "recipes/surge-cli"]
+	path = recipes/surge-cli
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/surge-cli
+[submodule "recipes/swag"]
+	path = recipes/swag
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/swag
+[submodule "recipes/ttf-ioskeley-mono"]
+	path = recipes/ttf-ioskeley-mono
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/ttf-ioskeley-mono
+[submodule "recipes/ttf-ioskeley-mono-unhinted"]
+	path = recipes/ttf-ioskeley-mono-unhinted
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/ttf-ioskeley-mono-unhinted
+[submodule "recipes/vet"]
+	path = recipes/vet
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/vet
+[submodule "recipes/zig0.15"]
+	path = recipes/zig0.15
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/zig0.15
