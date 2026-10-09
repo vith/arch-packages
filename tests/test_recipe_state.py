@@ -1,4 +1,9 @@
+import base64
+from contextlib import ExitStack
+import hashlib
 import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 from tools import recipe_state as state
@@ -49,11 +54,10 @@ class RecipeIdentity(unittest.TestCase):
             u.owned_proposal(pr,'example','version')
 
     def test_watcher_writer_refuses_closed_manual_head_on_bot_named_branch(self):
-        from contextlib import ExitStack
         C, B, H = (value*40 for value in 'cba')
         batch = {'schema': 1, 'base': C, 'receipts': [
             {'pkgbase': 'example', 'watcher_id': 'version', 'base': C,
-             'recipe_commit': B, 'unchanged': True}]}
+             'recipe_commit': B, 'unchanged': False}]}
         def response(path, *args):
             if '/pulls?' in path:
                 return []
@@ -65,7 +69,7 @@ class RecipeIdentity(unittest.TestCase):
             stack.enter_context(patch.object(u, 'control_checkout', return_value=(C, {'example': B})))
             stack.enter_context(patch.object(u, 'policy_at', return_value={'example': {}}))
             stack.enter_context(patch.object(u, 'ref_head', side_effect=lambda branch: B if branch == 'pkg/example' else H))
-            stack.enter_context(patch.object(u, 'api', side_effect=response))
+            api = stack.enter_context(patch.object(u, 'api', side_effect=response))
             stack.enter_context(patch.object(state, 'protected_branch'))
             stack.enter_context(patch.object(state, 'load', return_value={'proposal_origin': 'manual'}))
             push = stack.enter_context(patch.object(u, 'push_ref'))
@@ -74,6 +78,119 @@ class RecipeIdentity(unittest.TestCase):
                 u.write_proposals('unused')
         push.assert_not_called()
         attest.assert_not_called()
+        self.assertFalse(any(call.args[1:2] in [('POST',),('PATCH',)] for call in api.call_args_list))
+
+    def test_unchanged_retained_legacy_branch_does_not_block_later_proposal(self):
+        workspace=Path.home()/'.local/state/arch-packages/work/arch-package-tests'
+        workspace.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=workspace) as directory,ExitStack() as stack:
+            root=Path(directory);control=root/'control';batch_dir=root/'batch'
+            C,B,H=(value*40 for value in 'cba')
+            legacy_branch='recipe-updates/cloudflare/version'
+            omp_branch='recipe-updates/omp/version'
+            refs={'pkg/cloudflare':B,'pkg/omp':B,legacy_branch:H}
+            blobs={};trees={};commits={};proposals={};receipts={};dispatches=[]
+            policy={'sources':[],'automatic':{
+                'version':{'assignment':'pkgver','literal_assignment':'pkgver=1.0'},
+                'pkgrel':{'assignment':'pkgrel','literal_assignment':'pkgrel=1'}}}
+            provenance={'aur':None,'watchers':[{'id':'version','kind':'release'}]}
+            accepted=control/'recipes/omp';accepted.mkdir(parents=True)
+            original='pkgver=1.0\npkgrel=1\npackage() { echo preserved; }\n'
+            metadata='pkgbase = omp\n\tpkgver = 1.1\n\tpkgrel = 1\n\tarch = x86_64\npkgname = omp\n'
+            (accepted/'PKGBUILD').write_text(original)
+            (accepted/'.SRCINFO').write_text(metadata.replace('1.1','1.0'))
+            submitted=batch_dir/'omp/version/recipe';u.recipes.copy_recipe(accepted,submitted)
+            (submitted/'PKGBUILD').write_text(original.replace('1.0','1.1'))
+            (submitted/'.SRCINFO').write_text(metadata)
+            for name in ('cloudflare','omp'):
+                u.dump(control/'upstream'/f'{name}.json',provenance)
+            u.dump(control/'inputs/omp.json',{'schema':1,'version':'1.0-1','sources':[]})
+            u.dump(batch_dir/'receipts.json',{'schema':1,'base':C,'receipts':[
+                {'pkgbase':'cloudflare','watcher_id':'version','base':C,'recipe_commit':B,'unchanged':True},
+                {'pkgbase':'omp','watcher_id':'version','base':C,'recipe_commit':B,'unchanged':False,
+                 'lock':{'schema':1,'version':'1.1-1','sources':[]},'provenance':provenance,
+                 'metadata':{'srcinfo':metadata,'pkgver':'1.1','pkgrel':'1'},
+                 'tree':u.tree_manifest(submitted)}]})
+
+            def ref_head(branch):
+                if branch==legacy_branch:
+                    raise AssertionError('no-op must not inspect retained branch')
+                return refs.get(branch)
+
+            def api(path,method='GET',data=None):
+                endpoint=path.removeprefix('/repos/owner/repo')
+                if endpoint.startswith('/pulls?'):
+                    return []
+                if endpoint=='/git/blobs' and method=='POST':
+                    content=base64.b64decode(data['content'])
+                    sha=hashlib.sha1(content).hexdigest();blobs[sha]=content
+                    return {'sha':sha}
+                if endpoint=='/git/trees' and method=='POST':
+                    sha='d'*40;trees[sha]=data['tree']
+                    return {'sha':sha}
+                if endpoint=='/git/commits' and method=='POST':
+                    sha='e'*40;commits[sha]=data
+                    return {'sha':sha}
+                if endpoint=='/pulls' and method=='POST':
+                    number=7
+                    proposals[number]={**data,'number':number,'head':{'sha':refs[data['head']]}}
+                    return proposals[number]
+                if endpoint=='/pulls/7' and method=='GET':
+                    return proposals[7]
+                if endpoint=='/actions/workflows/candidate.yml/dispatches' and method=='POST':
+                    dispatches.append(data)
+                    return None
+                raise AssertionError((endpoint,method,data))
+
+            def push_ref(cwd,sha,branch,previous):
+                self.assertEqual(refs.get(branch),previous)
+                refs[branch]=sha
+
+            stack.enter_context(patch.object(u,'ROOT',control))
+            stack.enter_context(patch.object(u,'main_sha',return_value=C))
+            stack.enter_context(patch.object(u,'control_checkout',return_value=(C,{'cloudflare':B,'omp':B})))
+            stack.enter_context(patch.object(u,'policy_at',return_value={'cloudflare':policy,'omp':policy}))
+            stack.enter_context(patch.object(u,'ref_head',side_effect=ref_head))
+            stack.enter_context(patch.object(u,'api',side_effect=api))
+            stack.enter_context(patch.object(u,'push_ref',side_effect=push_ref))
+            stack.enter_context(patch.object(u.sources,'git'))
+            stack.enter_context(patch.object(state,'protected_branch'))
+            stack.enter_context(patch.object(state,'load',return_value={'proposal_origin':'legacy'}))
+            stack.enter_context(patch.object(state,'load_optional',side_effect=lambda kind,key:receipts.get(key)))
+            stack.enter_context(patch.object(state,'save',side_effect=lambda kind,key,value:receipts.update({key:value})))
+            stack.enter_context(patch.object(state,'attest'))
+            u.write_proposals(batch_dir)
+
+            self.assertEqual(refs,{'pkg/cloudflare':B,'pkg/omp':B,legacy_branch:H,omp_branch:'e'*40})
+            commit=commits[refs[omp_branch]]
+            self.assertEqual(commit['parents'],[B])
+            published={entry['path']:blobs[entry['sha']].decode() for entry in trees[commit['tree']]}
+            self.assertEqual(published,{'PKGBUILD':original.replace('1.0','1.1'),'.SRCINFO':metadata})
+            self.assertEqual(proposals[7]['base'],'pkg/omp')
+            self.assertEqual(dispatches,[{'ref':'main','inputs':{'pr_number':'7','expected_head':'e'*40}}])
+
+    def test_unchanged_open_proposal_still_refuses_unowned_refresh(self):
+        C,B,H=(value*40 for value in 'cba')
+        batch={'schema':1,'base':C,'receipts':[
+            {'pkgbase':'example','watcher_id':'version','base':C,'recipe_commit':B,'unchanged':True}]}
+        def response(path,*args):
+            if '/pulls?' in path:
+                return [{'number':3,'head':{'sha':H},'base':{'sha':B}}]
+            return {'tree':{'sha':'d'*40},'parents':[{'sha':B}]}
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(u,'load',side_effect=[batch,{'watchers':[{'id':'version'}]}]))
+            stack.enter_context(patch.object(u,'main_sha',return_value=C))
+            stack.enter_context(patch.object(u,'control_checkout',return_value=(C,{'example':B})))
+            stack.enter_context(patch.object(u,'policy_at',return_value={'example':{}}))
+            stack.enter_context(patch.object(u,'ref_head',return_value=B))
+            api=stack.enter_context(patch.object(u,'api',side_effect=response))
+            stack.enter_context(patch.object(state,'protected_branch'))
+            stack.enter_context(patch.object(state,'load',return_value={'proposal_origin':'manual'}))
+            push=stack.enter_context(patch.object(u,'push_ref'))
+            with self.assertRaisesRegex(ValueError,'user-edited proposal'):
+                u.write_proposals('unused')
+        push.assert_not_called()
+        self.assertFalse(any(call.args[1:2] in [('POST',),('PATCH',)] for call in api.call_args_list))
 
     def test_immutable_record_refuses_same_key_with_different_frozen_source(self):
         with patch.object(state,'load_optional',return_value={'source':'original'}),self.assertRaisesRegex(ValueError,'immutable'):
