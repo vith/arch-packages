@@ -1,10 +1,9 @@
 pkgbase = computer-use-linux
 	pkgdesc = Control a real Linux desktop from any MCP host (AT-SPI, portals, multi-compositor window targeting)
 	pkgver = 0.7.7
-	pkgrel = 2
+	pkgrel = 3
 	url = https://github.com/agent-sh/computer-use-linux
 	arch = x86_64
-	arch = aarch64
 	license = MIT
 	checkdepends = dbus
 	makedepends = cargo
@@ -26,3 +25,4 @@ pkgbase = computer-use-linux
 	sha256sums = a34c0f03d14cc1f27d91081dfc8bbe6a721097411c7831f20de6a9c6829ff58c
 
 pkgname = computer-use-linux
+
