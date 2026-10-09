@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       bootstrap:
-        description: Read-only initial source freeze/probe; never writes proposals
+        description: Read-only static initial source freeze; never executes recipes or writes proposals
         required: false
         type: boolean
         default: false
@@ -85,7 +85,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Read immutable recipe data and probe in credential-free containers
+      - name: Freeze immutable recipe data without execution
         env:
           GITHUB_TOKEN: ${{ github.token }}
           BOOTSTRAP: ${{ inputs.bootstrap }}

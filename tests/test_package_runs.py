@@ -1,125 +1,192 @@
+import json
+import os
+from pathlib import Path
+import tempfile
+import shutil
+import zipfile
 import unittest
 from unittest.mock import patch
-from pathlib import Path
-import json
-import tempfile
-import tarfile
 
-from tools.package_runs import select, title, validate_run, prepare, collect
+from tools import package_runs
+
+ROOT = Path.home() / '.local/state/omp/work/package-run-tests'
 
 
 class IndependentPackageRuns(unittest.TestCase):
     def setUp(self):
-        self.plan = {'head': 'a' * 40, 'run_id': '123', 'run_attempt': '1', 'packages': [
-            {'pkgbase': 'first', 'reuse': False},
-            {'pkgbase': 'second', 'reuse': False},
-            {'pkgbase': 'unchanged', 'reuse': True},
-        ]}
+        ROOT.mkdir(parents=True, exist_ok=True)
+        self.plan = {'base': 'b' * 40, 'head': 'a' * 40, 'run_id': '123', 'run_attempt': '1',
+                     'packages': [{'pkgbase': 'first', 'input_digest': 'd' * 64},
+                                  {'pkgbase': 'second', 'input_digest': 'e' * 64},
+                                  {'pkgbase': 'unchanged', 'reuse': True}]}
 
-    def test_exactly_one_package_per_run(self):
-        selected = select(self.plan, 'first')
-        self.assertEqual([package['pkgbase'] for package in selected['packages']], ['first'])
+    def test_only_explicit_changed_package_selected_without_mutating_authority(self):
+        self.assertEqual(package_runs.select(self.plan, 'first')['packages'], [self.plan['packages'][0]])
         self.assertEqual(len(self.plan['packages']), 3)
-
-    def test_unchanged_or_unknown_package_is_not_built(self):
-        for name in ('unchanged', 'unknown'):
-            with self.subTest(name=name), self.assertRaises(ValueError):
-                select(self.plan, name)
-
-    def test_duplicate_package_is_rejected(self):
+        for name in ('unknown', 'unchanged'):
+            with self.assertRaises(ValueError):
+                package_runs.select(self.plan, name)
         self.plan['packages'].append(self.plan['packages'][0])
         with self.assertRaises(ValueError):
-            select(self.plan, 'first')
+            package_runs.select(self.plan, 'first')
 
-    def test_candidate_run_uses_trusted_base_not_candidate_head(self):
-        plan = {**self.plan, 'base': 'b'*40}
-        record = {'path': '.github/workflows/build-package.yml', 'head_sha': plan['base'],
-                  'head_branch': 'main', 'event': 'workflow_dispatch', 'conclusion': 'success',
-                  'display_title': title(plan, 'first')}
-        validate_run(record, plan, 'first')
-        with self.assertRaises(ValueError):
-            validate_run({**record, 'head_sha': plan['head']}, plan, 'first')
+    def test_publication_cannot_dispatch(self):
+        with patch('tools.package_runs.github_api.api') as api:
+            with self.assertRaisesRegex(ValueError, 'publication'):
+                package_runs.collect(Path('unused'), kind='publication')
+        api.assert_not_called()
 
-    def candidate_input(self, directory, changed_identity=None):
-        bundle = {'schema': 1, 'repository': 'vith/arch-packages',
-                  'base': 'b' * 40, 'head': 'c' * 40, 'run_id': '123',
-                  'run_attempt': '1', 'image': 'image@sha256:123',
-                  'harness_sha': 'd' * 64, 'recipe_pins': {'first': 'c' * 40},
-                  'previous_recipe_pins': {'first': 'e' * 40},
-                  'packages': [{'pkgbase': 'first', 'recipe_dir': 'recipes/first',
-                                'recipe_commit': 'c' * 40}]}
-        plan = {**bundle, 'kind': 'recipe', 'pr_number': 7,
-                'recipe_base': 'e' * 40, 'recipe_tree': 'f' * 40}
-        (directory / 'candidate.json').write_text(json.dumps(plan))
-        source = directory / 'source'
-        recipe = source / 'recipes/first'
-        recipe.mkdir(parents=True)
-        (recipe / 'PKGBUILD').write_text('pkgname=first\npkgver=2\n')
-        (source / 'bundle.json').write_text(json.dumps({**bundle, **(changed_identity or {})}))
-        with tarfile.open(directory / 'bundle.tar', 'w') as archive:
-            archive.add(source, arcname='bundle', recursive=True)
-        return plan
-
-    def test_recipe_candidate_prepares_frozen_head_with_trusted_control_base(self):
-        with tempfile.TemporaryDirectory() as session:
-            directory = Path(session)
-            plan = self.candidate_input(directory)
-            parent = {'path': '.github/workflows/candidate.yml', 'head_sha': plan['base'],
-                      'head_branch': 'main', 'run_attempt': 1}
+    def test_forged_authority_stops_before_recipe_or_recovery(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            work = Path(temporary)
+            (work / 'candidate.json').write_text(json.dumps(self.plan))
+            parent = {'path': '.github/workflows/candidate.yml', 'head_sha': self.plan['base'], 'head_branch': 'main'}
             with patch('tools.package_runs.github_api.api', return_value=parent), patch(
-                    'tools.package_runs.subprocess.check_output', return_value=plan['base'] + '\n'):
-                prepare(directory, 'first', '123', '1', kind='candidate')
-            prepared = json.loads((directory / 'input/bundle.json').read_text())
-            self.assertEqual((prepared['base'], prepared['head']), (plan['base'], plan['head']))
-            self.assertEqual((directory / 'input/recipes/first/PKGBUILD').read_text(),
-                             'pkgname=first\npkgver=2\n')
+                    'tools.package_runs.subprocess.check_output', return_value=self.plan['base']), patch(
+                    'tools.package_runs.recipe_candidates.verify_authorization', side_effect=ValueError('forged proof')), patch(
+                    'tools.package_runs.recover') as recover, patch('tools.package_runs.recipes.copy_recipe') as copy:
+                with self.assertRaisesRegex(ValueError, 'forged proof'):
+                    package_runs.prepare(work, 'first', '123', '1')
+                recover.assert_not_called()
+                copy.assert_not_called()
 
-    def test_candidate_bundle_cannot_substitute_base_or_recipe_head(self):
-        for key in ('base', 'head', 'harness_sha', 'image', 'recipe_pins', 'previous_recipe_pins'):
-            with self.subTest(key=key), tempfile.TemporaryDirectory() as session:
-                directory = Path(session)
-                plan = self.candidate_input(directory, {key: 'substituted'})
-                parent = {'path': '.github/workflows/candidate.yml', 'head_sha': plan['base'],
-                          'head_branch': 'main', 'run_attempt': 1}
-                with patch('tools.package_runs.github_api.api', return_value=parent), patch(
-                        'tools.package_runs.subprocess.check_output', return_value=plan['base'] + '\n'):
-                    with self.assertRaises(ValueError):
-                        prepare(directory, 'first', '123', '1', kind='candidate')
+    def test_queued_admission_reuses_original_success_without_recipe_preparation(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            work = Path(temporary)
+            (work / 'candidate.json').write_text(json.dumps(self.plan))
+            parent = {'path': '.github/workflows/candidate.yml', 'head_sha': self.plan['base'], 'head_branch': 'main'}
+            descriptor = {'producer': {'run_id': '77', 'run_attempt': '2'}}
+            with patch('tools.package_runs.github_api.api', return_value=parent), patch(
+                    'tools.package_runs.subprocess.check_output', return_value='c' * 40), patch(
+                    'tools.package_runs.recipe_candidates.verify_authorization'), patch(
+                    'tools.package_runs.recover', return_value=descriptor), patch(
+                    'tools.package_runs.build_store.materialize'), patch('tools.package_runs.recipes.copy_recipe') as copy, patch.dict(
+                    os.environ, {'INPUT_DIGEST': 'd' * 64}):
+                package_runs.prepare(work, 'first', '123', '1')
+                copy.assert_not_called()
+            self.assertEqual(json.loads((work / 'build-descriptor.json').read_text()), descriptor)
+            self.assertEqual(json.loads((work / 'candidate.json').read_text()), self.plan)
 
-    def test_candidate_receipt_preserves_exact_child_attempt(self):
-        with tempfile.TemporaryDirectory() as session:
-            directory = Path(session)
-            plan = {**self.plan, 'base': 'b' * 40,
-                    'packages': [{'pkgbase': 'first', 'reuse': False}]}
-            (directory / 'candidate.json').write_text(json.dumps(plan))
-            receipt = directory / 'native-evidence.json'
-            receipt.write_text(json.dumps({'packages': [{'pkgbase': 'first', 'files': []}]}))
-            artifact = directory / 'download-first'
-            artifact.mkdir()
-            with tarfile.open(artifact / 'unsigned.tar', 'w') as archive:
-                archive.add(receipt, arcname='native-evidence.json')
-            child = {'id': 987, 'run_attempt': 2, 'path': '.github/workflows/build-package.yml',
-                     'head_sha': plan['base'], 'head_branch': 'main', 'event': 'workflow_dispatch',
-                     'display_title': title(plan, 'first'), 'status': 'completed',
-                     'conclusion': 'success', 'html_url': 'https://example.invalid/runs/987'}
-            with patch('tools.package_runs.github_api.api', side_effect=[None, {'workflow_runs': [child]}]), patch(
-                    'tools.package_runs.subprocess.run'), patch(
-                    'tools.package_runs.update.validate_build'), patch.dict(
-                    'os.environ', {'GITHUB_TOKEN': 'test'}):
-                collect(directory, kind='candidate')
-            child['run_attempt'] = 3
-            evidence = json.loads((directory / 'unsigned/native-evidence.json').read_text())
-            self.assertEqual(evidence['package_runs'],
-                             [{'pkgbase': 'first', 'run_id': '987', 'run_attempt': '2'}])
-            self.assertEqual((evidence['base'], evidence['head']), (plan['base'], plan['head']))
+    def history(self, steps, attempt=1):
+        run = {'id': 77, 'run_attempt': attempt, 'head_sha': self.plan['base'],
+               'head_branch': 'main', 'path': '.github/workflows/build-package.yml',
+               'display_title': package_runs.title(self.plan, 'first')}
+        def rows(path, key):
+            return iter([run] if key == 'workflow_runs' else [{'name': 'package', 'steps': steps}])
+        return rows
 
-    def test_only_successful_exact_workflow_is_accepted(self):
-        record = {'path': '.github/workflows/build-package.yml', 'head_sha': self.plan['head'],
-                  'head_branch': 'main', 'event': 'workflow_dispatch', 'conclusion': 'success',
-                  'display_title': title(self.plan, 'first')}
-        validate_run(record, self.plan, 'first')
-        for key, value in {'path': '.github/workflows/candidate.yml', 'head_sha': 'b' * 40,
-                           'head_branch': 'other', 'event': 'pull_request', 'conclusion': 'failure',
-                           'display_title': title(self.plan, 'second')}.items():
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                validate_run({**record, key: value}, self.plan, 'first')
+    def test_failed_transport_after_success_is_missing_bytes_not_new_compile(self):
+        steps = [{'name': 'Build package without credentials', 'conclusion': 'failure'},
+                 {'name': 'Authenticate actual compilation success', 'conclusion': 'success'}]
+        with patch('tools.package_runs.build_store._lookup_durable', return_value=None), patch(
+                'tools.package_runs.rows', side_effect=self.history(steps, attempt=2)), patch(
+                'tools.package_runs.download_artifact', side_effect=RuntimeError('no recoverable archive')):
+            with self.assertRaisesRegex(RuntimeError, 'no recoverable archive'):
+                package_runs.recover(self.plan, 'first', ROOT)
+
+    def test_actual_failed_compilation_allows_authorized_retry(self):
+        steps = [{'name': 'Build package without credentials', 'conclusion': 'failure'},
+                 {'name': 'Authenticate actual compilation failure', 'conclusion': 'success'}]
+        with patch('tools.package_runs.build_store._lookup_durable', return_value=None), patch(
+                'tools.package_runs.rows', side_effect=self.history(steps)):
+            self.assertIsNone(package_runs.recover(self.plan, 'first', ROOT))
+
+    def test_unprovable_or_canceled_started_compilation_never_retries(self):
+        for outcome in ('failure', 'cancelled', 'success'):
+            steps = [{'name': 'Build package without credentials', 'conclusion': outcome}]
+            with self.subTest(outcome=outcome), patch(
+                    'tools.package_runs.build_store._lookup_durable', return_value=None), patch(
+                    'tools.package_runs.rows', side_effect=self.history(steps)):
+                with self.assertRaisesRegex(RuntimeError, 'unprovable'):
+                    package_runs.recover(self.plan, 'first', ROOT)
+
+    def test_checkpoint_wrong_input_or_later_validation_failure_cannot_relabel_success(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            directory = Path(temporary)
+            (directory / 'input').mkdir()
+            bundle = {**self.plan, 'image': 'image', 'harness_sha': 'harness',
+                      'packages': [self.plan['packages'][0]]}
+            (directory / 'input/bundle.json').write_text(json.dumps(bundle))
+            checkpoint = {'schema': 1, 'state': 'success', 'input_digest': 'd' * 64,
+                          'pkgbase': 'first', **{key: bundle[key] for key in
+                          ('image', 'harness_sha', 'run_id', 'run_attempt')}}
+            (directory / 'compilation.json').write_text(json.dumps(checkpoint))
+            package_runs.checkpoint(directory, 'success')
+            with self.assertRaises(ValueError):
+                package_runs.checkpoint(directory, 'failure')
+            checkpoint['input_digest'] = 'e' * 64
+            (directory / 'compilation.json').write_text(json.dumps(checkpoint))
+            with self.assertRaises(ValueError):
+                package_runs.checkpoint(directory, 'success')
+
+    def test_recovery_mode_cannot_fall_through_to_compilation_when_bytes_missing(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            work = Path(temporary)
+            with patch('tools.package_runs.build_store._lookup_durable', return_value=None), patch(
+                    'tools.package_runs.download_artifact', side_effect=RuntimeError('missing original archive')), patch(
+                    'tools.package_runs.recipes.copy_recipe') as copy, patch.dict(os.environ, {
+                    'INPUT_DIGEST': 'd' * 64, 'RECOVERY_MODE': 'true', 'ORIGINAL_RUN': '77',
+                    'ORIGINAL_ATTEMPT': '2', 'ORIGINAL_ARTIFACT': json.dumps({
+                        'id': 99, 'digest': 'sha256:' + 'a' * 64, 'size_in_bytes': 100, 'name': 'package-first-77-2'})}):
+                with self.assertRaisesRegex(RuntimeError, 'missing original archive'):
+                    package_runs.prepare(work, 'first', '123', '1')
+                copy.assert_not_called()
+
+    def test_original_artifact_digest_and_zip_paths_are_verified_before_recovery(self):
+        for unsafe, substitute in ((False, False), (False, True), (True, False)):
+            with self.subTest(unsafe=unsafe, substitute=substitute), tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+                work = Path(temporary)
+                archive = work / 'source.zip'
+                with zipfile.ZipFile(archive, 'w') as stream:
+                    stream.writestr('../escape' if unsafe else 'unsigned.tar', b'original archive')
+                    stream.writestr('candidate.json', json.dumps(self.plan))
+                artifact = {'id': 99, 'name': 'package-first-77-2', 'expired': False,
+                            'size_in_bytes': archive.stat().st_size,
+                            'digest': 'sha256:' + ('a' * 64 if substitute else package_runs.build_store.sha(archive)),
+                            'workflow_run': {'id': 77, 'head_sha': self.plan['base']}}
+                producer = {'head_sha': self.plan['base'], 'head_branch': 'main',
+                            'path': '.github/workflows/build-package.yml'}
+                def download(endpoint, destination, maximum):
+                    shutil.copyfile(archive, destination)
+                with patch('tools.package_runs.rows', return_value=iter([artifact])), patch(
+                        'tools.package_runs.github_api.api', return_value=producer), patch(
+                        'tools.package_runs.build_store.download_api', side_effect=download):
+                    if unsafe or substitute:
+                        with self.assertRaises(ValueError):
+                            package_runs.download_artifact(77, 2, 'first', work / 'recovered')
+                    else:
+                        recovered = package_runs.download_artifact(77, 2, 'first', work / 'recovered')
+                        self.assertEqual((recovered / 'unsigned.tar').read_bytes(), b'original archive')
+                        self.assertEqual(json.loads((recovered / 'original-artifact.json').read_text())['digest'], artifact['digest'])
+                self.assertFalse((work / 'escape').exists())
+
+    def test_transport_dispatch_preserves_original_digest_and_producer_after_control_advance(self):
+        original = {**self.plan, 'packages': [self.plan['packages'][0]]}
+        current = {**self.plan, 'base': 'c' * 40,
+                   'packages': [{**self.plan['packages'][0], 'input_digest': 'e' * 64}]}
+        producer = {'run_id': '77', 'run_attempt': '2'}
+        artifact = {'id': 99, 'digest': 'sha256:' + 'a' * 64, 'size': 100, 'name': 'package-first-77-2'}
+        required = package_runs.OriginalTransportRecoveryRequired(original, producer, artifact, ROOT)
+        requests = []
+        def api(path, method, body):
+            requests.append(body)
+        with patch('tools.package_runs.github_api.api', side_effect=api):
+            package_runs.dispatch(current, current['packages'][0], recovery=required)
+        dispatched = requests[0]['inputs']
+        self.assertEqual(dispatched['recovery_mode'], 'true')
+        self.assertEqual(dispatched['input_digest'], original['packages'][0]['input_digest'])
+        self.assertEqual(dispatched['original_run'], '77')
+        self.assertEqual(dispatched['original_attempt'], '2')
+        self.assertEqual(json.loads(dispatched['original_artifact'])['digest'], artifact['digest'])
+
+    def test_empty_bookkeeping_does_not_dispatch_workers(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            work = Path(temporary)
+            plan = {**self.plan, 'packages': []}
+            (work / 'candidate.json').write_text(json.dumps(plan))
+            with patch('tools.package_runs.recipe_candidates.verify_authorization'), patch('tools.package_runs.github_api.api') as api:
+                package_runs.collect(work)
+                api.assert_not_called()
+            receipt = json.loads((work / 'unsigned/native-evidence.json').read_text())
+            self.assertEqual(receipt['packages'], [])
+            self.assertEqual((receipt['base'], receipt['head']), (plan['base'], plan['head']))

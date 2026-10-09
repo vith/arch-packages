@@ -173,6 +173,103 @@ def _compare(old, new):
     return int(result.stdout)
 
 
+def needs_pkgbuild_review(old_dir, new_dir, policy):
+    """Classify recipe code only; payload and metadata still need validation."""
+    old_path, new_path = Path(old_dir) / "PKGBUILD", Path(new_dir) / "PKGBUILD"
+    if not old_path.is_file() or old_path.is_symlink() or not new_path.is_file() or new_path.is_symlink():
+        return True
+    if old_path.read_bytes() == new_path.read_bytes():
+        return False
+    try:
+        old_text, new_text = old_path.read_bytes().decode("utf-8"), new_path.read_bytes().decode("utf-8")
+        rules = policy["automatic"]
+        replacements = []
+        for key, name in (("version", "pkgver"), ("pkgrel", "pkgrel")):
+            if rules[key]["assignment"] != name:
+                return True
+            a, b, _ = _literal(old_text, name)
+            _, _, value = _literal(new_text, name)
+            replacements.append((a, b, value))
+        for entry in rules.get("checksums", []):
+            old_tokens = _checksum_tokens(old_text, entry["algorithm"])
+            new_tokens = _checksum_tokens(new_text, entry["algorithm"])
+            index = int(entry["index"])
+            if len(old_tokens) != len(new_tokens) or not 0 <= index < len(old_tokens):
+                return True
+            a, b, _ = old_tokens[index]
+            replacements.append((a, b, new_tokens[index][2]))
+        rendered = old_text
+        for a, b, value in sorted(set(replacements), reverse=True):
+            rendered = rendered[:a] + value + rendered[b:]
+        return rendered != new_text
+    except (ValueError, KeyError, IndexError, OSError, UnicodeError):
+        return True
+
+
+def verify_automatic_recipe(old_dir, new_dir, policy, oldlock, newlock, transition):
+    """Authenticate trivial/unchanged code without relaxing mechanical policy."""
+    if needs_pkgbuild_review(old_dir, new_dir, policy):
+        raise ValueError("automatic authorization requires unchanged or enrolled literal PKGBUILD")
+    old_meta = parse_srcinfo((Path(old_dir) / ".SRCINFO").read_text())
+    new_meta = parse_srcinfo((Path(new_dir) / ".SRCINFO").read_text())
+    old_text, new_text = (Path(old_dir) / "PKGBUILD").read_bytes().decode("utf-8"), (Path(new_dir) / "PKGBUILD").read_bytes().decode("utf-8")
+    if old_text != new_text:
+        for name in ("pkgver", "pkgrel"):
+            if _literal(old_text, name)[2] != old_meta[name] or _literal(new_text, name)[2] != new_meta[name]:
+                raise ValueError("literal recipe version differs from static metadata")
+    elif old_meta != new_meta:
+        raise ValueError("unchanged PKGBUILD metadata changed")
+    if old_meta["epoch"] != new_meta["epoch"] or new_meta["version"] != newlock["version"]:
+        raise ValueError("automatic recipe native identity mismatch")
+    if old_text != new_text and _compare(old_meta["version"], new_meta["version"]) <= 0:
+        raise ValueError("automatic literal changes require native version or pkgrel advancement")
+    old_sources, new_sources = oldlock["sources"], newlock["sources"]
+    metadata_sources = [value for _, key, value in new_meta["fields"] if key == "source" or key.startswith("source_")]
+    if metadata_sources != [source["source"] for source in new_sources]:
+        raise ValueError("static expanded sources differ from frozen source lock")
+    if [s["id"] for s in old_sources] != [s["id"] for s in new_sources]:
+        raise ValueError("automatic source enrollment/order changed")
+    remote_changed = any(a != b for a, b in zip(old_sources, new_sources)
+                         if a["kind"] != "local" or b["kind"] != "local")
+    if remote_changed and (not transition or transition.get("authentic") is not True
+                           or transition.get("fast_forward") is not True):
+        raise ValueError("automatic remote changes require independent authentic transition")
+    if old_meta["pkgver"] != new_meta["pkgver"] and (not transition or transition.get("authentic") is not True or transition.get("fast_forward") is not True):
+        raise ValueError("automatic version change requires authentic upstream transition")
+    checksum_fields = {}
+    for entry in policy.get("automatic", {}).get("checksums", []):
+        algorithm, index = entry["algorithm"], int(entry["index"])
+        tokens = _checksum_tokens(new_text, algorithm)
+        source = next(s for s in new_sources if s["id"] == entry["source_id"])
+        expected = source["checksums"][algorithm]
+        if not 0 <= index < len(tokens) or tokens[index][2].lower() != expected.lower():
+            raise ValueError("literal checksum differs from frozen source bytes")
+        old_tokens = _checksum_tokens(old_text, algorithm)
+        if tokens[index][2] == "SKIP" and old_tokens[index][2] != "SKIP":
+            raise ValueError("automatic checksum change cannot discard byte verification")
+        checksum_fields.setdefault(algorithm + "sums", set()).add(index)
+    if len(old_meta["fields"]) != len(new_meta["fields"]):
+        raise ValueError("automatic metadata layout changed")
+    indexes = {}
+    for previous, current in zip(old_meta["fields"], new_meta["fields"]):
+        scope, key, value = current
+        if previous[:2] != current[:2]:
+            raise ValueError("automatic metadata scope/order changed")
+        index = indexes.get((scope, key), 0)
+        indexes[(scope, key)] = index + 1
+        if key in checksum_fields and index in checksum_fields[key]:
+            if value != _checksum_tokens(new_text, key[:-4])[index][2]:
+                raise ValueError("static checksum metadata differs from recipe")
+        if previous == current or key in {"pkgver", "pkgrel"}:
+            continue
+        if key in checksum_fields and index in checksum_fields[key]:
+            continue
+        if (key == "source" or key.startswith("source_")) and remote_changed and transition.get("source_templates_verified"):
+            continue
+        raise ValueError("automatic unaffected metadata changed: " + key)
+    return True
+
+
 def classify_recipe_update(old_dir, new_dir, policy):
     version = None
     def verdict(decision, reason):

@@ -9,6 +9,7 @@ permissions:
   pull-requests: read
 jobs:
   dispatch:
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       # Only main-targeting PRs use this metadata event. Recipe-root branches

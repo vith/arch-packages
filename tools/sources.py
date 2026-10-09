@@ -100,6 +100,47 @@ def discover_aur(watcher, accepted):
     return {'kind':'aur','commit':commit,'previous':old,'previous_files':previous_files,'files':files,'diff':difference,'fast_forward':not old or git('merge-base','--is-ancestor',old,commit,cwd=repository,check=False).returncode==0}
 
 
+def frozen_aur(watcher, accepted, current):
+    """Reconstruct enrolled AUR commits, not the branch's present tip."""
+    package=watcher['package']
+    if not re.fullmatch(r'[a-z0-9][a-z0-9+_.-]*',package):
+        raise ValueError('invalid AUR package')
+    old=accepted.get('commit');commit=current.get('commit')
+    if not HEX.fullmatch(commit or '') or old is not None and not HEX.fullmatch(old):
+        raise ValueError('invalid frozen AUR commit')
+    url=watcher.get('url','https://aur.archlinux.org/'+package+'.git')
+    public_url(url)
+    repository=_work(watcher)/'aur.git'
+    if repository.exists():
+        raise ValueError('AUR checkout destination exists')
+    git('init','--bare','--object-format='+('sha256' if len(commit)==64 else 'sha1'),repository)
+    git('fetch','--no-tags','--no-recurse-submodules','--',url,*sorted({commit,old} if old else {commit}),cwd=repository)
+    for identity in (old,commit):
+        if identity and git('rev-parse',identity+'^{commit}',cwd=repository)!=identity:
+            raise ValueError('frozen AUR object is not a commit')
+    return {'kind':'aur','commit':commit,'previous':old,
+            'previous_files':aur_files(repository,old) if old else [],
+            'files':aur_files(repository,commit),
+            'fast_forward':not old or git('merge-base','--is-ancestor',old,commit,cwd=repository,check=False).returncode==0}
+
+
+def frozen_tag(watcher, current, work):
+    """Verify the exact tag object/peel authenticated by the original context."""
+    obj=current.get('accepted_tag_object');commit=current.get('accepted_peeled_commit')
+    if not HEX.fullmatch(obj or '') or not HEX.fullmatch(commit or ''):
+        raise ValueError('invalid frozen tag identity')
+    public_url(watcher['url'])
+    repository=Path(work)
+    git('init','--bare','--object-format='+('sha256' if len(obj)==64 else 'sha1'),repository)
+    git('fetch','--no-tags','--no-recurse-submodules','--',watcher['url'],obj,commit,cwd=repository)
+    if git('rev-parse',obj+'^{commit}',cwd=repository)!=commit:
+        raise ValueError('frozen tag provenance mismatch')
+    if git('cat-file','-t',obj,cwd=repository)=='tag':
+        lines=git('cat-file','-p',obj,cwd=repository).split('\n\n',1)[0].splitlines()
+        if 'tag '+current['accepted_tag'] not in lines:
+            raise ValueError('frozen tag name mismatch')
+
+
 def aur_files(repository,commit):
     files=[]
     for row in git('ls-tree','-r','-z',commit,cwd=repository).split('\0'):
@@ -204,11 +245,73 @@ def verify_git_source(source,repository):
         raise ValueError('frozen Git commit/ref mismatch')
     if git('rev-parse','--show-object-format',cwd=repository)!=source['git_context']['object_format']:
         raise ValueError('frozen Git object format mismatch')
+    if source['ref'].startswith('refs/tags/') and source['peeled_commit']!=source['commit']:
+        raise ValueError('frozen Git peeled commit mismatch')
     tag=source['git_context']['version_tag']
     if tag:
         if git('rev-parse',tag['name']+'^{commit}',cwd=repository)!=tag['commit']:
             raise ValueError('frozen version tag mismatch')
         git('merge-base','--is-ancestor',tag['commit'],source['commit'],cwd=repository)
+
+
+def ancestry_version(source, repository, template):
+    """Authenticate the live tag before rendering the frozen ancestry grammar."""
+    tag=source['git_context']['version_tag']
+    if tag is None:
+        raise ValueError('static ancestry version requires a frozen version tag')
+    advertised=dict(reversed(row.split()) for row in git('ls-remote','--tags',source['url']).splitlines())
+    if advertised.get(tag['name'])!=tag['object']:
+        raise ValueError('static ancestry version requires an authentic tag')
+    return frozen_ancestry_version(source,repository,template)
+
+
+def frozen_ancestry_version(source, repository, template):
+    """Render only verified immutable objects; authentication belongs to context."""
+    verify_git_source(source, repository)
+    tag=source['git_context']['version_tag']
+    if tag is None:
+        raise ValueError('static ancestry version requires a frozen version tag')
+    version=tag['name'].removeprefix('refs/tags/v')
+    if not re.fullmatch(r'[0-9]+(?:\.[0-9]+)+',version):
+        raise ValueError('unsupported frozen version tag')
+    count=git('rev-list','--count',tag['commit']+'..'+source['commit'],cwd=repository)
+    # Recognize only the already enrolled scalar captures and literal separators.
+    captures=[r'([0-9]+(?:\.[0-9]+)+)',r'([0-9]+)',r'([0-9a-f]{12})']
+    rendered=template.removeprefix('^').removesuffix('$')
+    for capture,value in zip(captures,(version,count,source['commit'][:12])):
+        if rendered.count(capture)!=1:
+            raise ValueError('unsupported static ancestry template')
+        rendered=rendered.replace(capture,value,1)
+    rendered=rendered.replace(r'\.','.')
+    if not re.fullmatch(r'[A-Za-z0-9.+_]+',rendered) or not re.fullmatch(template,rendered):
+        raise ValueError('unsupported static ancestry template')
+    return rendered
+
+
+def git_checksums(source, repository):
+    """Match makepkg's tag/commit Git archive checksum without sourcing PKGBUILD."""
+    verify_git_source(source, repository)
+    if not source['ref'].startswith('refs/tags/'):
+        return {algorithm:'SKIP' for algorithm in source['checksums']}
+    # makepkg disables export attributes before creating the native archive.
+    attributes=Path(repository)/'info'/'attributes'
+    if attributes.read_text()!='* -export-subst -export-ignore\n':
+        raise ValueError('frozen Git archive attributes are not sanitized')
+    env={k:v for k,v in os.environ.items() if k in {'PATH','HOME','LANG','LC_ALL','TMPDIR'}}
+    env.update(GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL='/dev/null',GIT_TERMINAL_PROMPT='0',GIT_ALLOW_PROTOCOL='https:file')
+    hashes={algorithm:hashlib.new(algorithm) for algorithm,value in source['checksums'].items() if value!='SKIP'}
+    with subprocess.Popen(['git','-c','safe.directory='+str(Path(repository).resolve()),'-c','core.hooksPath=/dev/null','-c','core.abbrev=no','archive','--format','tar',source['ref']],cwd=repository,env=env,stdout=subprocess.PIPE) as process:
+        total=0
+        while chunk:=process.stdout.read(1048576):
+            total+=len(chunk)
+            if total>MAXIMUM:
+                process.kill()
+                raise ValueError('Git archive exceeds bound')
+            for digest in hashes.values():
+                digest.update(chunk)
+        if process.wait()!=0:
+            raise ValueError('static Git archive failed')
+    return {algorithm:hashes[algorithm].hexdigest() if algorithm in hashes else 'SKIP' for algorithm in source['checksums']}
 
 
 def freeze_source(spec):
@@ -242,6 +345,7 @@ def freeze_source(spec):
         if row['name'] not in expected:
             git('update-ref','-d',row['name'],cwd=repository)
     verify_git_source(record,repository)
+    (repository/'info'/'attributes').write_text('* -export-subst -export-ignore\n')
     return record
 
 
@@ -288,6 +392,7 @@ def materialize_sources(lock, destination):
         for reference,object_id in pinned_refs(source).items():
             git('update-ref',reference,object_id,cwd=mirror)
         verify_git_source(source,mirror)
+        (mirror/'info'/'attributes').write_text('* -export-subst -export-ignore\n')
         for path in mirror.rglob('*'):
             if path.is_symlink():
                 raise ValueError('unexpected mirror symlink')

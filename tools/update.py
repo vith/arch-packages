@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tarfile
 
-from tools import sources, recipes
+from tools import sources, recipes, recipe_gate
 from tools.github_api import api, download
 from tools.recipe_gate import classify_recipe_update, input_digest, parse_srcinfo, tree_manifest, harness_digest
 
@@ -170,11 +170,12 @@ def status(head,context,state,description):
 def run_candidate_tests(root, image):
     """Execute candidate tests only inside a disposable, credential-free container."""
     environment = {k: v for k, v in os.environ.items() if k in {'PATH', 'HOME', 'DOCKER_HOST', 'TMPDIR'}}
-    command = 'pacman -Syu --noconfirm --needed -- python git gnupg && cd /verify && python -m unittest discover -s tests -p "test_*.py"'
+    command = 'mkdir -p /verify/.work/tmp && pacman -Syu --noconfirm --needed -- python git gnupg && cd /verify && python -m unittest discover -s tests -p "test_*.py"'
     container = subprocess.check_output([
         'docker', 'create', '--cap-drop=ALL', '--cap-add=CHOWN',
         '--cap-add=DAC_OVERRIDE', '--cap-add=FOWNER', '--cap-add=SETUID',
         '--cap-add=SETGID', '--security-opt=no-new-privileges',
+        '--env', 'TMPDIR=/verify/.work/tmp',
         image, '/bin/bash', '-c', command,
     ], text=True, env=environment).strip()
     try:
@@ -218,8 +219,10 @@ def affected_packages(base,head,policies):
             affected.add(Path(parts[1]).stem)
         else:
             shared=True
-    if any(path == 'build-image.txt' or path == 'packages.json' or path == '.gitmodules' or path.startswith('tools/') for path in changed):
-        affected=set(policies)
+    if 'packages.json' in changed:
+        previous=policy_at(base)
+        proposed=policy_at(head)
+        affected.update(name for name in policies if previous.get(name)!=proposed.get(name))
     return sorted(affected),shared
 
 
@@ -275,71 +278,115 @@ def prepare(number,output):
     if set(proposed)!=set(newpins):
         raise ValueError('candidate package enrollment and recipe pins differ')
     retired=set(policies)-set(proposed)
-    names,shared=affected_packages(old,new,policies)
-    names=sorted((set(names)|{name for name in policies if oldpins.get(name)!=newpins.get(name)})-retired)
+    names,shared=affected_packages(old,new,proposed)
+    names=sorted((set(names)|{name for name in proposed if oldpins.get(name)!=newpins.get(name)})-retired)
+    from tools.recipe_acceptance import validate_bookkeeping
+    acceptance=validate_bookkeeping(pr,base,head,old,new)
+    if acceptance is not None:
+        names=[]
     shared |= oldpins.keys()!=newpins.keys()
     image=(old/'build-image.txt').read_text().strip()
     if not re.fullmatch(r'ghcr.io/archlinux/archlinux@sha256:[0-9a-f]{64}',image):
         raise ValueError('build image is not pinned official Arch')
-    status(head,'verify','pending','Testing exact candidate in an isolated container')
-    try:
-        run_candidate_tests(new,image)
-        pr_identity(number,base,head)
-    except Exception:
-        status(head,'verify','failure','Exact candidate verification failed')
-        raise
-    status(head,'verify','success','Exact candidate regression tests passed')
+    status(head,'verify','pending','Static candidate frozen; awaiting exact authorization')
     harness=harness_digest(old)
+    build_image=image
+    from tools import recipe_state
     packages=[]
     decisions=[{'pkgbase':name,'decision':'manual','reason':'Package enrollment retired'} for name in sorted(retired)]
     for name in names:
         lock=load(new/'inputs'/f'{name}.json')
-        validate_source_policy(lock,policies[name])
-        decision=classify_recipe_update(old/'recipes'/name,new/'recipes'/name,policies[name])
+        validate_source_policy(lock,proposed[name])
+        if name not in policies or proposed[name]!=policies[name]:
+            decision={'decision':'manual','reason':'Package enrollment changed'}
+        else:
+            decision=classify_recipe_update(old/'recipes'/name,new/'recipes'/name,policies[name])
         if decision['decision']=='invalid':
             raise ValueError(decision['reason'])
         # No candidate-provided evidence grants automatic approval. Independent
         # trusted source receipts are verified below for bot ownership only.
-        evidence=independent_transition(old,new,name,policies[name],output/f'verify-{name}')
+        evidence=independent_transition(old,new,name,policies[name],output/f'verify-{name}') if name in policies and proposed[name]==policies[name] else None
         if evidence:
             trusted=dict(policies[name]); trusted['_verified_transition']=evidence
             decision=classify_recipe_update(old/'recipes'/name,new/'recipes'/name,trusted)
-        if oldpins[name]!=newpins[name] and not recipes.is_ancestor(repository(),oldpins[name],newpins[name]):
-            decision={'decision':'manual','reason':'Recipe history is not a fast-forward of the accepted pin'}
+        if oldpins.get(name) and oldpins[name]!=newpins[name] and not recipes.is_ancestor(repository(),oldpins[name],newpins[name]):
+            raise ValueError('Recipe history is not a fast-forward of the accepted pin')
+        static=static_metadata(new/'recipes'/name,lock,proposed[name],output/f'static-{name}',preserve_pkgrel=True)
+        if static['version']!=lock['version'] or static['srcinfo']!=(new/'recipes'/name/'.SRCINFO').read_text() or static['sources']!=lock['sources']:
+            raise ValueError('candidate static metadata differs from frozen source lock')
+        if name in policies and not recipe_gate.needs_pkgbuild_review(old/'recipes'/name,new/'recipes'/name,policies[name]):
+            from tools.recipe_candidates import source_boundaries
+            source_boundaries(load(old/'inputs'/f'{name}.json'),lock,proposed[name])
+            recipe_gate.verify_automatic_recipe(old/'recipes'/name,new/'recipes'/name,policies[name],load(old/'inputs'/f'{name}.json'),lock,evidence)
         decisions.append({'pkgbase':name,**decision})
         recipe=output/'bundle'/'recipes'/name;recipes.copy_recipe(new/'recipes'/name,recipe)
-        digest=input_digest(recipe,lock,policies[name],image,harness)
-        packages.append({'pkgbase':name,'recipe_commit':newpins[name],'previous_recipe_commit':oldpins[name],'recipe_dir':f'recipes/{name}','lock':lock,'policy':policies[name],'input_digest':digest,'expected_srcinfo':(recipe/'.SRCINFO').read_text()})
-    from tools.recipe_acceptance import validate_bookkeeping
-    acceptance=validate_bookkeeping(pr,base,head,old,new)
-    auto_merge=acceptance is not None
+        digest=input_digest(recipe,lock,proposed[name],build_image,harness)
+        packages.append({'pkgbase':name,'recipe_commit':newpins[name],'previous_recipe_commit':oldpins.get(name),'recipe_dir':f'recipes/{name}','tree_sha':recipe_state.digest(tree_manifest(recipe)),'lock':lock,'policy':proposed[name],'input_digest':digest,'expected_srcinfo':(recipe/'.SRCINFO').read_text()})
+    needs_review=any(recipe_gate.needs_pkgbuild_review(old/'recipes'/name,new/'recipes'/name,policies.get(name,proposed[name])) for name in names)
+    auto_merge=not needs_review
+    if auto_merge and acceptance is None and ((pr.get('head') or {}).get('repo') or {}).get('full_name')!=repository():
+        raise ValueError('automatic main source requires same-repository head')
     mechanical=False
     bundle={'schema':1,'repository':repository(),'base':base,'head':head,'recipe_pins':newpins,'previous_recipe_pins':oldpins,'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'image':image,'harness_sha':harness,'packages':packages}
     dump(output/'bundle'/'bundle.json',bundle)
-    record={**bundle,'pr_number':int(number),'mechanical':mechanical,'auto_merge':auto_merge,'decisions':decisions,'kind':'bookkeeping' if auto_merge else 'code','review_environment':'' if auto_merge else 'code-review'}
+    record={**bundle,'control_digest':recipe_state.control_digest(old),'pr_number':int(number),'mechanical':mechanical,'auto_merge':auto_merge,'decisions':decisions,'kind':'bookkeeping' if acceptance is not None else 'code','review_environment':'recipe-review' if needs_review else ''}
     if record['review_environment']:
         require_review_environment(record['review_environment'])
+    from tools import recipe_state
+    from tools.recipe_candidates import candidate_provenance_exists, frozen_record
+    key=recipe_state.identity_key(record)
+    frozen=frozen_record(record)
+    recipe_state.save('candidate',key,frozen)
+    recipe_state.attest('candidate',key,frozen,head)
+    provenance_exists=candidate_provenance_exists(record)
     dump(output/'candidate.json',record)
     with tarfile.open(output/'bundle.tar','w') as archive:
         archive.add(output/'bundle',arcname='bundle',recursive=True)
     shutil.rmtree(output/'bundle')
-    status(head,'candidate-build','pending','Building complete frozen candidate')
-    status(head,'recipe-policy','pending','Source policy verified; awaiting exact build/review')
+    status(head,'candidate-build','pending','Frozen candidate awaits authorization before execution')
+    status(head,'recipe-policy','pending','Static source policy verified; awaiting exact authorization')
     if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'],'a') as handle:
-            handle.write(f'base={base}\nhead={head}\nmechanical={str(mechanical).lower()}\nreview_environment={record["review_environment"]}\n')
+            handle.write(f'base={base}\nhead={head}\nmechanical={str(mechanical).lower()}\nreview_environment={record["review_environment"]}\ncandidate={output / "candidate.json"}\nprovenance_exists={str(provenance_exists).lower()}\n')
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as handle:
             handle.write(f'PR #{number}\nBase `{base}`\nHead `{head}`\n'+json.dumps(decisions,indent=2)+'\n')
     # Only bounded explicit data goes to the build. Neither candidate automation
     # nor base/head full trees leave the control artifact directory.
-    for path in output.glob('verify-*'):
+    for path in (*output.glob('verify-*'), *output.glob('static-*')):
         remove_verification_tree(path)
     shutil.rmtree(old);shutil.rmtree(new)
     return record
 
 
 def verify_provenance(old,new,lock,policy,watcher_id=None):
+    return _verify_provenance(old,new,lock,policy,_live_tag_provenance,_live_aur_provenance,watcher_id)
+
+
+def _live_tag_provenance(previous,current,source):
+    tag=current['accepted_tag']
+    rows=sources.git('ls-remote',previous['url'],'refs/tags/'+tag,'refs/tags/'+tag+'^{}').splitlines()
+    identities={r.split()[1]:r.split()[0] for r in rows}
+    obj=identities.get('refs/tags/'+tag)
+    peeled=identities.get('refs/tags/'+tag+'^{}',obj)
+    if obj!=current['accepted_tag_object'] or current.get('accepted_peeled_commit')!=peeled:
+        raise ValueError('source tag provenance is not authentic')
+    if previous['kind']=='release':
+        release=json.loads(sources.fetch('https://api.github.com/repos/'+previous['repository']+'/releases/tags/'+tag))
+        if release['draft'] or release['prerelease'] or release['id']!=current['release_id']:
+            raise ValueError('release provenance mismatch')
+        matches=[a for a in release['assets'] if a['name']==previous['asset']]
+        if len(matches)!=1 or matches[0]['id']!=source['asset_id'] or source['release_id']!=release['id'] or source['url']!=matches[0]['browser_download_url']:
+            raise ValueError('release asset identity mismatch')
+
+
+def _live_aur_provenance(watcher,current):
+    row=sources.git('ls-remote',watcher['url'],watcher.get('ref','refs/heads/master')).splitlines()
+    if len(row)!=1 or row[0].split()[0]!=current['commit']:
+        raise ValueError('AUR provenance no longer authentic')
+
+
+def _verify_provenance(old,new,lock,policy,verify_tag,verify_aur,watcher_id=None):
     if set(old)!=set(new) or any(old[k]!=new[k] for k in old if k not in {'aur','watchers'}):
         raise ValueError('unrelated provenance changed')
     if len(old['watchers'])!=len(new['watchers']):
@@ -367,29 +414,15 @@ def verify_provenance(old,new,lock,policy,watcher_id=None):
         tag=current.get('accepted_tag')
         if not tag or not re.fullmatch(previous['tag_pattern'],tag):
             raise ValueError('unenrolled tag identity')
-        rows=sources.git('ls-remote',previous['url'],'refs/tags/'+tag,'refs/tags/'+tag+'^{}').splitlines()
-        identities={r.split()[1]:r.split()[0] for r in rows}
-        obj=identities.get('refs/tags/'+tag)
-        peeled=identities.get('refs/tags/'+tag+'^{}',obj)
-        if obj!=current['accepted_tag_object'] or current.get('accepted_peeled_commit')!=peeled:
-            raise ValueError('source tag provenance is not authentic')
-        if previous['kind']=='release':
-            release=json.loads(sources.fetch('https://api.github.com/repos/'+previous['repository']+'/releases/tags/'+tag))
-            if release['draft'] or release['prerelease'] or release['id']!=current['release_id']:
-                raise ValueError('release provenance mismatch')
-            matches=[a for a in release['assets'] if a['name']==previous['asset']]
-            source=next(s for s in lock['sources'] if s['id']==previous['source_id'])
-            if len(matches)!=1 or matches[0]['id']!=source['asset_id'] or source['release_id']!=release['id'] or source['url']!=matches[0]['browser_download_url']:
-                raise ValueError('release asset identity mismatch')
+        source=next(s for s in lock['sources'] if s['id']==previous['source_id'])
+        verify_tag(previous,current,source)
     if old['aur']!=new['aur']:
         if not old['aur'] or not new['aur'] or any(old['aur'].get(k)!=new['aur'].get(k) for k in old['aur'].keys()|new['aur'].keys() if k!='commit'):
             raise ValueError('AUR enrollment changed')
         watchers=[w for w in old['watchers'] if w['kind']=='aur']
         if len(watchers)!=1:
             raise ValueError('ambiguous AUR watcher')
-        row=sources.git('ls-remote',watchers[0]['url'],watchers[0].get('ref','refs/heads/master')).splitlines()
-        if len(row)!=1 or row[0].split()[0]!=new['aur']['commit']:
-            raise ValueError('AUR provenance no longer authentic')
+        verify_aur(watchers[0],new['aur'])
         changed.append(watchers[0]['id'])
     if watcher_id and any(identity!=watcher_id for identity in changed):
         raise ValueError('watcher changed unrelated provenance')
@@ -397,9 +430,72 @@ def verify_provenance(old,new,lock,policy,watcher_id=None):
 
 
 def independent_transition(old,new,name,policy,work):
+    def aur(watcher,accepted,current):
+        return sources.discover_aur(watcher,accepted)
+    return _transition(old,new,name,policy,work,verify_provenance,aur,_live_source_transition)
+
+
+def frozen_transition(old,new,name,policy,work):
+    """Recompute immutable evidence after authenticating original prepared context."""
+    oldlock=load(old/'inputs'/f'{name}.json')
+    newlock=load(new/'inputs'/f'{name}.json')
+    validate_source_policy(oldlock,policy)
+    validate_source_policy(newlock,policy)
+    for source in oldlock['sources']:
+        if source['kind']=='git':
+            mirror=sources.materialize_sources({'schema':1,'version':oldlock['version'],'sources':[source]},work/'previous'/source['id'])[source['url']]
+            _frozen_source_transition(source,source,mirror,policy,oldlock)
+            # Equal immutable Git inputs cannot acquire a different ancestry
+            # version merely because the common transition returns no change.
+            current=next((item for item in newlock['sources'] if item['id']==source['id']),None)
+            rule=policy['automatic']['version']
+            if (current==source and rule['derivation']=='frozen-authentic-tag-ancestry'
+                    and source['ref'].startswith('refs/heads/')
+                    and parse_version(newlock['version'])!=parse_version(oldlock['version'])):
+                raise ValueError('frozen ancestry version mismatch')
+        elif source['kind']=='local':
+            path=old/'recipes'/name/source['source']
+            if not path.resolve().is_relative_to((old/'recipes'/name).resolve()) or not path.is_file():
+                raise ValueError('unsafe frozen local source')
+            for algorithm,digest in source['checksums'].items():
+                if digest!='SKIP' and hashlib.new(algorithm,path.read_bytes()).hexdigest()!=digest:
+                    raise ValueError('local source checksum mismatch')
+        else:
+            sources.freeze_source(source)
+    def provenance(oldpro,newpro,lock,enrolled):
+        def tag(previous,current,source):
+            sources.frozen_tag(previous,current,work/('tag-'+previous['id']))
+            if previous['kind']=='release' and (source['release_id']!=current['release_id'] or source['asset_id']!=current['asset_id']):
+                raise ValueError('frozen release asset identity mismatch')
+        _verify_provenance(oldpro,newpro,lock,enrolled,tag,lambda watcher,current: None)
+    return _transition(old,new,name,policy,work,provenance,sources.frozen_aur,_frozen_source_transition)
+
+
+def _live_source_transition(previous,source,mirror,policy,lock):
+    remote_tags=sources.git('ls-remote','--tags',source['url']).splitlines()
+    tags={r.split()[1]:r.split()[0] for r in remote_tags}
+    authentic=all(tag is None or tags.get(tag['name'])==tag['object'] for tag in (previous['git_context']['version_tag'],source['git_context']['version_tag']))
+    remote=sources.git('ls-remote',source['url'],source['ref']).splitlines()
+    if len(remote)!=1 or remote[0].split()[0]!=(source['tag_object'] or source['commit']):
+        raise ValueError('source transition no longer authentic')
+    return authentic
+
+
+def _frozen_source_transition(previous,source,mirror,policy,lock):
+    if sources.git_checksums(source,mirror)!=source['checksums']:
+        raise ValueError('frozen Git checksum mismatch')
+    rules=policy['automatic']['version']
+    if rules['derivation']=='frozen-authentic-tag-ancestry' and source['ref'].startswith('refs/heads/'):
+        if sources.frozen_ancestry_version(source,mirror,rules['template'])!=parse_version(lock['version']):
+            raise ValueError('frozen ancestry version mismatch')
+    return True
+
+
+def _transition(old,new,name,policy,work,verify_context,aur_transition,verify_source):
     oldlock=load(old/'inputs'/f'{name}.json');newlock=load(new/'inputs'/f'{name}.json')
     oldpro=load(old/'upstream'/f'{name}.json');newpro=load(new/'upstream'/f'{name}.json')
-    verify_provenance(oldpro,newpro,newlock,policy)
+    validate_source_policy(oldlock,policy);validate_source_policy(newlock,policy)
+    verify_context(oldpro,newpro,newlock,policy)
     if [s['id'] for s in oldlock['sources']]!=[s['id'] for s in newlock['sources']]:
         raise ValueError('source record order changed')
     for previous,current in zip(oldlock['sources'],newlock['sources']):
@@ -413,7 +509,7 @@ def independent_transition(old,new,name,policy,work):
     if oldpro['aur']!=newpro['aur']:
         watcher=next(w for w in oldpro['watchers'] if w['kind']=='aur')
         configured={**watcher,'work_dir':str(work/'aur-verify')}
-        transition=sources.discover_aur(configured,oldpro['aur'])
+        transition=aur_transition(configured,oldpro['aur'],newpro['aur'])
         if transition is None or transition['commit']!=newpro['aur']['commit']:
             return None
         aur_fast_forward=transition.get('fast_forward') is True
@@ -433,6 +529,8 @@ def independent_transition(old,new,name,policy,work):
     for source in newlock['sources']:
         if source['kind']=='local':
             file=new/'recipes'/name/source['source']
+            if not file.resolve().is_relative_to((new/'recipes'/name).resolve()) or not file.is_file():
+                raise ValueError('unsafe frozen local source')
             for alg,digest in source['checksums'].items():
                 if digest!='SKIP' and hashlib.new(alg,file.read_bytes()).hexdigest()!=digest:
                     raise ValueError('local source checksum mismatch')
@@ -441,13 +539,7 @@ def independent_transition(old,new,name,policy,work):
             previous=next(s for s in oldlock['sources'] if s['id']==source['id'])
             if previous['commit']:
                 fast_forward &= sources.git('merge-base','--is-ancestor',previous['commit'],source['commit'],cwd=mirror,check=False).returncode==0
-            remote_tags=sources.git('ls-remote','--tags',source['url']).splitlines()
-            tags={r.split()[1]:r.split()[0] for r in remote_tags}
-            for tag in (previous['git_context']['version_tag'],source['git_context']['version_tag']):
-                authentic &= tag is None or tags.get(tag['name'])==tag['object']
-            remote=sources.git('ls-remote',source['url'],source['ref']).splitlines()
-            if len(remote)!=1 or remote[0].split()[0]!=(source['tag_object'] or source['commit']):
-                raise ValueError('source transition no longer authentic')
+            authentic &= verify_source(previous,source,mirror,policy,newlock)
         else:
             sources.freeze_source(source)
     # Exact provenance ownership is required; candidate fields are not evidence.
@@ -460,11 +552,15 @@ def independent_transition(old,new,name,policy,work):
 
 
 def validate_build(record,directory,report=True):
+    record_path=None if isinstance(record,dict) else record
     record=load(record) if not isinstance(record,dict) else record
     if record.get('kind')=='recipe':
-        from tools.recipe_candidates import validate_build as recipe_validate
-        return recipe_validate(record,directory,report)
+        from tools.recipe_candidates import validate_build as recipe_validate, controller_context
+        context=controller_context(record_path) if record_path else None
+        return recipe_validate(record,directory,report,context=context)
     pr_identity(record['pr_number'],record['base'],record['head'])
+    from tools.recipe_candidates import verify_authorization
+    verify_authorization(record)
     return validate_build_outputs(record,directory,report)
 
 
@@ -506,18 +602,43 @@ def validate_build_outputs(record,directory,report=True):
 
 
 def review(record):
-    record=load(record)
+    from tools.recipe_candidates import review as candidate_review
+    return candidate_review(load(record))
+
+
+def authorize(record):
+    from tools.recipe_candidates import authorize as candidate_authorize
+    return candidate_authorize(load(record))
+
+
+def run_approved_tests(record,directory):
+    record_path=None if isinstance(record,dict) else record
+    record=load(record) if not isinstance(record,dict) else record
+    from tools.recipe_candidates import verify_authorization, controller_context, verify_current_controller
     if record.get('kind')=='recipe':
-        from tools.recipe_candidates import review as recipe_review
-        return recipe_review(record)
-    if record['auto_merge']:
-        raise ValueError('automatic bookkeeping does not use human checkpoint')
+        context=controller_context(record_path) if record_path else None
+        if context:
+            verify_current_controller(record,context)
+        else:
+            from tools.recipe_state import assert_recipe_identity
+            assert_recipe_identity(record)
+        verify_authorization(record)
+        return
+    verify_authorization(record)
     pr_identity(record['pr_number'],record['base'],record['head'])
-    require_review_environment('code-review')
-    states={s['context']:s['state'] for s in reversed(api(route('/commits/'+record['head']+'/statuses')))}
-    if states.get('candidate-build')!='success':
-        raise ValueError('review requires complete successful candidate build')
-    status(record['head'],'recipe-policy','success','Owner approved exact main head/base through code-review')
+    directory=Path(directory)
+    directory.mkdir(parents=True,exist_ok=True)
+    root=checkout_data(record['head'],directory/'approved-head')
+    try:
+        verify_authorization(record)
+        run_candidate_tests(root,record['image'])
+        pr_identity(record['pr_number'],record['base'],record['head'])
+    except Exception:
+        status(record['head'],'verify','failure','Approved exact candidate verification failed')
+        raise
+    finally:
+        remove_verification_tree(root)
+    status(record['head'],'verify','success','Approved exact candidate regression tests passed')
 
 
 def finalize(number,base,head,record_path,directory):
@@ -532,8 +653,6 @@ def finalize(number,base,head,record_path,directory):
     states={s['context']:s['state'] for s in reversed(api(route('/commits/'+head+'/statuses')))}
     if any(states.get(k)!='success' for k in ('verify','candidate-build','recipe-policy')):
         raise ValueError('required exact-head statuses missing')
-    if not record['auto_merge']:
-        return {'merged':False,'reason':'Human merge required'}
     result=api(route('/pulls/'+str(number)+'/merge'),'PUT',{'sha':head,'merge_method':'merge'})
     if not result.get('merged') or not SHA.fullmatch(result.get('sha','')):
         raise ValueError('expected-head merge failed')
@@ -583,41 +702,98 @@ def render_recipe(recipe,policy,pkgver,checksums,pkgrel='1'):
     (recipe/'PKGBUILD').write_text(text)
 
 
-def native_probe(recipe,lock,policy,work,preserve_pkgrel=False):
-    image=(ROOT/'build-image.txt').read_text().strip()
-    if not re.fullmatch(r'ghcr.io/archlinux/archlinux@sha256:[0-9a-f]{64}',image):
-        raise ValueError('native probe image not pinned')
-    # Only this credential-free fresh process executes recipe code.
-    probe=work/'probe';probe.mkdir(parents=True)
-    recipes.copy_recipe(recipe,probe/'recipe')
-    shutil.copytree(ROOT/'tools',probe/'tools')
-    dump(probe/'lock.json',lock);dump(probe/'policy.json',policy)
-    mirrors=[]
-    for source in lock['sources']:
-        if source['kind']=='git':
+def static_metadata(recipe,lock,policy,work,preserve_pkgrel=False):
+    return _static_metadata(recipe,lock,policy,work,preserve_pkgrel,sources.ancestry_version)
+
+
+def frozen_metadata(recipe,lock,policy,work,preserve_pkgrel=False):
+    return _static_metadata(recipe,lock,policy,work,preserve_pkgrel,sources.frozen_ancestry_version)
+
+
+def _static_metadata(recipe,lock,policy,work,preserve_pkgrel,ancestry_version):
+    """Freeze source facts and metadata claims without evaluating proposed code.
+
+    Submitted human recipes are never rewritten. Discovery alone renders the
+    enrolled scalar/source/checksum spans; the approved worker validates native
+    metadata against these claims.
+    """
+    sources.validate_lock(lock)
+    text=(recipe/'.SRCINFO').read_text()
+    metadata=parse_srcinfo(text)
+    frozen=json.loads(json.dumps(lock['sources']))
+    mirrors={}
+    for source in frozen:
+        if source['kind']=='local':
+            path=recipe/source['source']
+            if not path.resolve().is_relative_to(recipe.resolve()) or not path.is_file():
+                raise ValueError('unsafe static local source')
+            for algorithm,digest in source['checksums'].items():
+                if digest!='SKIP' and hashlib.new(algorithm,path.read_bytes()).hexdigest()!=digest:
+                    raise ValueError('static local checksum mismatch')
+        elif source['kind']=='git':
             mirror=work/source['id']/'freeze.git'
             if not mirror.exists():
-                mapping=sources.materialize_sources({'schema':1,'version':lock['version'],'sources':[source]},work/('materialize-'+source['id']))
-                mirror=mapping[source['url']]
-            target=probe/'mirrors'/source['id'];shutil.copytree(mirror,target)
-            mirrors.append((source['url'],'file:///work/mirrors/'+source['id']))
-    config='[core]\n\thooksPath = /dev/null\n[protocol "file"]\n\tallow = always\n'
-    for source in lock['sources']:
-        if source['kind']=='git':
-            config+='[safe]\n\tdirectory = /work/mirrors/'+source['id']+'\n'
-    for url,target in mirrors:
-        config+='[url "'+target+'"]\n\tinsteadOf = '+url+'\n'
-    (probe/'gitconfig').write_text(config)
-    import shlex
-    install='import subprocess;from pathlib import Path;from tools.native import dependency_names;subprocess.run(["pacman","-S","--noconfirm","--needed","--",*dependency_names(Path("recipe/.SRCINFO").read_text())],check=True)'
-    execute='import json;from pathlib import Path;from tools.sources import probe_recipe;print(json.dumps(probe_recipe(Path("recipe"),json.load(open("lock.json")),json.load(open("policy.json")),preserve_pkgrel='+repr(preserve_pkgrel)+')))'
-    script='set -euo pipefail\npacman -Syu --noconfirm --needed base-devel git python util-linux\nuseradd -m -u 1000 builder\ncp -a /probe /work\nchown -R root:root /work\nchmod a-w /work/gitconfig\nif [ -d /work/mirrors ]; then chmod -R a-w /work/mirrors; fi\nchown -R builder:builder /work/recipe\ncd /work\nPYTHONPATH=/work python -c '+shlex.quote(install)+'\nsetpriv --reuid=1000 --regid=1000 --clear-groups --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs env -i PATH=/usr/bin:/bin HOME=/home/builder LANG=C.UTF-8 GOTOOLCHAIN=local MAKEPKG_GIT_CONFIG=/work/gitconfig GIT_CONFIG_SYSTEM=/work/gitconfig GIT_CONFIG_GLOBAL=/dev/null PYTHONPATH=/work python -c '+shlex.quote(execute)+' > /work/result.json\ncp /work/result.json /result/result.json\n'
-    (probe/'run.sh').write_text(script)
-    result=work/'result';result.mkdir()
-    subprocess.run(['docker','run','--rm','--cap-drop=ALL','--cap-add=CHOWN','--cap-add=FOWNER','--cap-add=SETUID','--cap-add=SETGID','--cap-add=DAC_OVERRIDE','--cap-add=SETPCAP','--security-opt=no-new-privileges','-v',str(probe.resolve())+':/probe:ro','-v',str(result.resolve())+':/result',image,'bash','/probe/run.sh'],check=True,env={k:v for k,v in os.environ.items() if k in {'PATH','HOME','DOCKER_HOST','TMPDIR'}})
-    metadata=load(result/'result.json')
-    parse_srcinfo(metadata['srcinfo'])
-    return metadata
+                mirror=sources.materialize_sources({'schema':1,'version':lock['version'],'sources':[source]},work/('static-'+source['id']))[source['url']]
+            sources.verify_git_source(source,mirror)
+            mirrors[source['id']]=mirror
+            if not preserve_pkgrel:
+                source['checksums']=sources.git_checksums(source,mirror)
+        else:
+            sources.freeze_source(source)
+    version=metadata['pkgver']
+    pkgrel=metadata['pkgrel']
+    if not preserve_pkgrel:
+        rules=policy['automatic']
+        derivation=rules['version']['derivation']
+        if derivation=='frozen-authentic-tag-ancestry':
+            candidates=[s for s in frozen if s['kind']=='git' and s['ref'].startswith('refs/heads/')]
+            if len(candidates)!=1:
+                raise ValueError('ambiguous enrolled ancestry source')
+            source=candidates[0]
+            version=ancestry_version(source,mirrors[source['id']],rules['version']['template'])
+        elif derivation=='literal-upstream-version':
+            assignment=rules['version']['assignment']
+            matches=re.findall(r'^'+re.escape(assignment)+r"=(?:'([A-Za-z0-9.+_]+)'|\"([A-Za-z0-9.+_]+)\"|([A-Za-z0-9.+_]+))$", (recipe/'PKGBUILD').read_text(),re.M)
+            if len(matches)!=1:
+                raise ValueError('ambiguous static literal version')
+            version=next(value for value in matches[0] if value)
+            if not re.fullmatch(rules['version']['template'],version):
+                raise ValueError('unsupported enrolled literal version')
+        else:
+            raise ValueError('unsupported static version derivation')
+        pkgrel=rules['pkgrel']['value']
+        indexes={}
+        native=[v for _,key,v in metadata['fields'] if key in {'source','source_x86_64'}]
+        replacements={}
+        for source in frozen:
+            enrolled=next(s for s in policy['sources'] if s['id']==source['id'])
+            old=enrolled['source_template'].format(version=metadata['pkgver'])
+            if native.count(old)!=1:
+                raise ValueError('static source layout differs from enrollment')
+            replacements[old]=source['source']
+        lines=[]
+        for line in text.splitlines():
+            match=re.fullmatch(r'(\s*)([A-Za-z0-9_]+)(\s*=\s*)(.*)',line)
+            if not match:
+                lines.append(line);continue
+            indent,key,separator,value=match.groups()
+            index_key=key.removesuffix('_x86_64')
+            index=indexes.get(index_key,0);indexes[index_key]=index+1
+            if key=='pkgver':
+                value=version
+            elif key=='pkgrel':
+                value=pkgrel
+            elif key in {'source','source_x86_64'}:
+                value=replacements.get(value,value)
+            else:
+                for source in frozen:
+                    enrolled=next(s for s in policy['sources'] if s['id']==source['id'])
+                    if key in {enrolled['checksum_algorithm']+'sums',enrolled['checksum_algorithm']+'sums_x86_64'} and index==enrolled['checksum_index']:
+                        value=source['checksums'][enrolled['checksum_algorithm']]
+            lines.append(indent+key+separator+value)
+        text='\n'.join(lines)+'\n'
+        metadata=parse_srcinfo(text)
+    return {'schema':1,'version':metadata['version'],'pkgver':version,'pkgrel':pkgrel,'srcinfo':text,'checksums':{s['id']:s['checksums'] for s in frozen},'sources':frozen,'runtime_identity':None}
 
 
 def write_aur_tree(files,recipe):
@@ -739,9 +915,9 @@ def align_aur_lock(recipe,lock,policy,work):
     return metadata
 
 
-def prune_probe_work(work):
+def prune_discovery_work(work):
     for child in list(work.iterdir()):
-        if child.name in {'probe','result','watched.git','aur.git','three-way'}:
+        if child.name in {'watched.git','aur.git','three-way'}:
             shutil.rmtree(child)
         elif child.is_dir() and child.name!='recipe':
             for nested in list(child.iterdir()):
@@ -847,7 +1023,7 @@ def initialize_recipe_branches():
 
 
 def bootstrap(output):
-    """Read-only initial enrollment freeze/probe; publication is a separate review."""
+    """Read-only static enrollment freeze; publication is a separate review."""
     output=Path(output);output.mkdir(parents=True,exist_ok=False)
     base,pins=control_checkout()
     policies=policy_at(ROOT)
@@ -886,12 +1062,16 @@ def bootstrap(output):
                 record=sources.freeze_source({**record,'work_dir':str(work/enrolled['id'])})
             records.append(record)
         lock={'schema':1,'version':metadata['version'],'sources':records}
-        result=native_probe(recipe,lock,policy,work,preserve_pkgrel=True)
+        result=static_metadata(recipe,lock,policy,work)
+        if result['pkgrel']!=metadata['pkgrel']:
+            result['srcinfo']=re.sub(r'^(\s*pkgrel\s*=\s*).+$',lambda match:match[1]+metadata['pkgrel'],result['srcinfo'],flags=re.M)
+            result['pkgrel']=metadata['pkgrel']
+            result['version']=parse_srcinfo(result['srcinfo'])['version']
         lock['version']=result['version'];lock['sources']=result['sources']
         render_recipe(recipe,policy,result['pkgver'],result['checksums'],pkgrel=result['pkgrel'])
         (recipe/'.SRCINFO').write_text(result['srcinfo'])
-        dump(work/'lock.json',lock);dump(work/'probe.json',{**result,'recipe_commit':pins[name]})
-        prune_probe_work(work)
+        dump(work/'lock.json',lock);dump(work/'metadata.json',{**result,'recipe_commit':pins[name]})
+        prune_discovery_work(work)
     dump(output/'bootstrap.json',{'schema':1,'repository':repository(),'base':base,'recipe_pins':pins,'packages':list(policies)})
 
 
@@ -964,13 +1144,15 @@ def discover(output):
                     if transition.get('release_id'):
                         updated['release_id']=transition['release_id']
                         updated['asset_id']=next(s['asset_id'] for s in lock['sources'] if s['id']==watcher['source_id'])
-            probe=native_probe(recipe,lock,policy,work)
-            lock['version']=probe['version'];lock['sources']=probe['sources']
-            render_recipe(recipe,policy,probe['pkgver'],{s['id']:s['checksums'] for s in lock['sources']},pkgrel=probe['pkgrel'])
-            (recipe/'.SRCINFO').write_text(probe['srcinfo'])
-            receipt={'schema':1,'pkgbase':name,'watcher_id':watcher['id'],'base':base,'recipe_commit':pins[name],'unchanged':False,'transition':transition,'lock':lock,'provenance':newpro,'probe':probe,'tree':tree_manifest(recipe),'aur_conflicts':integration['conflicts'] if watcher['kind']=='aur' else []}
+            submitted=watcher['kind']=='aur'
+            metadata=static_metadata(recipe,lock,policy,work,preserve_pkgrel=submitted)
+            lock['version']=metadata['version'];lock['sources']=metadata['sources']
+            if not submitted:
+                render_recipe(recipe,policy,metadata['pkgver'],{s['id']:s['checksums'] for s in lock['sources']},pkgrel=metadata['pkgrel'])
+                (recipe/'.SRCINFO').write_text(metadata['srcinfo'])
+            receipt={'schema':1,'pkgbase':name,'watcher_id':watcher['id'],'base':base,'recipe_commit':pins[name],'unchanged':False,'transition':transition,'lock':lock,'provenance':newpro,'metadata':metadata,'tree':tree_manifest(recipe),'aur_conflicts':integration['conflicts'] if watcher['kind']=='aur' else []}
             dump(work/'receipt.json',receipt);receipts.append(receipt)
-            prune_probe_work(work)
+            prune_discovery_work(work)
     dump(output/'receipts.json',{'schema':1,'base':base,'receipts':receipts})
 
 
@@ -1041,9 +1223,9 @@ def write_proposals(directory):
             continue
         policy=policies[name];lock=receipt['lock'];validate_source_policy(lock,policy)
         work=directory/name/watcher_id;recipe=work/'recipe'
-        if tree_manifest(recipe)!=receipt['tree'] or (recipe/'.SRCINFO').read_text()!=receipt['probe']['srcinfo'] or parse_srcinfo(receipt['probe']['srcinfo'])['version']!=lock['version']:
-            raise ValueError('typed probe/tree receipt mismatch')
-        # Re-render accepted code; source code returned by probes is never trusted.
+        if tree_manifest(recipe)!=receipt['tree'] or (recipe/'.SRCINFO').read_text()!=receipt['metadata']['srcinfo'] or parse_srcinfo(receipt['metadata']['srcinfo'])['version']!=lock['version']:
+            raise ValueError('static metadata/tree receipt mismatch')
+        # Re-render enrolled spans or reconstruct the authentic AUR merge.
         rendered=work/'trusted-render';recipes.copy_recipe(ROOT/'recipes'/name,rendered)
         if watcher['kind']=='aur':
             configured={**watcher,'work_dir':str(work/'writer-aur')}
@@ -1053,11 +1235,9 @@ def write_proposals(directory):
             integration=apply_aur_transition(rendered,actual,policy,work/'writer-three-way')
             if integration['conflicts']!=receipt.get('aur_conflicts'):
                 raise ValueError('AUR integration conflicts differ from typed receipt')
-            if not integration['conflicts']:
-                render_recipe(rendered,policy,receipt['probe']['pkgver'],{s['id']:s['checksums'] for s in lock['sources']},pkgrel=receipt['probe']['pkgrel'])
         else:
-            render_recipe(rendered,policy,receipt['probe']['pkgver'],{s['id']:s['checksums'] for s in lock['sources']},pkgrel=receipt['probe']['pkgrel'])
-        (rendered/'.SRCINFO').write_text(receipt['probe']['srcinfo'])
+            render_recipe(rendered,policy,receipt['metadata']['pkgver'],{s['id']:s['checksums'] for s in lock['sources']},pkgrel=receipt['metadata']['pkgrel'])
+            (rendered/'.SRCINFO').write_text(receipt['metadata']['srcinfo'])
         if tree_manifest(rendered)!=receipt['tree']:
             raise ValueError('proposal differs from trusted typed rendering')
         verify_provenance(provenance,receipt['provenance'],lock,policy,watcher_id)
@@ -1154,9 +1334,10 @@ def cli():
     sub.add_parser('initialize-recipe-branches')
     p=sub.add_parser('migrate-existing');p.add_argument('--pr',type=int,default=3)
     p=sub.add_parser('prepare');p.add_argument('--pr',required=True);p.add_argument('--directory',required=True)
-    for command in ('validate-build','review','fail-build'):
+    p=sub.add_parser('source-provenance');p.add_argument('--record',required=True);p.add_argument('--bundle',required=True)
+    for command in ('validate-build','review','authorize','run-approved-tests','fail-build'):
         p=sub.add_parser(command);p.add_argument('--record',required=True)
-        if command=='validate-build':p.add_argument('--directory',required=True)
+        if command in ('validate-build','run-approved-tests'):p.add_argument('--directory',required=True)
     p=sub.add_parser('finalize');p.add_argument('--pr',required=True);p.add_argument('--base',required=True);p.add_argument('--head',required=True);p.add_argument('--record',required=True);p.add_argument('--directory',required=True)
     args=parser.parse_args()
     if args.command=='pack':
@@ -1169,16 +1350,26 @@ def cli():
     elif args.command=='discover':discover(args.directory)
     elif args.command=='write':write_proposals(args.directory)
     elif args.command=='prepare':prepare(args.pr,args.directory)
+    elif args.command=='source-provenance':
+        from tools.recipe_candidates import persist_candidate_provenance
+        persist_candidate_provenance(args.record,args.bundle)
     elif args.command=='validate-build':validate_build(args.record,args.directory)
     elif args.command=='fail-build':
         record=load(args.record)
         if record.get('kind')=='recipe':
-            from tools.recipe_state import assert_recipe_identity
-            assert_recipe_identity(record)
+            from tools.recipe_candidates import controller_context, verify_current_controller
+            context=controller_context(args.record)
+            if context:
+                verify_current_controller(record,context)
+            else:
+                from tools.recipe_state import assert_recipe_identity
+                assert_recipe_identity(record)
         else:
             pr_identity(record['pr_number'],record['base'],record['head'])
         status(record['head'],'candidate-build','failure','Frozen native build or complete output validation failed')
     elif args.command=='review':review(args.record)
+    elif args.command=='authorize':authorize(args.record)
+    elif args.command=='run-approved-tests':run_approved_tests(args.record,args.directory)
     elif args.command=='reconcile':
         from tools.recipe_acceptance import reconcile
         print(json.dumps(reconcile(),sort_keys=True))

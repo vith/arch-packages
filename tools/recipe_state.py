@@ -6,12 +6,13 @@ import re
 from tools import sources
 
 BRANCH='controller-state'
-NAMESPACES={'proposal','candidate','built','approved','acceptance'}
+NAMESPACES={'proposal','candidate','candidate-provenance','built','approved','acceptance','built-by-input'}
 KEY=re.compile(r'^[a-zA-Z0-9_-]{1,200}$')
 CONTROLS=('tools/update.py','tools/recipes.py','tools/recipe_candidates.py',
-          'tools/recipe_acceptance.py','tools/recipe_state.py','tools/package_runs.py',
+          'tools/recipe_acceptance.py','tools/recipe_state.py','tools/package_runs.py','tools/build_store.py','tools/attestations.py',
           '.github/workflows/update.yml','.github/workflows/candidate.yml',
-          '.github/workflows/candidate-dispatch.yml','.github/workflows/build-package.yml')
+          '.github/workflows/candidate-dispatch.yml','.github/workflows/build-package.yml',
+          'tools/source_review.py','.github/workflows/verification.yml')
 
 
 def digest(value):
@@ -40,7 +41,7 @@ def record_path(namespace,key):
 
 def identity_key(record):
     from tools import update as u
-    values=[record['base'],record['recipe_base'],record['head']]
+    values=[record['base'],record.get('recipe_base',record['base']),record['head']]
     if any(not u.SHA.fullmatch(v) for v in values):
         raise ValueError('invalid receipt identity')
     return '-'.join(values)

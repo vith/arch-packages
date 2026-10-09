@@ -10,6 +10,27 @@ import unittest
 from unittest.mock import patch
 
 from tools.native import cache_environment, contained, dependency_names, parse_pkginfo, runtime_identity, validate_bundle, validate_output
+from tools import native
+
+
+class CompilationCheckpoints(unittest.TestCase):
+    def test_actual_makepkg_failure_is_explicit_but_unknown_launcher_error_is_not(self):
+        root = Path.home() / '.local/state/omp/work/native-checkpoint-tests'
+        root.mkdir(parents=True, exist_ok=True)
+        bundle = {'packages': [{'pkgbase': 'first', 'input_digest': 'd' * 64}],
+                  'image': 'image', 'harness_sha': 'harness', 'run_id': '123', 'run_attempt': '1'}
+        for error, expected in ((subprocess.CalledProcessError(1, ['makepkg']), 'failure'),
+                                (OSError('launcher disconnected'), 'started')):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory(dir=root) as temporary:
+                checkpoint = Path(temporary) / 'compilation.json'
+                with patch('tools.native.Path', return_value=checkpoint):
+                    native.compilation_checkpoint(bundle, 'started')
+                    with patch('tools.native.builder', side_effect=error), self.assertRaises(type(error)):
+                        native.recipe_makepkg(bundle, ['makepkg'], root, {})
+                actual = json.loads(checkpoint.read_text())
+                self.assertEqual(actual['state'], expected)
+                self.assertEqual(actual['input_digest'], bundle['packages'][0]['input_digest'])
+                self.assertEqual(checkpoint.stat().st_mode & 0o777, 0o600)
 
 
 class NativeRunTests(unittest.TestCase):

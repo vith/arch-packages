@@ -1,13 +1,158 @@
 name: Trusted recipe and publication verification
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Source review PR {0} head {1} base {2}', inputs.pr_number, inputs.expected_head, inputs.expected_base) || format('Trusted main verification {0}', github.sha) }}
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Exact main PR number for automatic source-only verification
+        required: true
+        type: string
+      expected_head:
+        required: true
+        type: string
+      expected_base:
+        required: true
+        type: string
+      bootstrap:
+        description: Select the initial controller from the exact immutable source-review-H tag
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
   statuses: write
+env:
+  ARCH_WORK: /home/runner/.local/state/arch-packages/work/source-review/${{ github.run_id }}/${{ github.run_attempt }}
+  TMPDIR: /home/runner/.local/state/arch-packages/work/source-review/${{ github.run_id }}/${{ github.run_attempt }}/tmp
+concurrency:
+  group: verification-${{ github.event_name }}-${{ inputs.pr_number || github.ref }}
+  cancel-in-progress: false
 jobs:
+  source-identity:
+    if: github.event_name == 'workflow_dispatch'
+    name: Bind source PR ${{ inputs.pr_number }} head ${{ inputs.expected_head }} base ${{ inputs.expected_base }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    steps:
+      # Check Git objects read-only before any controller or candidate checkout.
+      - name: Bind workflow and zero-package scope to exact main PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_BASE: ${{ inputs.expected_base }}
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          repo=os.environ['GITHUB_REPOSITORY'];number=os.environ['PR_NUMBER']
+          head=os.environ['EXPECTED_HEAD'];base=os.environ['EXPECTED_BASE']
+          bootstrap=os.environ['BOOTSTRAP']=='true'
+          if not number.isdecimal() or int(number)<1 or any(not re.fullmatch('[0-9a-f]{40}',x) for x in (head,base)):
+              raise SystemExit('Invalid immutable source-review identity')
+          def api(path):
+              return json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/'+path]))
+          pr=api('pulls/'+number);main=api('git/ref/heads/main')['object']['sha']
+          if (pr['state']!='open' or pr['base']['ref']!='main'
+              or pr['base']['repo']['full_name']!=repo or pr['head']['repo']['full_name']!=repo
+              or pr['base']['sha']!=base or main!=base or pr['head']['sha']!=head):
+              raise SystemExit('Source-review PR/base/head changed')
+          workflow_sha=head if bootstrap else base
+          workflow_branch='source-review-'+head if bootstrap else 'main'
+          workflow_ref='refs/tags/'+workflow_branch if bootstrap else 'refs/heads/main'
+          if os.environ['GITHUB_SHA']!=workflow_sha or os.environ['GITHUB_REF']!=workflow_ref:
+              raise SystemExit('Source-review workflow identity changed')
+          run=api('actions/runs/'+os.environ['GITHUB_RUN_ID']+'/attempts/'+os.environ['GITHUB_RUN_ATTEMPT'])
+          if (run.get('id')!=int(os.environ['GITHUB_RUN_ID']) or run.get('run_attempt')!=int(os.environ['GITHUB_RUN_ATTEMPT'])
+              or run.get('head_sha')!=workflow_sha or run.get('head_branch')!=workflow_branch
+              or run.get('event')!='workflow_dispatch' or run.get('path')!='.github/workflows/verification.yml'
+              or run.get('display_title')!=f'Source review PR {number} head {head} base {base}'):
+              raise SystemExit('Source-review actual workflow run mismatch')
+          if bootstrap:
+              tag=api('git/ref/tags/'+workflow_branch)
+              if tag.get('ref')!=workflow_ref or tag.get('object',{}).get('type')!='commit' or tag['object'].get('sha')!=head:
+                  raise SystemExit('Bootstrap immutable tag identity mismatch')
+          scopes=[];workflow=None
+          for sha in (base,head):
+              tree=api('git/trees/'+sha+'?recursive=1')
+              if tree.get('truncated') is not False:
+                  raise SystemExit('Source-only scope tree is truncated or incomplete')
+              scope=[]
+              for entry in tree['tree']:
+                  path=entry['path']
+                  if path in {'packages.json','.gitmodules','recipes','inputs','upstream','acceptance'} or path.startswith(('recipes/','inputs/','upstream/','acceptance/')):
+                      scope.append({key:entry[key] for key in ('path','mode','type','sha')})
+                  if sha==head and path=='.github/workflows/verification.yml':
+                      if entry['mode']!='100644' or entry['type']!='blob':
+                          raise SystemExit('Source-only workflow must be a regular Git blob')
+                      workflow=entry['sha']
+              scopes.append(sorted(scope,key=lambda entry:entry['path']))
+          if scopes[0]!=scopes[1] or not workflow or not any(entry['path']=='packages.json' for entry in scopes[0]):
+              raise SystemExit('Source-only unchanged package scope or workflow missing')
+          PY
+  source-validation:
+    needs: source-identity
+    name: Validate source PR ${{ inputs.pr_number }} head ${{ inputs.expected_head }} base ${{ inputs.expected_base }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+      statuses: write
+    steps:
+      - run: mkdir -p "$ARCH_WORK" "$TMPDIR"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.bootstrap && inputs.expected_head || inputs.expected_base }}
+          persist-credentials: false
+      - name: Verify exact authority and unchanged packages, then run isolated source tests
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_BASE: ${{ inputs.expected_base }}
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+        run: |
+          args=()
+          if [ "$BOOTSTRAP" = true ]; then args+=(--bootstrap); fi
+          python3 -m tools.source_review --pr "$PR_NUMBER" --base "$EXPECTED_BASE" --head "$EXPECTED_HEAD" --directory "$ARCH_WORK/evidence" "${args[@]}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-review-evidence-${{ github.run_attempt }}
+          path: ${{ env.ARCH_WORK }}/evidence/source-review-evidence.json
+          if-no-files-found: error
+          retention-days: 90
+  source-merge:
+    needs: source-validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+      statuses: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.bootstrap && inputs.expected_head || inputs.expected_base }}
+          persist-credentials: false
+      - name: Merge exact validated head through ordinary branch protection
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_BASE: ${{ inputs.expected_base }}
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+        run: |
+          args=()
+          if [ "$BOOTSTRAP" = true ]; then args+=(--bootstrap); fi
+          python3 -m tools.source_review --pr "$PR_NUMBER" --base "$EXPECTED_BASE" --head "$EXPECTED_HEAD" --finalize "${args[@]}"
   regression-tests:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -23,10 +168,10 @@ jobs:
         run: |
           set -euo pipefail
           image=$(cat build-image.txt)
-          container=$(docker create --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges "$image" /bin/bash -c 'pacman -Syu --noconfirm --needed -- python git gnupg && cd /verify && python -m unittest discover -s tests -p "test_*.py"')
+          container=$(docker create --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges --env TMPDIR=/verify/.work/tmp "$image" /bin/bash -c 'mkdir -p /verify/.work/tmp && pacman -Syu --noconfirm --needed -- python git gnupg && cd /verify && python -m unittest discover -s tests -p "test_*.py"')
           trap 'docker rm -f "$container" >/dev/null' EXIT
           mkdir -p .work/verification-root
-          cp -R tools tests build-image.txt .work/verification-root/
+          git archive "$GITHUB_SHA" | tar -x -C .work/verification-root
           docker cp .work/verification-root "$container:/verify"
           docker start -a "$container"
       - name: Report exact commit verification result

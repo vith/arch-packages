@@ -210,7 +210,7 @@ result=json.load(open('/evidence/cloudflare-speed.json'))
 for phase in ('download','upload'):
     n=result[phase]['mbps']
     if not math.isfinite(n) or n <= 0: raise SystemExit('real public network throughput missing: '+phase)
-latency=result['idle_latency']['p50_ms']
+latency=result['idle_latency']['median_ms']
 if latency is None or not math.isfinite(latency) or latency <= 0: raise SystemExit('real public network idle latency missing')
 text=open('/evidence/cloudflare-speed.txt').read()
 for phase in ('IdleLatency','Download','Upload'):
