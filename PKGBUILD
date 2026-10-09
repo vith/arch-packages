@@ -1,7 +1,7 @@
 # Adapted from the AUR swag source package.
 pkgname=swag
 pkgver=1.16.6
-pkgrel=1
+pkgrel=2
 pkgdesc='Generate Swagger 2.0 documentation for Go APIs'
 arch=('x86_64')
 url='https://github.com/swaggo/swag'
@@ -16,7 +16,7 @@ build() {
   cd "$srcdir/$pkgname-$pkgver"
   [[ $CARCH == x86_64 ]] || { error "Unsupported package target: $CARCH"; return 1; }
   # Match the Makefile's build command without its dependency-tidying target.
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1 \
+  CGO_ENABLED=0 GOAMD64=v1 \
     go build -mod=readonly -modcacherw -trimpath -buildmode=pie \
     -ldflags='-s -w' -o swag ./cmd/swag
 }
