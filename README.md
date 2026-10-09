@@ -97,6 +97,11 @@ they do not create another approval prompt. After validation succeeds, recipe PR
 merge automatically through the normal branch protections, with no separate merge
 approval. Merge commits preserve the reviewed and upstream histories.
 
+An unchanged source receipt with no open proposal PR is a no-op: automation leaves
+any retained proposal branch untouched and continues with other source updates.
+Changed proposals and refreshes of open PRs still require authenticated watcher
+ownership before automation can update or dispatch them.
+
 Only after authorization does each affected package execute its recipe and build
 in a disposable container without credentials or host mounts. Validation checks
 the resulting metadata and runtime behavior against the frozen inputs.
