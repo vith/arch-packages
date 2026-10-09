@@ -22,9 +22,10 @@ package contains a desktop entry rather than a compiled program. Carapace is
 compiled from Go source; `carapace-bin` is the upstream source repository's name,
 not a prebuilt package input.
 
-`oh-my-pi-vith-git` follows the fork's `integration` branch. Each validated build
-and signed snapshot records an exact source commit for reproducibility; that
-per-build pin does not permanently freeze future Git updates.
+`oh-my-pi-vith-git` follows the fork's `integration` branch. Updates resolve its
+current commit and derive the package version from that checkout. Each signed
+snapshot records the exact commit built; this is a per-build identity, not a
+permanent pin preventing later Git updates.
 
 The Google SDK recipe omits the unavailable `python-sentencepiece` build/test
 dependency. Upstream already excludes tokenizer tests; the optional runtime
@@ -115,11 +116,18 @@ gh workflow run update.yml --repo vith/arch-packages
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Each affected package builds in a separate hosted x86_64 workflow run. Documentation
-changes do not rebuild packages. Trusted release builds cache dependencies and
-compiler output; candidate builds do not read or write those caches. Publication
-reuses unchanged signed packages, including across CI-only changes. To rebuild a
-package with new tooling, bump its `pkgrel`.
+Each affected package builds in its own independent hosted x86_64 workflow run,
+using accepted-main worker tools without a per-worker environment approval.
+The parent dispatches those runs and collects verified outputs; it does not compile
+packages. Its live log links each discovered child run and reports state transitions,
+including queued, waiting and in-progress runs. Open a child run for live package
+build stdout; the same output remains in its build receipt. The meaningful human
+checkpoint stays on the exact non-mechanical PR diff, not on empty worker gates.
+
+Documentation changes do not rebuild packages. Trusted release builds cache
+dependencies and compiler output; candidate builds do not read or write those
+caches. Publication reuses unchanged signed packages, including across CI-only
+changes. To rebuild a package with new tooling, bump its `pkgrel`.
 
 Publication verifies packages, signs the snapshot and checks public downloads
 before updating `latest`. Older snapshots remain available. The manual

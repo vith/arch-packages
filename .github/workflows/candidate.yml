@@ -58,6 +58,7 @@ jobs:
           if-no-files-found: error
           retention-days: 2
   build:
+    name: Dispatch and collect independent package runs
     needs: prepare
     runs-on: ubuntu-latest
     permissions:

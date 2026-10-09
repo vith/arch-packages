@@ -170,7 +170,7 @@ def status(head,context,state,description):
 def run_candidate_tests(root, image):
     """Execute candidate tests only inside a disposable, credential-free container."""
     environment = {k: v for k, v in os.environ.items() if k in {'PATH', 'HOME', 'DOCKER_HOST', 'TMPDIR'}}
-    command = 'pacman -Syu --noconfirm --needed -- python python-yaml git gnupg && cd /verify && python -m unittest discover -s tests -p "test_*.py"'
+    command = 'pacman -Syu --noconfirm --needed -- python git gnupg && cd /verify && python -m unittest discover -s tests -p "test_*.py"'
     container = subprocess.check_output([
         'docker', 'create', '--cap-drop=ALL', '--cap-add=CHOWN',
         '--cap-add=DAC_OVERRIDE', '--cap-add=FOWNER', '--cap-add=SETUID',

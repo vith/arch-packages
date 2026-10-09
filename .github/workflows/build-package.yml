@@ -6,7 +6,7 @@ on:
       kind:
         description: Parent workflow type
         type: choice
-        options: [publication, candidate, reviewed-harness]
+        options: [publication, candidate]
         default: publication
       package:
         description: Package to build
@@ -25,61 +25,8 @@ permissions:
   contents: read
   actions: read
 jobs:
-  reviewed-package:
-    name: Protected reviewed package
-    if: github.ref == 'refs/heads/repair/frozen-git' && inputs.kind == 'reviewed-harness'
-    environment: code-review
-    runs-on: ubuntu-latest
-    timeout-minutes: 150
-    env:
-      WORK: /home/runner/.local/state/arch-packages/reviewed-build-${{ github.run_id }}-${{ github.run_attempt }}
-      TMPDIR: /home/runner/.local/state/arch-packages/reviewed-build-${{ github.run_id }}-${{ github.run_attempt }}/tmp
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: reviewed-harness-${{ inputs.publication_attempt }}
-          run-id: ${{ inputs.publication_run }}
-          github-token: ${{ github.token }}
-          path: ${{ env.WORK }}
-      - name: Install immutable workflow parser
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3-yaml
-      - name: Independently authorize reviewed H and reconstruct accepted C
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          PACKAGE: ${{ inputs.package }}
-          PUBLICATION: ${{ inputs.publication_run }}
-          ATTEMPT: ${{ inputs.publication_attempt }}
-        run: |
-          mkdir -p "$TMPDIR"
-          unset ARCH_BUILD_CACHE ARCH_PACKAGE_CACHE ARCH_NATIVE_CACHE
-          python3 -m tools.package_runs prepare "$WORK" --package "$PACKAGE" --publication-run "$PUBLICATION" --publication-attempt "$ATTEMPT" --kind reviewed-harness
-      - name: Build accepted frozen input without credentials or caches
-        run: |
-          unset ARCH_BUILD_CACHE ARCH_PACKAGE_CACHE ARCH_NATIVE_CACHE
-          tools/build.sh "$WORK/input/bundle.json" "$WORK/output"
-      - name: Pack unsigned outputs
-        run: |
-          python3 - <<'PY'
-          import os, pathlib, tarfile
-          work = pathlib.Path(os.environ['WORK'])
-          with tarfile.open(work / 'unsigned.tar', 'w') as archive:
-              for path in sorted((work / 'output').iterdir()):
-                  archive.add(path, arcname=path.name, recursive=False)
-          PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: reviewed-package-${{ inputs.package }}-${{ github.run_attempt }}
-          path: ${{ env.WORK }}/unsigned.tar
-          if-no-files-found: error
-          retention-days: 7
   package:
-    if: github.ref == 'refs/heads/main' && inputs.kind != 'reviewed-harness'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 150
     env:

@@ -2,6 +2,7 @@
 """Trusted native Arch harness; candidate recipes remain unprivileged data."""
 from __future__ import annotations
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -138,12 +139,26 @@ def dependency_names(srcinfo: str) -> list[str]:
     return sorted(dependencies)
 
 
-def run(argv, *, cwd=None, env=None):
-    return subprocess.run(argv, cwd=cwd, env=env, check=True, text=True, stdout=subprocess.PIPE).stdout
+def run(argv, *, cwd=None, env=None, stream=False):
+    if not stream:
+        return subprocess.run(argv, cwd=cwd, env=env, check=True, text=True, stdout=subprocess.PIPE).stdout
+    with subprocess.Popen(argv, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE) as process:
+        captured = io.BytesIO()
+        while chunk := process.stdout.buffer.read1(65536):
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+            captured.write(chunk)
+        returncode = process.wait()
+        captured.seek(0)
+        with io.TextIOWrapper(captured, encoding=process.stdout.encoding, errors=process.stdout.errors) as reader:
+            output = reader.read()
+        if returncode:
+            raise subprocess.CalledProcessError(returncode, argv, output=output)
+        return output
 
 
-def builder(argv, cwd, env):
-    return run(['setpriv', '--reuid=1000', '--regid=1000', '--clear-groups', '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', '--', *argv], cwd=cwd, env=env)
+def builder(argv, cwd, env, *, stream=False):
+    return run(['setpriv', '--reuid=1000', '--regid=1000', '--clear-groups', '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', '--', *argv], cwd=cwd, env=env, stream=stream)
 
 
 def readonly(root):
@@ -229,7 +244,7 @@ def build(path: Path, output: Path):
         digest = input_digest(recipe, package['lock'], package['policy'], bundle['image'], bundle['harness_sha'])
         if digest != package['input_digest']:
             raise ValueError('input digest mismatch')
-    run(['pacman', '-S', '--noconfirm', '--needed', '--', *sorted(dependencies)])
+    run(['pacman', '-S', '--noconfirm', '--needed', '--', *sorted(dependencies)], stream=True)
     # Image defaults are inherited; do not copy runner-specific tuning or replace OPTIONS.
     config = work / 'makepkg.conf'
     config.write_text('source /etc/makepkg.conf\nCARCH=x86_64\nPKGEXT=.pkg.tar.zst\nMAKEFLAGS="-j$(nproc)"\nOPTIONS=("${OPTIONS[@]/#debug/!debug}")\n_options=(); for _option in "${OPTIONS[@]}"; do [[ $_option == debug || $_option == !debug ]] || _options+=("$_option"); done\nOPTIONS=("${_options[@]}" !debug)\n')
@@ -262,7 +277,7 @@ def build(path: Path, output: Path):
         env = {'PATH': '/usr/bin', 'HOME': str(home), 'LANG': 'C.UTF-8', 'GOTOOLCHAIN': 'local', 'MAKEPKG_GIT_CONFIG': str(gitconfig), 'GIT_CONFIG_SYSTEM': str(gitconfig), 'GIT_CONFIG_GLOBAL': '/dev/null'}
         env.update(persistent_cache_env)
         command = ['makepkg', '--config', str(config)]
-        prepared_log = builder([*command, '--nobuild', '--noconfirm', '--cleanbuild'], directory, env)
+        prepared_log = builder([*command, '--nobuild', '--noconfirm', '--cleanbuild'], directory, env, stream=True)
         prepared = builder([*command, '--printsrcinfo'], directory, env)
         if prepared != (original / '.SRCINFO').read_text():
             raise ValueError(f'{name}: complete prepared .SRCINFO differs from accepted metadata')
@@ -279,7 +294,7 @@ def build(path: Path, output: Path):
             version_tuple = lambda value: tuple(int(x) for x in value.split('.')) + (0,) * (3-len(value.split('.')))
             if not requirement or not installed or version_tuple(installed[1]) < version_tuple(requirement[1]):
                 raise ValueError('installed Go does not meet carapace go.mod (GOTOOLCHAIN=local)')
-        build_log = builder([*command, '--noextract', '--noconfirm'], directory, env)
+        build_log = builder([*command, '--noextract', '--noconfirm'], directory, env, stream=True)
         if builder([*command, '--printsrcinfo'], directory, env) != prepared:
             raise ValueError('native metadata changed during build')
         files = []
