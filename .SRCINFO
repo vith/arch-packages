@@ -6,7 +6,7 @@ pkgbase = captiveportalautologin-vith-git
 	arch = any
 	license = unknown
 	makedepends = git
-	makedepends = java-environment>=17
+	makedepends = jdk17-openjdk
 	depends = java-runtime>=17
 	depends = networkmanager
 	depends = libnotify

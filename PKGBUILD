@@ -7,7 +7,7 @@ arch=('any')
 url='https://git.n3t.work/vith/CaptivePortalAutoLogin'
 license=('unknown')
 depends=('java-runtime>=17' 'networkmanager' 'libnotify')
-makedepends=('git' 'java-environment>=17')
+makedepends=('git' 'jdk17-openjdk')
 provides=('captiveportalautologin' 'captiveportalautologin-git')
 conflicts=('captiveportalautologin' 'captiveportalautologin-git')
 source=("git+${url}.git#branch=main"
@@ -22,7 +22,9 @@ pkgver() {
 
 build() {
   cd CaptivePortalAutoLogin
-  # JVM bytecode is architecture-independent; use the execution host's JDK.
+  # Use the native JDK matching the upstream Linux workflow and JVM target.
+  export JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+  export PATH="$JAVA_HOME/bin:$PATH"
   ./gradlew --no-daemon --max-workers="$(nproc)" :linux:shadowJar
 }
 
