@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -71,6 +72,43 @@ class SourceContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'version tag'):
             sources.frozen_ancestry_version(frozen,self.root/'ancestry/freeze.git',template)
 
+
+    def test_revision_count_uses_locked_full_history_without_remote_access(self):
+        sources.git('tag','-d','v1.0.0',cwd=self.repo)
+        frozen=self.freeze(self.root/'count-old')
+        rules={'derivation':'frozen-git-revision-count','template':r'^r[0-9]+\.[0-9a-f]{7,40}$'}
+        for value in ('second','third'):
+            (self.repo/'file').write_text(value)
+            sources.git('add','file',cwd=self.repo)
+            sources.git('commit','-m',value,cwd=self.repo)
+        self.head=sources.git('rev-parse','HEAD',cwd=self.repo)
+        advanced=self.freeze(self.root/'count-new')
+        git=sources.git
+        def offline_git(*args,**kwargs):
+            if args[0] in {'fetch','ls-remote','clone'}:
+                raise AssertionError('frozen derivation reached remote')
+            return git(*args,**kwargs)
+        with patch.object(sources,'git',offline_git):
+            self.assertEqual(sources._frozen_git_version(frozen,self.root/'count-old/freeze.git',rules),
+                             'r1.'+frozen['commit'][:7])
+            self.assertEqual(sources._frozen_git_version(advanced,self.root/'count-new/freeze.git',rules),
+                             'r3.'+advanced['commit'][:7])
+            advanced['commit']=frozen['commit']
+            with self.assertRaisesRegex(ValueError,'commit/ref mismatch'):
+                sources._frozen_git_version(advanced,self.root/'count-new/freeze.git',rules)
+
+    def test_revision_count_rejects_shallow_history(self):
+        sources.git('tag','-d','v1.0.0',cwd=self.repo)
+        (self.repo/'file').write_text('second')
+        sources.git('add','file',cwd=self.repo)
+        sources.git('commit','-m','second',cwd=self.repo)
+        self.head=sources.git('rev-parse','HEAD',cwd=self.repo)
+        frozen=self.freeze(self.root/'count-full')
+        shallow=self.root/'shallow.git'
+        sources.git('clone','--bare','--depth','1','--branch','integration',self.repo.as_uri(),shallow)
+        rules={'derivation':'frozen-git-revision-count','template':r'^r[0-9]+\.[0-9a-f]{7,40}$'}
+        with self.assertRaisesRegex(ValueError,'full Git history'):
+            sources._frozen_git_version(frozen,shallow,rules)
 
     def test_version_tag_context_changes_even_with_same_commit(self):
         frozen=self.freeze(self.root/'first')
@@ -225,6 +263,108 @@ class SourceContracts(unittest.TestCase):
                     result=subprocess.run(['bash','-c',script,'fixture',self.url,str(checkout)],cwd=self.root,env=env,check=True,capture_output=True,text=True)
                     expected=[live,live_tag,live] if mode=='old' and library else [self.head,tag,self.head]
                     self.assertEqual(result.stdout.splitlines(),expected)
+
+    def test_prefixed_tag_selection_orders_numeric_versions_and_rejects_retarget(self):
+        for tag in ('B5.0.1','B7','B10'):
+            sources.git('tag',tag,cwd=self.repo)
+        watcher={'kind':'tag','repository':'fixture/looking-glass','tag_pattern':r'^B([0-9]+(?:\.[0-9]+)*)$','version_prefix':'B'}
+        git=sources.git
+        def fixture_git(*args,**kwargs):
+            args=tuple(self.url if value=='https://github.com/fixture/looking-glass.git' else value for value in args)
+            return git(*args,**kwargs)
+        with patch.object(sources,'git',fixture_git):
+            dotted={**watcher,'tag_pattern':r'^B(5\.[0-9]+\.[0-9]+)$'}
+            self.assertEqual(sources.discover_release_tag(dotted,{})['version'],'B5.0.1')
+            self.assertEqual(sources.discover_release_tag({**dotted,'version_prefix':''},{})['version'],'5.0.1')
+            discovered=sources.discover_release_tag(watcher,{'tag':'B7','tag_object':self.head})
+            self.assertEqual((discovered['tag'],discovered['version']),('B10','B10'))
+            self.assertIsNone(sources.discover_release_tag(watcher,{'tag':'B10','tag_object':self.head}))
+            (self.repo/'file').write_text('retargeted')
+            git('add','file',cwd=self.repo);git('commit','-m','retarget',cwd=self.repo)
+            git('tag','-f','B10',cwd=self.repo)
+            with self.assertRaisesRegex(ValueError,'retargeted or missing'):
+                sources.discover_release_tag(watcher,{'tag':'B10','tag_object':self.head})
+
+    def test_prefixed_tag_grammar_rejects_invalid_prefix_and_nonnumeric_capture(self):
+        watcher={'kind':'tag','repository':'fixture/looking-glass','tag_pattern':r'^B([0-9]+(?:\.[0-9]+)*)$'}
+        for prefix in ('B7','B-','B'*17,None):
+            with self.subTest(prefix=prefix),self.assertRaisesRegex(ValueError,'version prefix'):
+                sources.discover_release_tag({**watcher,'version_prefix':prefix},{})
+        sources.git('tag','Bbad',cwd=self.repo)
+        git=sources.git
+        def fixture_git(*args,**kwargs):
+            args=tuple(self.url if value=='https://github.com/fixture/looking-glass.git' else value for value in args)
+            return git(*args,**kwargs)
+        with patch.object(sources,'git',fixture_git),self.assertRaisesRegex(ValueError,'numeric version groups'):
+            sources.discover_release_tag({**watcher,'version_prefix':'B','tag_pattern':r'^B(.+)$'},{})
+
+    def test_artifact_projection_preserves_full_native_alias_and_default_versions(self):
+        enrolled={'version_projection':{'pattern':r'^(?P<release>[0-9]+\.[0-9]+\.[0-9]+)\.(?P<build>[0-9]+)$','template':'{release}-{build}'}}
+        template='virtio-win-{version}.iso::https://example.invalid/{artifact_version}/virtio-win.iso'
+        self.assertEqual(sources.format_source_template(enrolled,template,'0.1.302.1'),
+                         'virtio-win-0.1.302.1.iso::https://example.invalid/0.1.302-1/virtio-win.iso')
+        self.assertEqual(sources.format_source_template({},'archive-{version}.tar.gz','1.2.3'),'archive-1.2.3.tar.gz')
+
+    def test_artifact_projection_rejects_mismatch_and_unsafe_or_unnamed_fields(self):
+        projection={'pattern':r'^(?P<release>[0-9]+\.[0-9]+\.[0-9]+)\.(?P<build>[0-9]+)$','template':'{release}-{build}'}
+        with self.assertRaisesRegex(ValueError,'projection mismatch'):
+            sources.format_source_template({'version_projection':projection},'{artifact_version}','0.1.302')
+        invalid=(
+            {**projection,'pattern':r'^([0-9]+)\.(?P<release>.+)$'},
+            {**projection,'template':'{release}/{build}'},
+            {**projection,'template':'{release}@{build}'},
+            {**projection,'template':'{release.__class__}'},
+            {**projection,'template':'{missing}'},
+            {**projection,'template':'{release!r}'},
+            {**projection,'template':'x'*129},
+            {**projection,'pattern':'['},
+        )
+        for candidate in invalid:
+            with self.subTest(projection=candidate),self.assertRaises(ValueError):
+                sources.format_source_template({'version_projection':candidate},'{artifact_version}','0.1.302.1')
+
+    def test_release_asset_templates_select_per_source_and_reject_unsafe_names(self):
+        watcher={'source_id':'primary','asset':'legacy.zip','asset_templates':{'primary':'fresh-{version}-source.tar.gz','related':'fonts.zip'}}
+        self.assertEqual(sources.release_asset_name(watcher,'1.2.3'),'fresh-1.2.3-source.tar.gz')
+        self.assertEqual(sources.release_asset_name(watcher,'1.2.3','related'),'fonts.zip')
+        self.assertEqual(sources.release_asset_name({'asset':'legacy.zip'},'1.2.3'),'legacy.zip')
+        with self.assertRaisesRegex(ValueError,'lacks enrolled asset'):
+            sources.release_asset_name(watcher,'1.2.3','missing')
+        for template in ('../{version}.zip','a/{version}.zip','{version}@host','{version.__class__}','{unknown}','x'*256):
+            with self.subTest(template=template),self.assertRaises(ValueError):
+                sources.release_asset_name({'source_id':'primary','asset_templates':{'primary':template}},'1.2.3')
+
+    def test_release_discovery_authenticates_versioned_and_related_assets(self):
+        release={'id':42,'tag_name':'v1.0.0','draft':False,'prerelease':False,
+                 'assets':[{'id':101,'name':'fresh-1.0.0-source.tar.gz'},{'id':102,'name':'fonts.zip'}]}
+        payload=self.root/'releases.json';payload.write_text(json.dumps([release]))
+        watcher={'kind':'release','repository':'fixture/releases','source_id':'primary',
+                 'related_source_ids':['related','license-archive'],
+                 'asset_templates':{'primary':'fresh-{version}-source.tar.gz','related':'fonts.zip'}}
+        git=sources.git;fetch=sources.fetch
+        def fixture_git(*args,**kwargs):
+            args=tuple(self.url if value=='https://github.com/fixture/releases.git' else value for value in args)
+            return git(*args,**kwargs)
+        def fixture_fetch(url,destination=None):
+            self.assertEqual(url,'https://api.github.com/repos/fixture/releases/releases?per_page=100')
+            return fetch(payload.as_uri(),destination)
+        with patch.object(sources,'public_url',lambda value:value),patch.object(sources,'git',fixture_git),patch.object(sources,'fetch',fixture_fetch):
+            selected=sources.discover_release_tag(watcher,{})
+            self.assertEqual((selected['version'],selected['release_id']),('1.0.0',42))
+            accepted={'tag':'v1.0.0','tag_object':self.head,'release_id':42,'asset_id':101}
+            self.assertIsNone(sources.discover_release_tag(watcher,accepted))
+            replaced=json.loads(json.dumps(release));replaced['assets'][0]['id']=999
+            payload.write_text(json.dumps([replaced]))
+            with self.assertRaisesRegex(ValueError,'replaced or missing'):
+                sources.discover_release_tag(watcher,accepted)
+            for assets in ([release['assets'][0]],release['assets']+[release['assets'][1]]):
+                payload.write_text(json.dumps([{**release,'assets':assets}]))
+                with self.assertRaisesRegex(ValueError,'missing or duplicated'):
+                    sources.discover_release_tag(watcher,{})
+            payload.write_text(json.dumps([release]))
+            same={**watcher,'asset_templates':{'primary':'fonts.zip','related':'fonts.zip'}}
+            with self.assertRaisesRegex(ValueError,'share an enrolled asset'):
+                sources.discover_release_tag(same,{})
 
     def test_public_sources_reject_credentials_and_localhost(self):
         for url in ['http://github.com/a/b','https://user:secret@github.com/a/b','https://localhost/repo.git']:

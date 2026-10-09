@@ -229,7 +229,7 @@ def previous_catalog(url, work, ring):
 
 def latest_release():
     try:
-        release = github_api.api(f'repos/{REPOSITORY}/releases/latest', authenticated=False)
+        release = github_api.api(f'repos/{REPOSITORY}/releases/latest', authenticated=bool(os.environ.get('GITHUB_TOKEN')))
     except github_api.GitHubError as error:
         if error.status == 404:
             return None

@@ -135,7 +135,8 @@ def dependency_names(srcinfo: str) -> list[str]:
             name = re.split(r'[<>=]', value, maxsplit=1)[0]
             if not re.fullmatch(r'[a-zA-Z0-9@._+-]+', name) or name.startswith('-'):
                 raise ValueError('unsafe dependency name')
-            dependencies.add(name)
+            if key not in ('depends', 'depends_x86_64') or name not in info['names']:
+                dependencies.add(name)
     return sorted(dependencies)
 
 
@@ -267,6 +268,8 @@ def build(path: Path, output: Path):
         digest = input_digest(recipe, package['lock'], package['policy'], bundle['image'], bundle['harness_sha'])
         if digest != package['input_digest']:
             raise ValueError('input digest mismatch')
+    from tools.dependency_repo import configure
+    configure(Path(__file__).resolve().parent.parent, work, run)
     run(['pacman', '-S', '--noconfirm', '--needed', '--', *sorted(dependencies)], stream=True)
     # Image defaults are inherited; do not copy runner-specific tuning or replace OPTIONS.
     config = work / 'makepkg.conf'

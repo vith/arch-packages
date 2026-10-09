@@ -104,7 +104,8 @@ def tree_manifest(directory):
 def harness_digest(root):
     root = Path(root)
     files = ["tools/build.sh", "tools/native.py", "tools/sources.py",
-             "tools/recipe_gate.py", "tools/github_api.py"]
+             "tools/recipe_gate.py", "tools/github_api.py",
+             "tools/dependency_repo.py", "keys/arch-packages.asc", "keys/n3t.asc"]
     manifest = []
     for name in files:
         path = root / name
@@ -206,6 +207,15 @@ def needs_pkgbuild_review(old_dir, new_dir, policy):
         return True
 
 
+def _own_runtime_equality_transition(key, old_value, new_value, old_meta, new_meta):
+    if key not in {"depends", "depends_x86_64"}:
+        return False
+    target, separator, _ = old_value.partition("=")
+    return (bool(separator) and target in old_meta["names"] and target in new_meta["names"]
+            and old_value == target + "=" + old_meta["version"]
+            and new_value == target + "=" + new_meta["version"])
+
+
 def verify_automatic_recipe(old_dir, new_dir, policy, oldlock, newlock, transition):
     """Authenticate trivial/unchanged code without relaxing mechanical policy."""
     if needs_pkgbuild_review(old_dir, new_dir, policy):
@@ -266,6 +276,8 @@ def verify_automatic_recipe(old_dir, new_dir, policy, oldlock, newlock, transiti
             continue
         if (key == "source" or key.startswith("source_")) and remote_changed and transition.get("source_templates_verified"):
             continue
+        if _own_runtime_equality_transition(key, previous[2], value, old_meta, new_meta):
+            continue
         raise ValueError("automatic unaffected metadata changed: " + key)
     return True
 
@@ -325,7 +337,8 @@ def classify_recipe_update(old_dir, new_dir, policy):
         if rendered != new_text:
             return verdict("manual", "unenrolled recipe bytes changed")
         # Native probe binds all proposed expanded source/checksum values. Only
-        # version and explicitly mapped source/checksum fields may differ;
+        # version, exact own-output runtime equalities and explicitly mapped
+        # source/checksum fields may differ;
         # retain original order, scope, unknown keys and every other field.
         if len(old_meta["fields"]) != len(new_meta["fields"]):
             return verdict("manual", "metadata layout changed")
@@ -341,6 +354,8 @@ def classify_recipe_update(old_dir, new_dir, policy):
                     return verdict("manual", "expanded source transition unenrolled")
             elif ok in allowed:
                 # Full independently generated metadata already equals proposal.
+                continue
+            elif _own_runtime_equality_transition(ok, ov, nv, old_meta, new_meta):
                 continue
             else:
                 return verdict("manual", "unaffected/unknown metadata changed: " + ok)
