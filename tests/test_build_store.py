@@ -177,17 +177,34 @@ class DurableBuildStore(unittest.TestCase):
                 api.assert_not_called()
 
     def test_api_redirect_never_forwards_token_to_storage(self):
-        response = io.BytesIO(b'API redirect body')
-        error = urllib.error.HTTPError('https://api.github.com/asset', 302, 'Found', {'Location': 'https://storage.example/archive'}, response)
-        opener = Mock()
-        opener.open.side_effect = error
-        def download(url, destination, maximum):
-            self.assertTrue(response.closed)
-            return ROOT / 'download'
-        with patch('tools.build_store.urllib.request.build_opener', return_value=opener), patch(
-                'tools.build_store.github_api.download', side_effect=download) as anonymous:
-            build_store.download_asset('vith/arch-packages', 22, ROOT / 'download', 100)
-            anonymous.assert_called_once_with('https://storage.example/archive', ROOT / 'download', maximum=100)
+        for accept in ('application/octet-stream', 'application/vnd.github+json'):
+            with self.subTest(accept=accept), tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+                response = io.BytesIO(b'API redirect body')
+                error = urllib.error.HTTPError('https://api.github.com/asset', 302, 'Found',
+                                               {'Location': 'https://storage.example/archive'}, response)
+                opener = Mock()
+                opener.open.side_effect = error
+                storage = io.BytesIO(b'original storage bytes')
+                storage.url = 'https://storage.example/archive'
+                def download(request, timeout):
+                    self.assertTrue(response.closed)
+                    self.assertEqual(request.full_url, storage.url)
+                    self.assertIsNone(request.get_header('Authorization'))
+                    self.assertIsNone(request.get_header('Accept'))
+                    return storage
+                with patch('tools.build_store.urllib.request.build_opener', return_value=opener), patch(
+                        'tools.build_store.github_api.urllib.request.urlopen', side_effect=download):
+                    destination = Path(temporary) / 'download'
+                    if accept == 'application/octet-stream':
+                        build_store.download_asset('vith/arch-packages', 22, destination, 100)
+                    else:
+                        build_store.download_api('repos/vith/arch-packages/actions/artifacts/99/zip',
+                                                 destination, 100, accept=accept)
+                self.assertEqual(destination.read_bytes(), b'original storage bytes')
+                self.assertTrue(storage.closed)
+                request = opener.open.call_args.args[0]
+                self.assertEqual(request.get_header('Authorization'), 'Bearer fixture-token')
+                self.assertEqual(request.get_header('Accept'), accept)
         self.assertIsNone(build_store.AssetAPIRedirect().redirect_request(None, None, 302, 'Found', {}, 'https://storage.example'))
 
     def test_failed_or_malformed_asset_api_response_always_closes_before_raising(self):

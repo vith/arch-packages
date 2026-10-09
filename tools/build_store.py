@@ -183,15 +183,15 @@ class AssetAPIRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def download_asset(repository, asset_id, destination, maximum):
-    return download_api(f'repos/{repository}/releases/assets/{int(asset_id)}', destination, maximum)
+    return download_api(f'repos/{repository}/releases/assets/{int(asset_id)}', destination, maximum, accept='application/octet-stream')
 
 
-def download_api(endpoint, destination, maximum):
+def download_api(endpoint, destination, maximum, *, accept):
     """Authenticate only the API hop; never forward credentials to storage redirects."""
     if '://' in endpoint or endpoint.startswith('/'):
         raise ValueError('relative GitHub binary endpoint required')
     url = github_api.API + '/' + endpoint
-    request = urllib.request.Request(url, headers={'Accept': 'application/octet-stream', 'Authorization': 'Bearer ' + os.environ['GITHUB_TOKEN'], 'User-Agent': 'arch-packages'})
+    request = urllib.request.Request(url, headers={'Accept': accept, 'Authorization': 'Bearer ' + os.environ['GITHUB_TOKEN'], 'User-Agent': 'arch-packages'})
     opener = urllib.request.build_opener(AssetAPIRedirect())
     try:
         response = opener.open(request, timeout=120)
