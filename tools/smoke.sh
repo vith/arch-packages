@@ -120,7 +120,7 @@ for name in sorted(names):
     print(expected['pacman_repository']+'/'+name)
 PY
 mapfile -t targets < /evidence/targets.txt
-pacman --config /fresh/pacman.conf -S --noconfirm -- base python util-linux tmux desktop-file-utils binutils ca-certificates man-db zip unzip libarchive "${dependency_targets[@]}" "${targets[@]}"
+pacman --config /fresh/pacman.conf -S --noconfirm -- base python util-linux tmux desktop-file-utils binutils ca-certificates man-db zip unzip "${dependency_targets[@]}" "${targets[@]}"
 # Resolver configuration is the only host configuration copied into the disposable root.
 mkdir -p /fresh/root/etc /fresh/root/fresh/home /fresh/root/fresh/config /fresh/root/fresh/data /fresh/root/fresh/runtime
 cp /etc/resolv.conf /fresh/root/etc/resolv.conf
@@ -325,7 +325,7 @@ groups={
     'sentencepiece': {'sentencepiece','python-sentencepiece'}, 'surge-cli': {'surge'},
 }
 single=('pi','podcheck','spotify-adblock','spotify-remove-ad-banner','ttf-ioskeley-mono',
-        'ttf-ioskeley-mono-unhinted','vet','virtio-win','airgorah','asleap',
+        'ttf-ioskeley-mono-unhinted','vet','airgorah','asleap',
         'computer-use-linux','i915ovmf','mdevctl','microsandbox',
         'captiveportalautologin-vith-git','carapace-spec','crush','fresh-editor','prek','swag','zig0.15')
 groups.update({n:{n} for n in single})

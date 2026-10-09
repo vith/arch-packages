@@ -245,10 +245,10 @@ def validate_source_policy(lock,policy):
             if not ref or source['ref']!=ref:
                 raise ValueError('frozen ref differs from native source')
         template=enrolled['source_template']
-        if sources.format_source_template(enrolled,template,pkgver)!=source['source']:
+        if template.format(version=pkgver)!=source['source']:
             raise ValueError('source native template mismatch')
         url=enrolled.get('url_template')
-        if url and sources.format_source_template(enrolled,url,pkgver)!=source['url']:
+        if url and url.format(version=pkgver)!=source['url']:
             raise ValueError('source URL template mismatch')
     return lock
 
@@ -410,7 +410,7 @@ def _verify_provenance(old,new,lock,policy,verify_tag,verify_aur,watcher_id=None
             if not match:
                 raise ValueError('source lacks authentic enrolled tag')
             version=sources._version_prefix(previous)+(match[1] if len(match.groups())==1 else '.'.join(match.groups()))
-            if source['source']!=sources.format_source_template(expected,expected['source_template'],version):
+            if source['source']!=expected['source_template'].format(version=version):
                 raise ValueError('source lock and watcher tag disagree')
         changed.append(previous['id'])
         allowed={'accepted_tag','accepted_tag_object','accepted_peeled_commit','release_id','asset_id'}
@@ -432,7 +432,7 @@ def _verify_provenance(old,new,lock,policy,verify_tag,verify_aur,watcher_id=None
                         raise ValueError('release sources share an enrolled asset')
                     identities.add(related['asset_id']);names.add(name)
                     enrolled=next(s for s in policy['sources'] if s['id']==source_id)
-                    if related['source']!=sources.format_source_template(enrolled,enrolled['source_template'],version):
+                    if related['source']!=enrolled['source_template'].format(version=version):
                         raise ValueError('related source lock and watcher tag disagree')
                     verify_tag(previous,current,related)
     if old['aur']!=new['aur']:
@@ -808,7 +808,7 @@ def _static_metadata(recipe,lock,policy,work,preserve_pkgrel,ancestry_version):
         replacements={}
         for source in frozen:
             enrolled=next(s for s in policy['sources'] if s['id']==source['id'])
-            old=sources.format_source_template(enrolled,enrolled['source_template'],metadata['pkgver'])
+            old=enrolled['source_template'].format(version=metadata['pkgver'])
             if native.count(old)!=1:
                 raise ValueError('static source layout differs from enrollment')
             replacements[old]=source['source']
@@ -942,13 +942,13 @@ def align_aur_lock(recipe,lock,policy,work):
         enrolled=next(s for s in policy['sources'] if s['id']==source['id'])
         algorithm=enrolled['checksum_algorithm']
         values=[v for _,key,v in metadata['fields'] if key in {algorithm+'sums',algorithm+'sums_x86_64'}]
-        expanded=sources.format_source_template(enrolled,enrolled['source_template'],version)
+        expanded=enrolled['source_template'].format(version=version)
         native=[v for _,key,v in metadata['fields'] if key in {'source','source_x86_64'}]
         if expanded not in native:
             raise ValueError('AUR integration changed unenrolled native source layout')
         old=dict(source)
         source['source']=expanded
-        source['url']=sources.format_source_template(enrolled,enrolled['url_template'],version) if enrolled.get('url_template') else None
+        source['url']=enrolled['url_template'].format(version=version) if enrolled.get('url_template') else None
         source['checksums'][algorithm]=values[enrolled['checksum_index']]
         if source['kind']=='git' and source['source']!=old['source']:
             kind,ref=expanded.split('#',1)[1].split('=',1)
@@ -1079,9 +1079,9 @@ def bootstrap(output):
         version=metadata['pkgver']
         records=[]
         for enrolled in policy['sources']:
-            native=sources.format_source_template(enrolled,enrolled['source_template'],version)
+            native=enrolled['source_template'].format(version=version)
             url=enrolled.get('url_template')
-            url=sources.format_source_template(enrolled,url,version) if url else None
+            url=url.format(version=version) if url else None
             algorithm=enrolled['checksum_algorithm']
             field=algorithm+'sums'
             values=[v for _,key,v in metadata['fields'] if key==field or key==field+'_x86_64']
@@ -1163,8 +1163,8 @@ def discover(output):
                     if source['id'] not in ids:
                         continue
                     enrolled=next(s for s in policy['sources'] if s['id']==source['id'])
-                    source['source']=sources.format_source_template(enrolled,enrolled['source_template'],version)
-                    source['url']=sources.format_source_template(enrolled,enrolled['url_template'],version)
+                    source['source']=enrolled['source_template'].format(version=version)
+                    source['url']=enrolled['url_template'].format(version=version)
                     if source['kind']=='git':
                         source['ref']=transition['ref'] if 'ref' in transition else 'refs/tags/'+transition['tag']
                         source['commit']=transition.get('commit');source['tag_object']=None;source['peeled_commit']=None

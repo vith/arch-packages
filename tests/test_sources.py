@@ -298,31 +298,6 @@ class SourceContracts(unittest.TestCase):
         with patch.object(sources,'git',fixture_git),self.assertRaisesRegex(ValueError,'numeric version groups'):
             sources.discover_release_tag({**watcher,'version_prefix':'B','tag_pattern':r'^B(.+)$'},{})
 
-    def test_artifact_projection_preserves_full_native_alias_and_default_versions(self):
-        enrolled={'version_projection':{'pattern':r'^(?P<release>[0-9]+\.[0-9]+\.[0-9]+)\.(?P<build>[0-9]+)$','template':'{release}-{build}'}}
-        template='virtio-win-{version}.iso::https://example.invalid/{artifact_version}/virtio-win.iso'
-        self.assertEqual(sources.format_source_template(enrolled,template,'0.1.302.1'),
-                         'virtio-win-0.1.302.1.iso::https://example.invalid/0.1.302-1/virtio-win.iso')
-        self.assertEqual(sources.format_source_template({},'archive-{version}.tar.gz','1.2.3'),'archive-1.2.3.tar.gz')
-
-    def test_artifact_projection_rejects_mismatch_and_unsafe_or_unnamed_fields(self):
-        projection={'pattern':r'^(?P<release>[0-9]+\.[0-9]+\.[0-9]+)\.(?P<build>[0-9]+)$','template':'{release}-{build}'}
-        with self.assertRaisesRegex(ValueError,'projection mismatch'):
-            sources.format_source_template({'version_projection':projection},'{artifact_version}','0.1.302')
-        invalid=(
-            {**projection,'pattern':r'^([0-9]+)\.(?P<release>.+)$'},
-            {**projection,'template':'{release}/{build}'},
-            {**projection,'template':'{release}@{build}'},
-            {**projection,'template':'{release.__class__}'},
-            {**projection,'template':'{missing}'},
-            {**projection,'template':'{release!r}'},
-            {**projection,'template':'x'*129},
-            {**projection,'pattern':'['},
-        )
-        for candidate in invalid:
-            with self.subTest(projection=candidate),self.assertRaises(ValueError):
-                sources.format_source_template({'version_projection':candidate},'{artifact_version}','0.1.302.1')
-
     def test_release_asset_templates_select_per_source_and_reject_unsafe_names(self):
         watcher={'source_id':'primary','asset':'legacy.zip','asset_templates':{'primary':'fresh-{version}-source.tar.gz','related':'fonts.zip'}}
         self.assertEqual(sources.release_asset_name(watcher,'1.2.3'),'fresh-1.2.3-source.tar.gz')

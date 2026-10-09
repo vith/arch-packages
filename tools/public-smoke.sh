@@ -389,48 +389,6 @@ zig-0.15 build-exe factorial.zig -target x86_64-linux-musl -lc -O Debug -femit-b
 test "$(./factorial)" = 'factorial(6)=720'
 
 ;;
-  virtio-win)
-python - <<'PY'
-import hashlib,json,pathlib,struct,subprocess,urllib.parse
-package=next(p for p in json.load(open('/expected.json'))['packages'] if p['pkgbase']=='virtio-win')
-sources=package['source_lock']['sources']
-iso_source=next(s for s in sources if s['id']=='virtio-win-iso')
-iso=pathlib.Path('/var/lib/libvirt/images/virtio-win.iso')
-def digest(path):
-    with path.open('rb') as file:
-        return hashlib.file_digest(file,'sha256').hexdigest()
-assert digest(iso)==iso_source['checksums']['sha256']
-members=subprocess.check_output(['bsdtar','-tf',str(iso)],text=True).splitlines()
-# The other viostor paths are ISO hardlink aliases: extract the physical first files.
-required={'amd64/w11/viostor.inf','amd64/w11/viostor.sys',
-          'guest-agent/qemu-ga-x86_64.msi','virtio-win_license.txt'}
-assert required <= set(members), required-set(members)
-def content(member):
-    return subprocess.check_output(['bsdtar','-xOf',str(iso),member])
-inf=content('amd64/w11/viostor.inf')
-text=inf.decode('utf-16' if inf.startswith((b'\xff\xfe',b'\xfe\xff')) else 'utf-8-sig')
-assert 'PCI\\VEN_1AF4' in text.upper()
-driver=content('amd64/w11/viostor.sys')
-assert driver[:2]==b'MZ'
-pe=struct.unpack_from('<I',driver,60)[0]
-assert driver[pe:pe+4]==b'PE\0\0'
-assert struct.unpack_from('<H',driver,pe+4)[0]==0x8664
-assert content('guest-agent/qemu-ga-x86_64.msi')[:8]==bytes.fromhex('d0cf11e0a1b11ae1')
-source=next(s for s in sources if s['id']=='virtio-win-source-rpm')
-# The installed original SRPM filename is the upstream basename, not the recipe alias.
-filename=urllib.parse.urlsplit(source['url']).path.rsplit('/',1)[-1]
-srpm=pathlib.Path('/usr/share/doc/virtio-win/sources')/filename
-assert digest(srpm)==source['checksums']['sha256']
-source_members=subprocess.check_output(['bsdtar','-tf',str(srpm)],text=True).splitlines()
-assert 'mingw-qemu-ga-win-110.2.3-2.el10.src.rpm' in source_members
-pathlib.Path('iso-members.txt').write_text('\n'.join(members)+'\n')
-pathlib.Path('srpm-members.txt').write_text('\n'.join(source_members)+'\n')
-pathlib.Path('viostor.inf').write_text(text)
-license_bytes=content('virtio-win_license.txt')
-assert license_bytes==pathlib.Path('/usr/share/licenses/virtio-win/virtio-win_license.txt').read_bytes()
-pathlib.Path('virtio-win_license.txt').write_bytes(license_bytes)
-PY
-;;
   microsandbox)
 python - <<'PY'
 import hashlib,json,os,pathlib,re,subprocess
@@ -472,7 +430,6 @@ case "$name" in
   fresh-editor) echo 'Scope: safe offline config load/show only; no interactive TUI editing exercised.' ;;
   looking-glass) echo 'Scope: pre-run config rejection, DKMS source and OBS exported symbols; no graphical rendering, VM transport, OBS launch or module build/load.' ;;
   i915ovmf) echo 'Scope: PCI/EFI option-ROM and AMD64 PE loader structure; no Intel GPU passthrough or firmware execution.' ;;
-  virtio-win) echo 'Scope: ISO driver/source/license content; no Windows VM boot or driver installation.' ;;
   microsandbox) echo 'Scope: genuine separately verified runtime doctor and fail-closed configuration; missing KVM is expected, no VM or image boot.' ;;
   ttf-ioskeley-mono|ttf-ioskeley-mono-unhinted) echo 'Scope: TrueType data, family and hint-table invariants; no GUI rendering.' ;;
   pi) echo 'Scope: installed offline CLI argument parser; no provider request or interactive session.' ;;

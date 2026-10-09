@@ -9,7 +9,7 @@ import string
 import subprocess
 import urllib.request
 
-MAXIMUM = 1073741824
+MAXIMUM = 805306368
 FIELDS = {'id','kind','source','url','ref','commit','tag_object','peeled_commit','release_id','asset_id','checksums','git_context'}
 HEX = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$')
 
@@ -26,35 +26,6 @@ def _format_version_fields(template, values):
             raise ValueError('unsupported source version template field')
     return template.format_map(values)
 
-
-def format_source_template(enrolled, template, version):
-    """Retain native pkgver while projecting an enrolled artifact directory."""
-    artifact=version
-    if 'version_projection' in enrolled:
-        projection=enrolled['version_projection']
-        if not isinstance(projection,dict) or set(projection)!={'pattern','template'}:
-            raise ValueError('invalid source version projection')
-        pattern=projection['pattern']
-        if not isinstance(pattern,str) or not 1<=len(pattern)<=1024:
-            raise ValueError('invalid source version projection pattern')
-        if not isinstance(version,str) or not re.fullmatch(r'[A-Za-z0-9.+_]{1,128}',version):
-            raise ValueError('invalid source projection version')
-        try:
-            grammar=re.compile(pattern)
-        except re.error as error:
-            raise ValueError('invalid source version projection pattern') from error
-        if not grammar.groupindex or grammar.groups!=len(grammar.groupindex):
-            raise ValueError('source projection requires named captures only')
-        matched=grammar.fullmatch(version)
-        if matched is None or any(value is None for value in matched.groupdict().values()):
-            raise ValueError('source version projection mismatch')
-        projection_template=projection['template']
-        if not isinstance(projection_template,str) or not 1<=len(projection_template)<=256:
-            raise ValueError('invalid source version projection template')
-        artifact=_format_version_fields(projection_template,matched.groupdict())
-        if not re.fullmatch(r'[A-Za-z0-9.+_-]{1,128}',artifact):
-            raise ValueError('invalid projected artifact version')
-    return _format_version_fields(template,{'version':version,'artifact_version':artifact})
 
 
 def public_url(url):

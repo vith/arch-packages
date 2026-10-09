@@ -207,45 +207,6 @@ class CandidateBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'watcher policy changed'):
             update.verify_provenance(old,changed,lock,policy)
 
-    def test_projected_aur_artifact_url_preserves_native_version_and_rejects_lock_tamper(self):
-        artifact=self.root/'upstream/0.1.302-1/virtio-win.iso'
-        artifact.parent.mkdir(parents=True);artifact.write_bytes(b'authenticated ISO fixture')
-        digest=hashlib.sha256(artifact.read_bytes()).hexdigest()
-        url_template=(self.root/'upstream').as_uri()+'/{artifact_version}/virtio-win.iso'
-        source_template='virtio-win-{version}.iso::'+url_template
-        enrollment={'id':'iso','kind':'archive','source_template':source_template,'url_template':url_template,
-                    'checksum_algorithm':'sha256','checksum_index':0,
-                    'version_projection':{'pattern':r'^(?P<release>[0-9]+\.[0-9]+\.[0-9]+)\.(?P<build>[0-9]+)$','template':'{release}-{build}'}}
-        policy={'sources':[enrollment]}
-        native='virtio-win-0.1.302.1.iso::'+artifact.as_uri()
-        recipe=self.root/'projected-recipe';recipe.mkdir()
-        (recipe/'PKGBUILD').write_text('pkgver=0.1.302.1\npkgrel=1\n')
-        claims='pkgbase = example\n\tpkgver = 0.1.302.1\n\tpkgrel = 1\n\tepoch = 2\n\tarch = x86_64\n\tsource = '+native+'\n\tsha256sums = '+digest+'\npkgname = example\n'
-        (recipe/'.SRCINFO').write_text(claims)
-        source={key:None for key in update.sources.FIELDS}
-        source.update(id='iso',kind='archive',source='old.iso',url='https://example.invalid/old.iso',checksums={'sha256':'a'*64})
-        lock={'schema':1,'version':'2:0.1.301.1-1','sources':[source]}
-        with patch.object(update.sources,'public_url',lambda value:value):
-            aligned=update.align_aur_lock(recipe,lock,policy,self.root/'projected-work')
-            lock['version']=aligned['version']
-            update.validate_source_policy(lock,policy)
-            metadata=update.frozen_metadata(recipe,lock,policy,self.root/'projected-frozen',preserve_pkgrel=True)
-            self.assertEqual(metadata['version'],'2:0.1.302.1-1')
-            self.assertEqual(metadata['srcinfo'],claims)
-            self.assertEqual(source['url'],artifact.as_uri())
-            self.assertEqual(source['source'],native)
-            for mutation in ('alias','url','version'):
-                with self.subTest(mutation=mutation):
-                    wrong=copy.deepcopy(lock)
-                    if mutation=='alias':
-                        wrong['sources'][0]['source']=native.replace('virtio-win-0.1.302.1.iso::','virtio-win-0.1.302-1.iso::')
-                    elif mutation=='url':
-                        wrong['sources'][0]['url']=artifact.as_uri().replace('0.1.302-1','0.1.302.1')
-                    else:
-                        wrong['version']='2:0.1.302-1'
-                    with self.assertRaises(ValueError):
-                        update.validate_source_policy(wrong,policy)
-
     def test_grouped_release_provenance_authenticates_each_asset_without_primary_reuse(self):
         git=update.sources.git
         remote=self.root/'grouped-release';git('init',remote)
