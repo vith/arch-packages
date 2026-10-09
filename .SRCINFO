@@ -1,7 +1,7 @@
 pkgbase = zig0.15
 	pkgdesc = General-purpose programming language and toolchain for maintaining robust, optimal, and reusable software
 	pkgver = 0.15.2
-	pkgrel = 2
+	pkgrel = 3
 	url = https://ziglang.org
 	arch = x86_64
 	license = MIT
@@ -19,8 +19,8 @@ pkgbase = zig0.15
 	options = !strip
 	options = !debug
 	source = https://ziglang.org/download/0.15.2/zig-bootstrap-0.15.2.tar.xz
-	source = https://ziglang.org/download/0.15.2/zig-aarch64-linux-0.15.2.tar.xz
+	source = https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz
 	sha256sums = a6845459501df3c3264ebc587b02a7094ad14f4f3f7287c48f04457e784d0d85
-	sha256sums = 958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f
+	sha256sums = 02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239
 
 pkgname = zig0.15
