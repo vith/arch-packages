@@ -1,11 +1,103 @@
 import json
 import os
 from pathlib import Path
+import select
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 from tools.native import cache_environment, contained, dependency_names, parse_pkginfo, runtime_identity, validate_bundle, validate_output
+
+
+class NativeRunTests(unittest.TestCase):
+    harness = """
+import json
+from pathlib import Path
+import subprocess
+import sys
+from tools.native import run
+
+returncode = 0
+try:
+    argv = [sys.executable, '-c', sys.argv[2]]
+    output = run(argv, stream=True) if sys.argv[3] == 'stream' else run(argv)
+except subprocess.CalledProcessError as error:
+    returncode = error.returncode
+    output = error.output
+Path(sys.argv[1]).write_text(json.dumps({'output': output, 'returncode': returncode}))
+sys.exit(returncode)
+"""
+
+    def test_partial_progress_is_live_and_receipt_decodes_on_success_and_failure(self):
+        state = Path.home() / '.local/state/arch-packages/work/native-test'
+        state.mkdir(parents=True, exist_ok=True)
+        chunks = [b'prepare \xe2', b'\x82\xac\r', b'\nbuild\rfinished\n']
+        expected = 'prepare \u20ac\nbuild\nfinished\n'
+        for returncode in (0, 7):
+            with self.subTest(returncode=returncode), tempfile.TemporaryDirectory(dir=state) as directory:
+                receipt = Path(directory) / 'receipt.json'
+                child = f"""
+import os
+import sys
+chunks = {chunks!r}
+for chunk in chunks[:-1]:
+    os.write(1, chunk)
+    if not os.read(0, 1):
+        sys.exit(99)
+os.write(1, chunks[-1])
+sys.exit({returncode})
+"""
+                env = {**os.environ, 'PYTHONUTF8': '1'}
+                with subprocess.Popen(
+                    [sys.executable, '-c', self.harness, str(receipt), child, 'stream'],
+                    cwd=Path(__file__).resolve().parent.parent, env=env,
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                ) as process:
+                    try:
+                        live = b''
+                        for chunk in chunks[:-1]:
+                            received = b''
+                            deadline = time.monotonic() + 10
+                            while len(received) < len(chunk):
+                                ready, _, _ = select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))
+                                self.assertTrue(ready, 'progress blocked until child exit')
+                                data = os.read(process.stdout.fileno(), len(chunk) - len(received))
+                                self.assertTrue(data, 'stdout closed before partial progress')
+                                received += data
+                            self.assertEqual(received, chunk)
+                            self.assertIsNone(process.poll())
+                            self.assertFalse(receipt.exists())
+                            live += received
+                            process.stdin.write(b'x')
+                            process.stdin.flush()
+                        rest, _ = process.communicate(timeout=10)
+                        self.assertEqual(live + rest, b''.join(chunks))
+                        self.assertEqual(process.returncode, returncode)
+                        self.assertEqual(json.loads(receipt.read_text()), {'output': expected, 'returncode': returncode})
+                    finally:
+                        if process.poll() is None:
+                            process.stdin.close()
+                            process.kill()
+                            process.wait()
+
+    def test_metadata_stdout_stays_capture_only(self):
+        state = Path.home() / '.local/state/arch-packages/work/native-test'
+        state.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=state) as directory:
+            receipt = Path(directory) / 'receipt.json'
+            child = "import os; os.write(1, b'pkgbase = example\\r\\n\\tpkgver = 1\\r')"
+            result = subprocess.run(
+                [sys.executable, '-c', self.harness, str(receipt), child, 'quiet'],
+                cwd=Path(__file__).resolve().parent.parent,
+                check=True, stdout=subprocess.PIPE,
+            )
+            self.assertEqual(result.stdout, b'')
+            self.assertEqual(json.loads(receipt.read_text()), {
+                'output': 'pkgbase = example\n\tpkgver = 1\n', 'returncode': 0,
+            })
 
 
 class PackageMetadataTests(unittest.TestCase):

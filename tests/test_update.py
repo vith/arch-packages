@@ -130,7 +130,7 @@ class CandidateBoundaries(unittest.TestCase):
 
     def record(self):
         package={'pkgbase':'example','recipe_commit':'1'*40,'input_digest':'d'*64,'lock':{'schema':1,'version':'1.0-1','sources':[]},'expected_srcinfo':SRCINFO,'policy':{'outputs':[{'name':'example','arch':'x86_64'}]}}
-        record={'schema':1,'repository':'owner/repo','base':'a'*40,'head':'b'*40,'recipe_pins':{'example':'1'*40},'previous_recipe_pins':{'example':'2'*40},'run_id':'1','run_attempt':'1','image':'arch@sha256:'+'c'*64,'harness_sha':'e'*64,'pr_number':1,'mechanical':True,'packages':[package]}
+        record={'schema':1,'repository':'owner/repo','base':'a'*40,'head':'b'*40,'recipe_pins':{'example':'1'*40},'previous_recipe_pins':{'example':'2'*40},'run_id':'1','run_attempt':'1','image':'arch@sha256:'+'c'*64,'harness_sha':'e'*64,'pr_number':1,'kind':'bookkeeping','mechanical':False,'auto_merge':True,'packages':[package]}
         path=self.root/'example.pkg.tar.zst';path.write_bytes(b'package bytes')
         evidence={k:record[k] for k in ('schema','repository','base','head','recipe_pins','previous_recipe_pins','run_id','run_attempt','image','harness_sha')}
         evidence['packages']=[{'pkgbase':'example','recipe_commit':package['recipe_commit'],'input_digest':package['input_digest'],'source_lock':package['lock'],'metadata':{'srcinfo':SRCINFO},'files':[{'filename':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'name':'example','version':'1.0-1','arch':'x86_64'}]}]
@@ -198,9 +198,10 @@ class CandidateBoundaries(unittest.TestCase):
                     pins.update(example=('1' if sha=='a'*40 else '2')*40)
                     return Path(shutil.copytree(fixture/('old' if sha=='a'*40 else 'new'),destination))
                 evidence={'srcinfo':(recipe/'.SRCINFO').read_text(),'checksums':{},'source_templates_verified':True,'lock_verified':True,'auxiliary_inputs_verified':True,'authentic':True,'fast_forward':True}
-                with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'},clear=True),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'run_candidate_tests'),patch.object(update,'independent_transition',return_value=evidence),patch.object(update.recipes,'is_ancestor',return_value=mutation!='rewrite'),patch('tools.recipe_gate._compare',return_value=1),patch.object(update,'status'):
+                with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'},clear=True),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'run_candidate_tests'),patch.object(update,'independent_transition',return_value=evidence),patch.object(update.recipes,'is_ancestor',return_value=mutation!='rewrite'),patch('tools.recipe_gate._compare',return_value=1),patch.object(update,'status'):
                     record=update.prepare(1,fixture/'prepared')
-                self.assertEqual(record['mechanical'],mutation=='version')
+                self.assertFalse(record['auto_merge'])
+                self.assertEqual(record['review_environment'],'code-review')
                 self.assertEqual(record['packages'][0]['recipe_commit'],'2'*40)
                 self.assertEqual(record['packages'][0]['previous_recipe_commit'],'1'*40)
                 if mutation not in {'version','modules'}:
@@ -221,7 +222,7 @@ class CandidateBoundaries(unittest.TestCase):
             (recipe/'PKGBUILD').write_text('pkgver=1.0\npkgrel=1\n')
             (recipe/'.SRCINFO').write_text(SRCINFO.replace('example', 'kept'))
             return destination
-        with patch.dict(os.environ, {'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1'}), patch.object(update, 'repository', return_value='owner/repo'), patch.object(update, 'pr_identity', return_value=({}, 'a'*40, 'b'*40)), patch.object(update, 'checkout_data', side_effect=checkout), patch.object(update, 'harness_digest', return_value='e'*64), patch.object(update, 'run_candidate_tests'), patch.object(update, 'independent_transition', return_value=None), patch.object(update, 'status'):
+        with patch.dict(os.environ, {'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1'}),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'), patch.object(update, 'repository', return_value='owner/repo'), patch.object(update, 'pr_identity', return_value=({}, 'a'*40, 'b'*40)), patch.object(update, 'checkout_data', side_effect=checkout), patch.object(update, 'harness_digest', return_value='e'*64), patch.object(update, 'run_candidate_tests'), patch.object(update, 'independent_transition', return_value=None), patch.object(update, 'status'):
             record = update.prepare(1, self.root/'prepared-retirement')
         self.assertEqual([package['pkgbase'] for package in record['packages']], ['kept'])
         self.assertFalse(record['mechanical'])
@@ -250,7 +251,7 @@ class CandidateBoundaries(unittest.TestCase):
             update.validate_build(record,self.root)
 
     def test_stale_head_after_human_approval_cannot_finalize(self):
-        record,evidence,path=self.record();record['mechanical']=False
+        record,evidence,path=self.record();record['auto_merge']=False
         update.dump(self.root/'candidate.json',record)
         pr={'state':'open','base':{'ref':'main','sha':record['base'],'repo':{'full_name':'owner/repo'}},'head':{'sha':'c'*40}}
         with patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'main_sha',return_value=record['base']),patch.object(update,'api',return_value=pr) as api,patch.object(update,'status') as status,self.assertRaisesRegex(ValueError,'changed'):
@@ -259,7 +260,7 @@ class CandidateBoundaries(unittest.TestCase):
         self.assertTrue(all(call.args[1:] == () for call in api.call_args_list))
 
     def test_human_candidate_never_auto_merges(self):
-        record,evidence,path=self.record();record['mechanical']=False
+        record,evidence,path=self.record();record['auto_merge']=False
         update.dump(self.root/'candidate.json',record)
         states=[{'context':name,'state':'success'} for name in ('verify','candidate-build','recipe-policy')]
         with patch.object(update,'pr_identity'),patch.object(update,'validate_build'),patch.object(update,'api',return_value=states) as api,patch.object(update,'repository',return_value='owner/repo'):
@@ -267,7 +268,7 @@ class CandidateBoundaries(unittest.TestCase):
         self.assertFalse(result['merged'])
         self.assertTrue(all(call.args[0].endswith('/statuses') for call in api.call_args_list))
 
-    def test_mechanical_merge_requires_successful_exact_head_verification(self):
+    def test_bookkeeping_merge_requires_successful_exact_head_verification(self):
         record, evidence, path = self.record()
         update.dump(self.root/'candidate.json', record)
         for state in (None, 'pending', 'failure'):
@@ -299,7 +300,7 @@ class CandidateBoundaries(unittest.TestCase):
             if mirror.exists():
                 mirror.chmod(0o755)
 
-    def test_mechanical_merge_has_expected_head_and_explicit_dispatch(self):
+    def test_bookkeeping_merge_has_expected_head_and_explicit_dispatch(self):
         record,evidence,path=self.record();update.dump(self.root/'candidate.json',record)
         responses=[[{'context':name,'state':'success'} for name in ('verify','candidate-build','recipe-policy')],{'merged':True,'sha':'f'*40},None]
         with patch.object(update,'pr_identity'),patch.object(update,'validate_build'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'api',side_effect=responses) as api:

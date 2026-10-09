@@ -1,5 +1,7 @@
 name: Source update proposals
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
@@ -9,6 +11,11 @@ on:
         required: false
         type: boolean
         default: false
+      migrate_pr:
+        description: Legacy pull request number to convert or backfill using trusted main
+        required: false
+        type: string
+        default: ''
 env:
   ARCH_WORK: /home/runner/.local/state/arch-packages/work/arch-packages/${{ github.run_id }}/${{ github.run_attempt }}
   TMPDIR: /home/runner/.local/state/arch-packages/work/arch-packages/${{ github.run_id }}/${{ github.run_attempt }}/tmp
@@ -18,8 +25,53 @@ concurrency:
   group: source-update
   cancel-in-progress: false
 jobs:
+  reconcile:
+    if: github.ref == 'refs/heads/main' && (inputs.bootstrap != true || inputs.migrate_pr != '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+      statuses: write
+    steps:
+      - name: Validate explicit migration mode
+        env:
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+          MIGRATE_PR: ${{ inputs.migrate_pr }}
+        run: |
+          if [ -n "$MIGRATE_PR" ]; then
+            if [ "$BOOTSTRAP" = true ]; then
+              echo "::error::bootstrap and migrate_pr cannot be requested together"
+              exit 1
+            fi
+            if [[ ! "$MIGRATE_PR" =~ ^[0-9]+$ || ! "$MIGRATE_PR" =~ [1-9] ]]; then
+              echo "::error::migrate_pr must be a positive decimal pull request number"
+              exit 1
+            fi
+          fi
+      - name: Prepare persistent scratch and trusted validation tools
+        run: |
+          mkdir -p "$ARCH_WORK" "$TMPDIR"
+          sudo apt-get update
+          sudo apt-get install --yes libarchive-tools
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Migrate or backfill explicit legacy recipe candidate
+        if: inputs.migrate_pr != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MIGRATE_PR: ${{ inputs.migrate_pr }}
+        run: python3 -m tools.update migrate-existing --pr "$MIGRATE_PR"
+      - name: Recover exact open and accepted recipe candidates
+        if: inputs.migrate_pr == ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m tools.update reconcile
   discover:
-    if: github.ref == 'refs/heads/main'
+    needs: reconcile
+    if: always() && github.ref == 'refs/heads/main' && github.event_name != 'push' && inputs.migrate_pr == '' && (needs.reconcile.result == 'success' || needs.reconcile.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,7 +83,7 @@ jobs:
           sudo apt-get install --yes libarchive-tools
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Read immutable recipe data and probe in credential-free containers
         env:
@@ -52,7 +104,7 @@ jobs:
           if-no-files-found: error
   write-proposals:
     needs: discover
-    if: inputs.bootstrap != true
+    if: inputs.bootstrap != true && inputs.migrate_pr == ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -67,7 +119,7 @@ jobs:
           sudo apt-get install --yes libarchive-tools
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:

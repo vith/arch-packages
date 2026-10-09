@@ -46,8 +46,8 @@ resource "github_repository" "packages" {
   has_projects           = true
   has_wiki               = true
   allow_merge_commit     = true
-  allow_squash_merge     = true
-  allow_rebase_merge     = true
+  allow_squash_merge     = false
+  allow_rebase_merge     = false
   allow_auto_merge       = false
   delete_branch_on_merge = false
   archive_on_destroy     = true
@@ -75,6 +75,23 @@ resource "github_branch_protection" "main" {
   enforce_admins      = true
   allows_deletions    = false
   allows_force_pushes = false
+  required_status_checks {
+    strict   = true
+    contexts = ["verify", "recipe-policy", "candidate-build"]
+  }
+  required_pull_request_reviews {
+    required_approving_review_count = 0
+    dismiss_stale_reviews           = true
+  }
+}
+
+resource "github_branch_protection" "recipes" {
+  repository_id           = github_repository.packages.node_id
+  pattern                 = "pkg/*"
+  enforce_admins          = true
+  allows_deletions        = false
+  allows_force_pushes     = false
+  required_linear_history = false
   required_status_checks {
     strict   = true
     contexts = ["verify", "recipe-policy", "candidate-build"]
@@ -117,6 +134,16 @@ resource "github_repository_environment_deployment_policy" "publish_main" {
 resource "github_repository_environment" "recipe_review" {
   repository          = github_repository.packages.name
   environment         = "recipe-review"
+  can_admins_bypass   = false
+  prevent_self_review = false
+  reviewers {
+    users = [3265539]
+  }
+}
+
+resource "github_repository_environment" "code_review" {
+  repository          = github_repository.packages.name
+  environment         = "code-review"
   can_admins_bypass   = false
   prevent_self_review = false
   reviewers {

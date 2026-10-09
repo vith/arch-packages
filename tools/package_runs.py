@@ -37,29 +37,6 @@ def validate_run(record, plan, name):
 
 
 def prepare(directory, name, parent, attempt, kind='publication'):
-    if kind == 'reviewed-harness':
-        from tools import reviewed_harness
-        plan = update.load(directory / 'candidate.json')
-        if str(plan['run_id']) != str(parent) or str(plan['run_attempt']) != str(attempt):
-            raise ValueError('reviewed parent transport mismatch')
-        reviewed_harness.verify_authority(plan, executing_child=True)
-        update.extract_tree(directory / 'bundle.tar', directory / 'frozen', {'recipes', 'bundle.json'})
-        bundle = update.load(directory / 'frozen/bundle.json')
-        if bundle != plan:
-            raise ValueError('reviewed bundle differs from plan')
-        selected = select(plan, name)
-        import tempfile
-        with tempfile.TemporaryDirectory(prefix='reviewed-child-', dir=reviewed_harness.ROOT.parent) as work:
-            accepted = reviewed_harness.reconstruct(plan, Path(work))
-            target = directory / 'input'
-            target.mkdir()
-            package = selected['packages'][0]
-            # Transport recipes are not authority: copy independently exported C.
-            recipes.copy_recipe(accepted / package['recipe_dir'], target / package['recipe_dir'])
-        update.dump(target / 'bundle.json', selected)
-        for variable in ('ARCH_BUILD_CACHE', 'ARCH_PACKAGE_CACHE', 'ARCH_NATIVE_CACHE'):
-            os.environ.pop(variable, None)
-        return
     record = github_api.api(f'repos/{REPOSITORY}/actions/runs/{parent}')
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     workflow = 'candidate.yml' if kind == 'candidate' else 'publish.yml'
@@ -73,7 +50,9 @@ def prepare(directory, name, parent, attempt, kind='publication'):
         selected = select(plan, name)
         update.extract_tree(directory / 'bundle.tar', directory / 'frozen', {'recipes', 'bundle.json'})
         bundle = update.load(directory / 'frozen/bundle.json')
-        if bundle['packages'] != plan['packages']:
+        identity = ('schema', 'repository', 'base', 'head', 'run_id', 'run_attempt',
+                    'image', 'harness_sha', 'recipe_pins', 'previous_recipe_pins', 'packages')
+        if any(bundle[key] != plan[key] for key in identity):
             raise ValueError('candidate bundle differs from plan')
         target = directory / 'input'
         target.mkdir()
@@ -104,8 +83,6 @@ def prepare(directory, name, parent, attempt, kind='publication'):
 
 
 def collect(directory, timeout=10800, kind='publication'):
-    if kind == 'reviewed-harness':
-        return collect_reviewed(directory, timeout)
     candidate = kind == 'candidate'
     plan = update.load(directory / 'candidate.json') if candidate else json.loads((directory / 'publication-plan.json').read_text())['expected']
     pending = {package['pkgbase'] for package in plan['packages'] if not package.get('reuse', False)}
@@ -116,8 +93,11 @@ def collect(directory, timeout=10800, kind='publication'):
     output = directory / 'unsigned'
     output.mkdir()
     evidence = {**{key: value for key, value in plan.items() if key != 'packages'}, 'packages': []}
+    if candidate:
+        evidence['package_runs'] = []
     deadline = time.monotonic() + timeout
     failures = []
+    observed = {}
     while pending:
         if time.monotonic() >= deadline:
             raise TimeoutError('package workflows still pending: ' + ', '.join(sorted(pending)))
@@ -126,15 +106,27 @@ def collect(directory, timeout=10800, kind='publication'):
             matches = [record for record in runs if record['display_title'] == title(plan, name)]
             if len(matches) > 1:
                 raise ValueError('duplicate package workflow dispatch')
-            if not matches or matches[0]['status'] != 'completed':
+            if not matches:
                 continue
             record = matches[0]
-            print(name + ': ' + record['html_url'] + ' (' + record['conclusion'] + ')', flush=True)
+            state = (record['id'], record['run_attempt'], record['status'], record['conclusion'])
+            if observed.get(name) != state:
+                progress = record['status']
+                if progress == 'completed':
+                    progress += ': ' + record['conclusion']
+                print(name + ': ' + record['html_url'] + ' (' + progress + ')', flush=True)
+                observed[name] = state
+            if record['status'] != 'completed':
+                continue
             pending.remove(name)
             if record['conclusion'] != 'success':
                 failures.append(name)
                 continue
             validate_run(record, plan, name)
+            if candidate:
+                evidence['package_runs'].append({
+                    'pkgbase': name, 'run_id': str(record['id']),
+                    'run_attempt': str(record['run_attempt'])})
             artifact = directory / ('download-' + name)
             env = {**os.environ, 'GH_TOKEN': os.environ['GITHUB_TOKEN']}
             subprocess.run(['gh', 'run', 'download', str(record['id']), '--repo', REPOSITORY, '--name', 'package-' + name, '--dir', str(artifact)], env=env, check=True)
@@ -165,67 +157,6 @@ def collect(directory, timeout=10800, kind='publication'):
             archive.add(path, arcname=path.name, recursive=False)
 
 
-def collect_reviewed(directory, timeout):
-    from tools import reviewed_harness
-    plan = update.load(directory / 'candidate.json')
-    reviewed_harness.executing_parent(plan)
-    reviewed_harness.verify_authority(plan)
-    if {package['pkgbase'] for package in plan['packages']} != reviewed_harness.PACKAGES:
-        raise ValueError('reviewed collection requires seven packages')
-    pending = set(reviewed_harness.PACKAGES)
-    for name in sorted(pending):
-        reviewed_harness.verify_authority(plan)
-        github_api.api(f'repos/{REPOSITORY}/actions/workflows/{WORKFLOW}/dispatches', 'POST', {
-            'ref': reviewed_harness.TOOLS_REF,
-            'inputs': {'package': name, 'publication_run': str(plan['run_id']), 'publication_attempt': str(plan['run_attempt']), 'kind': 'reviewed-harness'}})
-    output = directory / 'unsigned'
-    output.mkdir()
-    evidence = {**{key: value for key, value in plan.items() if key != 'packages'}, 'packages': [], 'package_runs': []}
-    deadline = time.monotonic() + timeout
-    while pending:
-        if time.monotonic() >= deadline:
-            raise TimeoutError('reviewed package runs still pending')
-        runs = github_api.api(f'repos/{REPOSITORY}/actions/workflows/{WORKFLOW}/runs?event=workflow_dispatch&head_sha={plan["tools_sha"]}&per_page=100')['workflow_runs']
-        if len(runs) >= 100:
-            raise ValueError('ambiguous bounded workflow listing')
-        for name in sorted(pending):
-            matches = [run for run in runs if run['display_title'] == title(plan, name)]
-            if len(matches) > 1:
-                raise ValueError('duplicate reviewed package dispatch')
-            if not matches or matches[0]['status'] != 'completed':
-                continue
-            run = matches[0]
-            mapping = {'pkgbase': name, 'run_id': str(run['id']), 'run_attempt': str(run['run_attempt'])}
-            reviewed_harness.protected_attempt(plan, mapping['run_id'], mapping['run_attempt'], child=name, durable=True)
-            artifact = directory / ('download-' + name)
-            artifact_name = f"reviewed-package-{name}-{mapping['run_attempt']}"
-            subprocess.run(['gh', 'run', 'download', mapping['run_id'], '--repo', REPOSITORY, '--name', artifact_name, '--dir', str(artifact)],
-                           env={**os.environ, 'GH_TOKEN': os.environ['GITHUB_TOKEN']}, check=True)
-            unpacked = directory / ('verified-' + name)
-            publish.safe_extract(artifact / 'unsigned.tar', unpacked)
-            selected = select(plan, name)
-            receipt = update.load(unpacked / 'native-evidence.json')
-            receipt['package_runs'] = [mapping]
-            update.dump(unpacked / 'native-evidence.json', receipt)
-            reviewed_harness.validate_outputs(selected, unpacked)
-            evidence['packages'].extend(receipt['packages'])
-            evidence['package_runs'].append(mapping)
-            for package in receipt['packages']:
-                for file in package['files']:
-                    target = output / file['filename']
-                    if target.exists():
-                        raise ValueError('colliding reviewed package output')
-                    shutil.copyfile(unpacked / file['filename'], target)
-            pending.remove(name)
-        if pending:
-            time.sleep(30)
-    update.dump(output / 'native-evidence.json', evidence)
-    reviewed_harness.validate_outputs(plan, output)
-    with tarfile.open(directory / 'unsigned.tar', 'w') as archive:
-        for path in sorted(output.iterdir()):
-            archive.add(path, arcname=path.name, recursive=False)
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('operation', choices=('prepare', 'collect'))
@@ -233,7 +164,7 @@ def main():
     parser.add_argument('--package')
     parser.add_argument('--publication-run')
     parser.add_argument('--publication-attempt')
-    parser.add_argument('--kind', choices=('publication', 'candidate', 'reviewed-harness'), default='publication')
+    parser.add_argument('--kind', choices=('publication', 'candidate'), default='publication')
     args = parser.parse_args()
     if args.operation == 'prepare':
         prepare(args.directory, args.package, args.publication_run, args.publication_attempt, args.kind)
