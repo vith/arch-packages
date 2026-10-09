@@ -5,7 +5,7 @@
 declare srcdir pkgdir
 pkgname=ttf-ioskeley-mono
 pkgver=2.0.0
-pkgrel=1
+pkgrel=2
 pkgdesc=" Iosevka configuration to mimic the look and feel of Berkeley Mono as closely as possible"
 arch=(any)
 url="https://github.com/ahatem/IoskeleyMono"
