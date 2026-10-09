@@ -1256,6 +1256,8 @@ def write_proposals(directory):
         if len(prs)>1:
             raise ValueError('multiple bot branch PRs')
         existing=prs[0] if prs else None
+        if receipt['unchanged'] and existing is None:
+            continue
         previous_commit,previous_base=owned_proposal(existing,name,watcher_id) if existing else (None,None)
         retained_tip=existing['head']['sha'] if existing else ref_head(branch)
         if existing is None:
