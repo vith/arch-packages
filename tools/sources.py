@@ -306,8 +306,12 @@ def probe_recipe(recipe_dir, lock, policy, preserve_pkgrel=False):
     from tools.recipe_gate import parse_srcinfo
     original_pkgrel=parse_srcinfo((Path(recipe_dir)/'.SRCINFO').read_text())['pkgrel']
     validate_lock(lock)
-    configuration=os.environ.get('GIT_CONFIG_GLOBAL')
+    configuration=os.environ.get('GIT_CONFIG_SYSTEM')
     if any(source['kind']=='git' for source in lock['sources']):
+        if (os.environ.get('MAKEPKG_GIT_CONFIG')!=configuration
+                or os.environ.get('GIT_CONFIG_NOSYSTEM','0')!='0'
+                or os.environ.get('GIT_CONFIG_GLOBAL')!='/dev/null'):
+            raise ValueError('native Git and makepkg require the same frozen system configuration')
         if not configuration or not Path(configuration).is_file():
             raise ValueError('native probe requires root-owned frozen mirror configuration')
         info=Path(configuration).stat()

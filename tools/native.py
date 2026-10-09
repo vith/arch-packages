@@ -258,7 +258,8 @@ def build(path: Path, output: Path):
             cache_dir.mkdir()
             os.chown(cache_dir, 1000, 1000)
         gitconfig.chmod(0o444)
-        env = {'PATH': '/usr/bin', 'HOME': str(home), 'LANG': 'C.UTF-8', 'GOTOOLCHAIN': 'local', 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': str(gitconfig)}
+        # makepkg's Git library resets global config and selects this system config.
+        env = {'PATH': '/usr/bin', 'HOME': str(home), 'LANG': 'C.UTF-8', 'GOTOOLCHAIN': 'local', 'MAKEPKG_GIT_CONFIG': str(gitconfig), 'GIT_CONFIG_SYSTEM': str(gitconfig), 'GIT_CONFIG_GLOBAL': '/dev/null'}
         env.update(persistent_cache_env)
         command = ['makepkg', '--config', str(config)]
         prepared_log = builder([*command, '--nobuild', '--noconfirm', '--cleanbuild'], directory, env)
