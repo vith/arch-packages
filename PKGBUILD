@@ -2,7 +2,7 @@
 pkgbase=surge-cli
 pkgname=surge
 pkgver=0.12.2
-pkgrel=1
+pkgrel=2
 pkgdesc='Fast terminal download manager'
 arch=('x86_64')
 url='https://github.com/SurgeDM/Surge'
@@ -16,7 +16,7 @@ optdepends=('wl-clipboard: clipboard support on Wayland'
 conflicts=('surge-bin')
 options=('!strip' '!debug')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v${pkgver}.tar.gz")
-sha512sums=('ba95c71d9e392b87bc5df1c84227700f24ddd3718a9bac28edce2601cad51d2b4fa78930536ad1349995f7f2e7be2351949199b94ab15779caf0ecadc51f6c6c')
+sha256sums=('f2e0ca5917aed7c9790be212e364025d245fe3387c49d833b406becf5b0ee896')
 
 build() {
   cd "$srcdir/Surge-$pkgver"
@@ -24,15 +24,12 @@ build() {
   export CGO_ENABLED=0 GOFLAGS='-mod=readonly -modcacherw'
   local ldflags="-s -w -X github.com/SurgeDM/Surge/cmd.Version=${pkgver}"
 
-  # Generate completions with an execution-host binary, never the x86 target.
-  GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" \
-    go build -trimpath -ldflags="$ldflags" -o surge-host .
-  mkdir -p completions
-  ./surge-host completion bash > completions/surge.bash
-  ./surge-host completion zsh > completions/surge.zsh
-  ./surge-host completion fish > completions/surge.fish
   GOOS=linux GOARCH=amd64 GOAMD64=v1 go build -trimpath -buildmode=pie \
     -ldflags="$ldflags" -o surge .
+  mkdir -p completions
+  ./surge completion bash > completions/surge.bash
+  ./surge completion zsh > completions/surge.zsh
+  ./surge completion fish > completions/surge.fish
 }
 
 package() {

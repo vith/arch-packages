@@ -1,7 +1,7 @@
 pkgbase = surge-cli
 	pkgdesc = Fast terminal download manager
 	pkgver = 0.12.2
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/SurgeDM/Surge
 	arch = x86_64
 	license = MIT
@@ -16,6 +16,6 @@ pkgbase = surge-cli
 	options = !strip
 	options = !debug
 	source = surge-0.12.2.tar.gz::https://github.com/SurgeDM/Surge/archive/refs/tags/v0.12.2.tar.gz
-	sha512sums = ba95c71d9e392b87bc5df1c84227700f24ddd3718a9bac28edce2601cad51d2b4fa78930536ad1349995f7f2e7be2351949199b94ab15779caf0ecadc51f6c6c
+	sha256sums = f2e0ca5917aed7c9790be212e364025d245fe3387c49d833b406becf5b0ee896
 
 pkgname = surge
