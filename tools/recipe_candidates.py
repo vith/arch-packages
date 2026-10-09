@@ -67,9 +67,15 @@ def edited_provenance(previous_lock, lock, provenance, watcher_id, *, related_ch
         raise ValueError('human edit changed unrelated enrolled source')
     if not changed.intersection(allowed) or watcher['kind'] == 'aur':
         return result
+    for source_id in changed.intersection(allowed):
+        applicable = [w for w in result['watchers']
+                      if source_id in {w.get('source_id'), *w.get('related_source_ids', [])}]
+        if len(applicable) != 1:
+            raise ValueError('changed remote source has ambiguous watcher enrollment')
     if watcher['kind'] not in {'tag', 'release'}:
         return result
     source = next(s for s in lock['sources'] if s['id'] == watcher['source_id'])
+    version = u.parse_version(lock['version'])
     if source['kind'] == 'git':
         if not source['ref'].startswith('refs/tags/'):
             raise ValueError('edited watcher requires exact enrolled tag')
@@ -78,8 +84,11 @@ def edited_provenance(previous_lock, lock, provenance, watcher_id, *, related_ch
         match = re.fullmatch(watcher['tag_pattern'], watcher.get('accepted_tag', ''))
         if not match or not match.groups():
             raise ValueError('cannot derive edited enrolled tag')
-        version = u.parse_version(lock['version'])
-        values = [version] if len(match.groups()) == 1 else version.split('.')
+        prefix = u.sources._version_prefix(watcher)
+        if not version.startswith(prefix):
+            raise ValueError('edited version differs from enrolled version prefix')
+        tag_version = version.removeprefix(prefix)
+        values = [tag_version] if len(match.groups()) == 1 else tag_version.split('.')
         if len(values) != len(match.groups()):
             raise ValueError('edited version differs from enrolled tag structure')
         tag = match[0]
@@ -98,11 +107,25 @@ def edited_provenance(previous_lock, lock, provenance, watcher_id, *, related_ch
     watcher.update(accepted_tag=tag, accepted_tag_object=obj, accepted_peeled_commit=identities.get('refs/tags/' + tag + '^{}', obj))
     if watcher['kind'] == 'release':
         release = json.loads(u.sources.fetch('https://api.github.com/repos/' + watcher['repository'] + '/releases/tags/' + tag))
-        assets = [asset for asset in release['assets'] if asset['name'] == watcher['asset']]
-        if release['draft'] or release['prerelease'] or len(assets) != 1 or source['url'] != assets[0]['browser_download_url']:
+        if release['draft'] or release['prerelease']:
             raise ValueError('edited release source differs from exact authentic asset')
-        source.update(release_id=release['id'], asset_id=assets[0]['id'])
-        watcher.update(release_id=release['id'], asset_id=assets[0]['id'])
+        names = set()
+        identities = set()
+        for release_source in lock['sources']:
+            if release_source['id'] not in allowed or (release_source is not source and release_source['kind'] != 'release'):
+                continue
+            name = u.sources.release_asset_name(watcher, version, release_source['id'])
+            assets = [asset for asset in release['assets'] if asset['name'] == name]
+            if len(assets) != 1 or release_source['url'] != assets[0]['browser_download_url']:
+                raise ValueError('edited release source differs from exact authentic asset')
+            asset = assets[0]
+            if name in names or asset['id'] in identities:
+                raise ValueError('release sources share an enrolled asset')
+            names.add(name)
+            identities.add(asset['id'])
+            release_source.update(release_id=release['id'], asset_id=asset['id'])
+            if release_source is source:
+                watcher.update(release_id=release['id'], asset_id=asset['id'])
     return result
 
 

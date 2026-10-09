@@ -6,8 +6,7 @@ on:
       package:
         description: Explicitly authorized package
         required: true
-        type: choice
-        options: [archive-mounter, carapace, carapace-bridge, carapace-spec-man, regclient, nasctui, cloudflare-speed-cli, oh-my-pi-vith-git, python-google-genai, apexshot]
+        type: string
       publication_run:
         description: Original approval candidate run ID
         required: true

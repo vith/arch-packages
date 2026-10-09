@@ -375,8 +375,13 @@ def _live_tag_provenance(previous,current,source):
         release=json.loads(sources.fetch('https://api.github.com/repos/'+previous['repository']+'/releases/tags/'+tag))
         if release['draft'] or release['prerelease'] or release['id']!=current['release_id']:
             raise ValueError('release provenance mismatch')
-        matches=[a for a in release['assets'] if a['name']==previous['asset']]
-        if len(matches)!=1 or matches[0]['id']!=source['asset_id'] or source['release_id']!=release['id'] or source['url']!=matches[0]['browser_download_url']:
+        match=re.fullmatch(previous['tag_pattern'],tag)
+        version=sources._version_prefix(previous)+(match[1] if len(match.groups())==1 else '.'.join(match.groups()))
+        name=sources.release_asset_name(previous,version,source['id'])
+        matches=[a for a in release['assets'] if a['name']==name]
+        if (len(matches)!=1 or matches[0]['id']!=source['asset_id'] or source['release_id']!=release['id']
+                or source['url']!=matches[0]['browser_download_url']
+                or source['id']==previous['source_id'] and current['asset_id']!=source['asset_id']):
             raise ValueError('release asset identity mismatch')
 
 
@@ -404,7 +409,7 @@ def _verify_provenance(old,new,lock,policy,verify_tag,verify_aur,watcher_id=None
                 raise ValueError('watcher tag differs from frozen Git tag')
             if not match:
                 raise ValueError('source lacks authentic enrolled tag')
-            version=match[1] if len(match.groups())==1 else '.'.join(match.groups())
+            version=sources._version_prefix(previous)+(match[1] if len(match.groups())==1 else '.'.join(match.groups()))
             if source['source']!=expected['source_template'].format(version=version):
                 raise ValueError('source lock and watcher tag disagree')
         changed.append(previous['id'])
@@ -416,6 +421,20 @@ def _verify_provenance(old,new,lock,policy,verify_tag,verify_aur,watcher_id=None
             raise ValueError('unenrolled tag identity')
         source=next(s for s in lock['sources'] if s['id']==previous['source_id'])
         verify_tag(previous,current,source)
+        if previous['kind']=='release':
+            identities={source['asset_id']}
+            names={sources.release_asset_name(previous,version,source['id'])}
+            for source_id in previous.get('related_source_ids',[]):
+                related=next(s for s in lock['sources'] if s['id']==source_id)
+                if related['kind']=='release':
+                    name=sources.release_asset_name(previous,version,source_id)
+                    if related['asset_id'] in identities or name in names:
+                        raise ValueError('release sources share an enrolled asset')
+                    identities.add(related['asset_id']);names.add(name)
+                    enrolled=next(s for s in policy['sources'] if s['id']==source_id)
+                    if related['source']!=enrolled['source_template'].format(version=version):
+                        raise ValueError('related source lock and watcher tag disagree')
+                    verify_tag(previous,current,related)
     if old['aur']!=new['aur']:
         if not old['aur'] or not new['aur'] or any(old['aur'].get(k)!=new['aur'].get(k) for k in old['aur'].keys()|new['aur'].keys() if k!='commit'):
             raise ValueError('AUR enrollment changed')
@@ -445,14 +464,14 @@ def frozen_transition(old,new,name,policy,work):
         if source['kind']=='git':
             mirror=sources.materialize_sources({'schema':1,'version':oldlock['version'],'sources':[source]},work/'previous'/source['id'])[source['url']]
             _frozen_source_transition(source,source,mirror,policy,oldlock)
-            # Equal immutable Git inputs cannot acquire a different ancestry
+            # Equal immutable Git inputs cannot acquire a different derived
             # version merely because the common transition returns no change.
             current=next((item for item in newlock['sources'] if item['id']==source['id']),None)
             rule=policy['automatic']['version']
-            if (current==source and rule['derivation']=='frozen-authentic-tag-ancestry'
+            if (current==source and rule['derivation'] in {'frozen-authentic-tag-ancestry','frozen-git-revision-count'}
                     and source['ref'].startswith('refs/heads/')
                     and parse_version(newlock['version'])!=parse_version(oldlock['version'])):
-                raise ValueError('frozen ancestry version mismatch')
+                raise ValueError('frozen Git version mismatch')
         elif source['kind']=='local':
             path=old/'recipes'/name/source['source']
             if not path.resolve().is_relative_to((old/'recipes'/name).resolve()) or not path.is_file():
@@ -464,9 +483,14 @@ def frozen_transition(old,new,name,policy,work):
             sources.freeze_source(source)
     def provenance(oldpro,newpro,lock,enrolled):
         def tag(previous,current,source):
-            sources.frozen_tag(previous,current,work/('tag-'+previous['id']))
-            if previous['kind']=='release' and (source['release_id']!=current['release_id'] or source['asset_id']!=current['asset_id']):
-                raise ValueError('frozen release asset identity mismatch')
+            sources.frozen_tag(previous,current,work/('tag-'+previous['id']+'-'+source['id']))
+            if previous['kind']=='release':
+                version=parse_version(lock['version'])
+                name=sources.release_asset_name(previous,version,source['id'])
+                if source['release_id']!=current['release_id'] or source['id']==previous['source_id'] and source['asset_id']!=current['asset_id']:
+                    raise ValueError('frozen release asset identity mismatch')
+                if source['url'].rsplit('/',1)[-1]!=name:
+                    raise ValueError('frozen release asset filename mismatch')
         _verify_provenance(oldpro,newpro,lock,enrolled,tag,lambda watcher,current: None)
     return _transition(old,new,name,policy,work,provenance,sources.frozen_aur,_frozen_source_transition)
 
@@ -478,16 +502,22 @@ def _live_source_transition(previous,source,mirror,policy,lock):
     remote=sources.git('ls-remote',source['url'],source['ref']).splitlines()
     if len(remote)!=1 or remote[0].split()[0]!=(source['tag_object'] or source['commit']):
         raise ValueError('source transition no longer authentic')
+    if policy['automatic']['version']['derivation']=='frozen-git-revision-count':
+        _verify_git_version(source,mirror,policy,lock)
     return authentic
+
+
+def _verify_git_version(source,mirror,policy,lock):
+    rules=policy['automatic']['version']
+    if rules['derivation'] in {'frozen-authentic-tag-ancestry','frozen-git-revision-count'} and source['ref'].startswith('refs/heads/'):
+        if sources._frozen_git_version(source,mirror,rules)!=parse_version(lock['version']):
+            raise ValueError('frozen Git version mismatch')
 
 
 def _frozen_source_transition(previous,source,mirror,policy,lock):
     if sources.git_checksums(source,mirror)!=source['checksums']:
         raise ValueError('frozen Git checksum mismatch')
-    rules=policy['automatic']['version']
-    if rules['derivation']=='frozen-authentic-tag-ancestry' and source['ref'].startswith('refs/heads/'):
-        if sources.frozen_ancestry_version(source,mirror,rules['template'])!=parse_version(lock['version']):
-            raise ValueError('frozen ancestry version mismatch')
+    _verify_git_version(source,mirror,policy,lock)
     return True
 
 
@@ -742,15 +772,26 @@ def _static_metadata(recipe,lock,policy,work,preserve_pkgrel,ancestry_version):
             sources.freeze_source(source)
     version=metadata['pkgver']
     pkgrel=metadata['pkgrel']
+    if preserve_pkgrel and policy.get('automatic',{}).get('version',{}).get('derivation')=='frozen-git-revision-count':
+        candidates=[s for s in frozen if s['kind']=='git' and s['ref'].startswith('refs/heads/')]
+        if len(candidates)!=1:
+            raise ValueError('ambiguous enrolled revision count source')
+        source=candidates[0]
+        derived=sources._frozen_git_version(source,mirrors[source['id']],policy['automatic']['version'])
+        if version!=derived or parse_version(lock['version'])!=derived:
+            raise ValueError('frozen Git version mismatch')
     if not preserve_pkgrel:
         rules=policy['automatic']
         derivation=rules['version']['derivation']
-        if derivation=='frozen-authentic-tag-ancestry':
+        if derivation in {'frozen-authentic-tag-ancestry','frozen-git-revision-count'}:
             candidates=[s for s in frozen if s['kind']=='git' and s['ref'].startswith('refs/heads/')]
             if len(candidates)!=1:
                 raise ValueError('ambiguous enrolled ancestry source')
             source=candidates[0]
-            version=ancestry_version(source,mirrors[source['id']],rules['version']['template'])
+            if derivation=='frozen-authentic-tag-ancestry':
+                version=ancestry_version(source,mirrors[source['id']],rules['version']['template'])
+            else:
+                version=sources._frozen_git_version(source,mirrors[source['id']],rules['version'])
         elif derivation=='literal-upstream-version':
             assignment=rules['version']['assignment']
             matches=re.findall(r'^'+re.escape(assignment)+r"=(?:'([A-Za-z0-9.+_]+)'|\"([A-Za-z0-9.+_]+)\"|([A-Za-z0-9.+_]+))$", (recipe/'PKGBUILD').read_text(),re.M)
@@ -771,6 +812,8 @@ def _static_metadata(recipe,lock,policy,work,preserve_pkgrel,ancestry_version):
             if native.count(old)!=1:
                 raise ValueError('static source layout differs from enrollment')
             replacements[old]=source['source']
+        native_version=((str(metadata['epoch'])+':') if metadata['epoch'] else '')+version+'-'+pkgrel
+        own_dependencies={name+'='+metadata['version']:name+'='+native_version for name in metadata['names']}
         lines=[]
         for line in text.splitlines():
             match=re.fullmatch(r'(\s*)([A-Za-z0-9_]+)(\s*=\s*)(.*)',line)
@@ -785,6 +828,8 @@ def _static_metadata(recipe,lock,policy,work,preserve_pkgrel,ancestry_version):
                 value=pkgrel
             elif key in {'source','source_x86_64'}:
                 value=replacements.get(value,value)
+            elif key in {'depends','depends_x86_64'}:
+                value=own_dependencies.get(value,value)
             else:
                 for source in frozen:
                     enrolled=next(s for s in policy['sources'] if s['id']==source['id'])
@@ -1050,10 +1095,11 @@ def bootstrap(output):
             else:
                 if enrolled['kind']=='release':
                     provenance=load(ROOT/'upstream'/f'{name}.json')
-                    watcher=next(w for w in provenance['watchers'] if w.get('source_id')==enrolled['id'] and w['kind']=='release')
+                    watcher=next(w for w in provenance['watchers'] if w['kind']=='release' and enrolled['id'] in {w.get('source_id'),*w.get('related_source_ids',[])})
                     release=json.loads(sources.fetch('https://api.github.com/repos/'+watcher['repository']+'/releases/tags/'+watcher['accepted_tag']))
-                    assets=[a for a in release['assets'] if a['name']==watcher['asset'] and a['browser_download_url']==url]
-                    if release['draft'] or release['prerelease'] or len(assets)!=1:
+                    asset_name=sources.release_asset_name(watcher,version,enrolled['id'])
+                    assets=[a for a in release['assets'] if a['name']==asset_name]
+                    if release['draft'] or release['prerelease'] or len(assets)!=1 or assets[0]['browser_download_url']!=url:
                         raise ValueError('bootstrap release asset identity mismatch')
                     record['release_id']=release['id'];record['asset_id']=assets[0]['id']
                 if enrolled['kind']=='git':
@@ -1096,6 +1142,8 @@ def discover(output):
                 related={watcher.get('source_id'),*watcher.get('related_source_ids',[])}
                 for source in accepted['sources']:
                     if source['id'] in related and source['kind'] in {'archive','release'}:
+                        if watcher['kind']=='release' and source['kind']=='release':
+                            _live_tag_provenance(watcher,watcher,source)
                         sources.freeze_source(source)
                 receipts.append({'schema':1,'pkgbase':name,'watcher_id':watcher['id'],'base':base,'recipe_commit':pins[name],'unchanged':True})
                 shutil.rmtree(work)
@@ -1127,7 +1175,8 @@ def discover(output):
                             if source['checksums'][algorithm]!='SKIP':
                                 source['checksums'][algorithm]=hashlib.new(algorithm,data).hexdigest()
                         if source['kind']=='release':
-                            assets=[a for a in transition['assets'] if a['name']==watcher['asset']]
+                            asset_name=sources.release_asset_name(watcher,version,source['id'])
+                            assets=[a for a in transition['assets'] if a['name']==asset_name]
                             if len(assets)!=1 or assets[0]['browser_download_url']!=source['url']:
                                 raise ValueError('release asset enrollment mismatch')
                             source['release_id']=transition['release_id'];source['asset_id']=assets[0]['id']

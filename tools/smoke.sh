@@ -19,6 +19,10 @@ if [[ ${1:-} != --inside ]]; then
   docker cp "$root/tools/smoke.sh" "$container:/smoke.sh"
   docker cp "$root/tools/apexshot-smoke.sh" "$container:/apexshot-smoke.sh"
   docker cp "$root/tools/native.py" "$container:/native.py"
+  docker cp "$root/tools/public-smoke.sh" "$container:/public-smoke.sh"
+  docker cp "$root/tools/dependency_repo.py" "$container:/dependency_repo.py"
+  docker cp "$root/tools/github_api.py" "$container:/github_api.py"
+  docker cp "$root/keys/n3t.asc" "$container:/n3t.asc"
   docker cp "$root/keys/arch-packages.asc" "$container:/key.asc"
   docker cp "$root/keys/fingerprint" "$container:/fingerprint.txt"
   docker cp "$1" "$container:/expected.json"
@@ -79,6 +83,26 @@ Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
 SigLevel = Required
 Server = $server
 EOF
+# Only helper targets need Spotify; its signed n3t repository follows the fixed GH snapshot.
+dependency_targets=()
+if python - <<'PY'
+import json,sys
+names={i['name'] for p in json.load(open('/expected.json'))['packages'] for i in p['files']}
+sys.exit(0 if names & {'spotify-adblock','spotify-remove-ad-banner'} else 1)
+PY
+then
+  mkdir -p /fresh/n3t /tools /keys
+  cp /dependency_repo.py /github_api.py /tools/
+  cp /n3t.asc /keys/n3t.asc
+  PYTHONPATH=/ python - <<'PY'
+import subprocess
+from tools.dependency_repo import configure_n3t
+def run(command, *, stream=False):
+    return subprocess.run(command, check=True, text=True, stdout=None if stream else subprocess.PIPE).stdout
+configure_n3t('/fresh/n3t', run=run, config='/fresh/pacman.conf', gpgdir='/fresh/gnupg')
+PY
+  dependency_targets=(vith-arch/spotify)
+fi
 cp /fresh/pacman.conf /evidence/pacman.conf
 pacman --config /fresh/pacman.conf -Syy --noconfirm
 pacman --config /fresh/pacman.conf -Fyy --noconfirm
@@ -96,7 +120,7 @@ for name in sorted(names):
     print(expected['pacman_repository']+'/'+name)
 PY
 mapfile -t targets < /evidence/targets.txt
-pacman --config /fresh/pacman.conf -S --noconfirm -- base python util-linux tmux desktop-file-utils binutils ca-certificates "${targets[@]}"
+pacman --config /fresh/pacman.conf -S --noconfirm -- base python util-linux tmux desktop-file-utils binutils ca-certificates man-db zip unzip "${dependency_targets[@]}" "${targets[@]}"
 # Resolver configuration is the only host configuration copied into the disposable root.
 mkdir -p /fresh/root/etc /fresh/root/fresh/home /fresh/root/fresh/config /fresh/root/fresh/data /fresh/root/fresh/runtime
 cp /etc/resolv.conf /fresh/root/etc/resolv.conf
@@ -118,7 +142,9 @@ PY
 chroot /fresh/root useradd --uid 1000 --home-dir /fresh/home --shell /bin/bash smoke
 chown -R 1000:1000 /fresh/root/fresh/home /fresh/root/fresh/config /fresh/root/fresh/data /fresh/root/fresh/runtime
 # Consumers receive no ambient CI environment and no privileges.
-consumer() { chroot /fresh/root /usr/bin/setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs -- env -i PATH=/usr/bin HOME=/fresh/home XDG_CONFIG_HOME=/fresh/config XDG_DATA_HOME=/fresh/data XDG_RUNTIME_DIR=/fresh/runtime LANG=C.UTF-8 TERM=xterm-256color "$@"; }
+consumer_namespace=()
+consumer() { "${consumer_namespace[@]}" chroot /fresh/root /usr/bin/setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs -- env -i PATH=/usr/bin HOME=/fresh/home XDG_CONFIG_HOME=/fresh/config XDG_DATA_HOME=/fresh/data XDG_RUNTIME_DIR=/fresh/runtime LANG=C.UTF-8 TERM=xterm-256color "$@"; }
+offline_consumer() { local -a consumer_namespace=(unshare --net); consumer "$@"; }
 desktop=/fresh/root/usr/share/applications/mount-archive.desktop
 desktop-file-validate "$desktop"
 cp "$desktop" /evidence/mount-archive.desktop
@@ -285,4 +311,67 @@ finally:
     thread.join(timeout=5)
     server.server_close()
 PY
+# Actual signed output membership gates new proofs; dependencies never enroll a case.
+cp /public-smoke.sh /fresh/root/public-smoke.sh
+cp /expected.json /fresh/root/expected.json
+python - <<'PY' > /evidence/public-targets.txt
+import json
+names={i['name'] for p in json.load(open('/expected.json'))['packages'] for i in p['files']}
+groups={
+    'carapace-bridge': {'carapace-bridge'}, 'carapace-spec-man': {'carapace-spec-man'},
+    'regclient-regctl': {'regclient-regctl'}, 'regclient-regsync': {'regclient-regsync'},
+    'regclient-regbot': {'regclient-regbot'},
+    'looking-glass': {'looking-glass','looking-glass-module-dkms','obs-plugin-looking-glass'},
+    'sentencepiece': {'sentencepiece','python-sentencepiece'}, 'surge-cli': {'surge'},
+}
+single=('pi','podcheck','spotify-adblock','spotify-remove-ad-banner','ttf-ioskeley-mono',
+        'ttf-ioskeley-mono-unhinted','vet','airgorah','asleap',
+        'computer-use-linux','i915ovmf','mdevctl','microsandbox',
+        'captiveportalautologin-vith-git','carapace-spec','crush','fresh-editor','prek','swag','zig0.15')
+groups.update({n:{n} for n in single})
+for proof,outputs in sorted(groups.items()):
+    if names & outputs:
+        if not outputs <= names:
+            raise SystemExit('incomplete split output proof enrollment: '+proof)
+        print(proof)
+PY
+# Runtime is a separately fetched, fully hash-verified prerequisite, not package payload.
+python - <<'PY'
+import hashlib,json,pathlib,re,tarfile,urllib.request
+packages=json.load(open('/expected.json'))['packages']
+package=next((p for p in packages if p['pkgbase']=='microsandbox'),None)
+if package is not None:
+    source=next(s for s in package['source_lock']['sources'] if s['id']=='microsandbox-runtime')
+    url=source['url']; digest=source['checksums']['sha256']
+    if not url.startswith('https://github.com/superradcompany/microsandbox/releases/download/') or not re.fullmatch('[a-f0-9]{64}',digest):
+        raise SystemExit('unsafe microsandbox runtime prerequisite')
+    archive=pathlib.Path('/fresh/microsandbox-runtime.tar.gz')
+    with urllib.request.urlopen(url,timeout=120) as response, archive.open('wb') as output:
+        while block:=response.read(1024*1024):
+            output.write(block)
+    with archive.open('rb') as file:
+        actual=hashlib.file_digest(file,'sha256').hexdigest()
+    if actual!=digest:
+        raise SystemExit('microsandbox runtime prerequisite digest mismatch')
+    home=pathlib.Path('/fresh/root/fresh/data/public-proofs/microsandbox/home')
+    with tarfile.open(archive) as tar:
+        members=tar.getmembers()
+        if {m.name for m in members}!={'msb','libkrunfw.so.5.6.1'} or not all(m.isfile() for m in members):
+            raise SystemExit('unexpected runtime prerequisite archive members')
+        for member in members:
+            destination=home/('bin' if member.name=='msb' else 'lib')/member.name
+            destination.parent.mkdir(parents=True,exist_ok=True)
+            destination.write_bytes(tar.extractfile(member).read())
+            destination.chmod(0o755)
+    proof={'source':source,'sha256':digest,'role':'separately acquired runtime prerequisite, not package payload'}
+    pathlib.Path('/evidence/microsandbox-prerequisite.json').write_text(json.dumps(proof,sort_keys=True)+'\n')
+PY
+chown -R 1000:1000 /fresh/root/fresh/data
+mapfile -t public_targets < /evidence/public-targets.txt
+for name in "${public_targets[@]}"; do
+  offline_consumer bash /public-smoke.sh "$name" > "/evidence/$name-consumer.txt" 2>&1
+done
+if [[ -d /fresh/root/fresh/data/public-proofs ]]; then
+  cp -a /fresh/root/fresh/data/public-proofs /evidence/
+fi
 printf 'All enrolled signed package consumer proofs passed (%s).\n' "${snapshot:-active}" > /evidence/result.txt

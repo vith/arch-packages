@@ -39,8 +39,10 @@ trap collect_checkpoint EXIT
 python3 "$root/tools/native.py" validate "$bundle"
 docker cp "$(dirname -- "$bundle")/." "$container:/input"
 work="$output/.harness"
-mkdir -p "$work/tools"
-for module in native sources recipe_gate github_api; do cp -- "$root/tools/$module.py" "$work/tools/$module.py"; done
+mkdir -p "$work/tools" "$work/keys"
+for module in native sources recipe_gate github_api dependency_repo; do cp -- "$root/tools/$module.py" "$work/tools/$module.py"; done
+cp -- "$root/keys/arch-packages.asc" "$work/keys/arch-packages.asc"
+cp -- "$root/keys/n3t.asc" "$work/keys/n3t.asc"
 cp -- "$root/tools/build.sh" "$work/tools/build.sh"
 docker cp "$work/." "$container:/harness"
 rm -r -- "$work"

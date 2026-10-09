@@ -107,6 +107,12 @@ review or automatic-authorization job does not skip validation.
 Only after authorization does each affected package execute its recipe and build
 in a disposable container without credentials or host mounts. Validation checks
 the resulting metadata and runtime behavior against the frozen inputs.
+Build dependencies resolve from the official Arch repositories first, then the
+signed `vith-gh` repository and the signed `vith-arch` repository at n3t. Both
+custom repositories require trusted database and package signatures. Workers
+resolve GitHub's latest-release redirect to a fixed snapshot before installing
+dependencies; consumer verification keeps its explicitly selected snapshot.
+Neither step receives publication signing credentials.
 Metadata-only events and explicit dispatches start the pipeline; scheduled
 reconciliation recovers missed events. A changed review head needs new
 authorization, but bookkeeping or controller movement must not cancel or repeat

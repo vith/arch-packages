@@ -201,6 +201,29 @@ depends = bash
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 dependency_names(text.replace('go>=1.26.2', invalid))
 
+    def test_split_runtime_dependencies_excluded_but_explicit_bootstrap_preserved(self):
+        text = """pkgbase = sentencepiece
+pkgver = 1.0
+pkgrel = 1
+arch = x86_64
+makedepends = cmake>=3
+checkdepends = python-google-genai>=1
+pkgname = sentencepiece-tools
+depends = sentencepiece-library=1.0
+depends = libprotobuf.so=32-64
+pkgname = sentencepiece-library
+depends_x86_64 = glibc>=2
+pkgname = sentencepiece-python
+depends_x86_64 = sentencepiece-tools
+"""
+        external = ['cmake', 'glibc', 'libprotobuf.so', 'python-google-genai']
+        self.assertEqual(dependency_names(text), external)
+        bootstrap = text.replace('arch = x86_64\n',
+                                 'arch = x86_64\nmakedepends = sentencepiece-library>=0.9\n'
+                                 'checkdepends_x86_64 = sentencepiece-tools\n')
+        self.assertEqual(dependency_names(bootstrap),
+                         sorted([*external, 'sentencepiece-library', 'sentencepiece-tools']))
+
     def test_invalid_harness_or_commit_identity_rejected(self):
         state = Path.home() / '.local/state/arch-packages/work/native-test'
         state.mkdir(parents=True, exist_ok=True)

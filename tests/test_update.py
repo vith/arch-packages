@@ -108,10 +108,156 @@ class CandidateBoundaries(unittest.TestCase):
             self.assertEqual(restored,evidence)
 
 
+    def test_branch_count_metadata_and_transition_reject_frozen_version_tamper(self):
+        git=update.sources.git
+        remote=self.root/'count-source';git('init',remote)
+        git('config','user.email','fixture@example.invalid',cwd=remote)
+        git('config','user.name','Fixture',cwd=remote)
+        git('symbolic-ref','HEAD','refs/heads/integration',cwd=remote)
+        native='git+'+str(remote)+'#branch=integration'
+        rules={'derivation':'frozen-git-revision-count','template':r'^r[0-9]+\.[0-9a-f]{7,40}$'}
+        policy={'sources':[{'id':'code','kind':'git','mutable':True,'source_template':native,'url_template':str(remote),'checksum_algorithm':'sha256','checksum_index':0}],
+                'automatic':{'version':{**rules,'assignment':'pkgver','literal_assignment':'pkgver=r1.abcdef0'},
+                             'pkgrel':{'value':'1','assignment':'pkgrel','literal_assignment':'pkgrel=1'},'checksums':[]}}
+        locks=[]
+        with patch.object(update.sources,'public_url',lambda value:value):
+            for count,label in enumerate(('old','new'),1):
+                (remote/'payload').write_text(label)
+                git('add','payload',cwd=remote);git('commit','-m',label,cwd=remote)
+                commit=git('rev-parse','HEAD',cwd=remote)
+                work=self.root/('count-'+label)
+                source=update.sources.freeze_source({'id':'code','kind':'git','source':native,'url':str(remote),'ref':'refs/heads/integration','commit':commit,'checksums':{'sha256':'SKIP'},'work_dir':str(work/'code')})
+                self.assertIsNone(source['git_context']['version_tag'])
+                version='r'+str(count)+'.'+git('rev-parse','--short=7',commit,cwd=remote)
+                recipe=self.root/label/'recipes/example';recipe.mkdir(parents=True)
+                (recipe/'PKGBUILD').write_text('pkgver='+version+'\npkgrel=1\n')
+                (recipe/'.SRCINFO').write_text(SRCINFO.replace('1.0',version).replace('pkgname = example','\tsource = '+native+'\n\tsha256sums = SKIP\npkgname = example'))
+                lock={'schema':1,'version':version+'-1','sources':[source]};locks.append(lock)
+                update.dump(self.root/label/'inputs/example.json',lock)
+                update.dump(self.root/label/'upstream/example.json',{'aur':None,'watchers':[]})
+                def offline_git(*args,**kwargs):
+                    if args[0] in {'fetch','ls-remote','clone'}:
+                        raise AssertionError('frozen metadata reached remote')
+                    return git(*args,**kwargs)
+                with patch.object(update.sources,'git',offline_git):
+                    result=update.frozen_metadata(recipe,lock,policy,work)
+                    self.assertEqual(result['version'],version+'-1')
+                    wrong=copy.deepcopy(lock);wrong['version']='r99.'+commit[:7]+'-1'
+                    with self.assertRaisesRegex(ValueError,'version mismatch'):
+                        update.frozen_metadata(recipe,wrong,policy,work,preserve_pkgrel=True)
+            live=update.independent_transition(self.root/'old',self.root/'new','example',policy,self.root/'count-live')
+            self.assertTrue(live['fast_forward'])
+            self.assertTrue(live['authentic'])
+            (remote/'payload').write_text('later')
+            git('add','payload',cwd=remote);git('commit','-m','later',cwd=remote)
+            with patch.object(update.sources,'discover_git',side_effect=AssertionError('no latest discovery')):
+                historical=update.frozen_transition(self.root/'old',self.root/'new','example',policy,self.root/'count-historical')
+            self.assertEqual(historical,live)
+            lock_path=self.root/'new/inputs/example.json'
+            watcher={'id':'branch','kind':'git','url':str(remote),'ref':'refs/heads/integration','source_id':'code'}
+            update.dump(self.root/'new/upstream/example.json',{'aur':None,'watchers':[watcher]})
+            with patch.object(update,'ROOT',self.root/'new'),patch.object(update,'control_checkout',return_value=('a'*40,{'example':'b'*40})),patch.object(update,'policy_at',return_value={'example':policy}):
+                update.discover(self.root/'count-discovery')
+            receipt=update.load(self.root/'count-discovery/receipts.json')['receipts'][0]
+            third=git('rev-parse','HEAD',cwd=remote)
+            expected='r3.'+git('rev-parse','--short=7',third,cwd=remote)
+            self.assertEqual(receipt['metadata']['pkgver'],expected)
+            self.assertEqual(receipt['lock']['sources'][0]['commit'],third)
+            self.assertEqual(receipt['lock']['version'],expected+'-1')
+            self.assertEqual(receipt['provenance']['watchers'],[watcher])
+            update.dump(self.root/'new/upstream/example.json',{'aur':None,'watchers':[]})
+            for mutation in ('count','commit','same-source'):
+                with self.subTest(mutation=mutation):
+                    wrong=copy.deepcopy(locks[1])
+                    if mutation=='count':
+                        wrong['version']=wrong['version'].replace('r2.','r9.')
+                    elif mutation=='commit':
+                        wrong['sources'][0]['commit']=locks[0]['sources'][0]['commit']
+                    else:
+                        wrong['sources']=copy.deepcopy(locks[0]['sources'])
+                    update.dump(lock_path,wrong)
+                    with self.assertRaises(ValueError):
+                        update.frozen_transition(self.root/'old',self.root/'new','example',policy,self.root/('count-bad-'+mutation))
+            update.dump(lock_path,locks[1])
+
+
+    def test_prefixed_tag_provenance_requires_prefixed_source_and_immutable_prefix(self):
+        git=update.sources.git
+        remote=self.root/'prefixed-tags';git('init',remote)
+        git('config','user.email','fixture@example.invalid',cwd=remote)
+        git('config','user.name','Fixture',cwd=remote)
+        (remote/'payload').write_text('release')
+        git('add','payload',cwd=remote);git('commit','-m','release',cwd=remote)
+        commit=git('rev-parse','HEAD',cwd=remote)
+        for tag in ('B5.0.1','B7'):
+            git('tag',tag,cwd=remote)
+        previous={'id':'release','kind':'tag','url':str(remote),'source_id':'code',
+                  'tag_pattern':r'^B([0-9]+(?:\.[0-9]+)*)$','version_prefix':'B',
+                  'accepted_tag':'B5.0.1','accepted_tag_object':commit,'accepted_peeled_commit':commit}
+        current={**previous,'accepted_tag':'B7'}
+        old={'aur':None,'watchers':[previous]};new={'aur':None,'watchers':[current]}
+        source={'id':'code','kind':'archive','source':'looking-glass-B7.tar.gz'}
+        lock={'sources':[source]}
+        policy={'sources':[{'id':'code','source_template':'looking-glass-{version}.tar.gz'}]}
+        self.assertEqual(update.verify_provenance(old,new,lock,policy),['release'])
+        numeric=copy.deepcopy(lock);numeric['sources'][0]['source']='looking-glass-7.tar.gz'
+        with self.assertRaisesRegex(ValueError,'watcher tag disagree'):
+            update.verify_provenance(old,new,numeric,policy)
+        changed=copy.deepcopy(new);changed['watchers'][0]['version_prefix']='C'
+        with self.assertRaisesRegex(ValueError,'watcher policy changed'):
+            update.verify_provenance(old,changed,lock,policy)
+
+    def test_grouped_release_provenance_authenticates_each_asset_without_primary_reuse(self):
+        git=update.sources.git
+        remote=self.root/'grouped-release';git('init',remote)
+        git('config','user.email','fixture@example.invalid',cwd=remote);git('config','user.name','Fixture',cwd=remote)
+        (remote/'payload').write_text('release');git('add','payload',cwd=remote);git('commit','-m','release',cwd=remote)
+        commit=git('rev-parse','HEAD',cwd=remote)
+        for tag in ('v1.0.0','v1.0.1'):
+            git('tag',tag,cwd=remote)
+        assets=[{'id':101,'name':'fonts-1.0.1.zip','browser_download_url':'https://example.invalid/fonts-1.0.1.zip'},
+                {'id':102,'name':'fonts-term-1.0.1.zip','browser_download_url':'https://example.invalid/fonts-term-1.0.1.zip'}]
+        release={'id':42,'draft':False,'prerelease':False,'assets':assets}
+        payload=self.root/'release.json';payload.write_text(json.dumps(release))
+        previous={'id':'font-release','kind':'release','repository':'fixture/fonts','url':str(remote),'source_id':'primary',
+                  'related_source_ids':['term'],'asset_templates':{'primary':'fonts-{version}.zip','term':'fonts-term-{version}.zip'},
+                  'tag_pattern':r'^v([0-9]+\.[0-9]+\.[0-9]+)$','accepted_tag':'v1.0.0',
+                  'accepted_tag_object':commit,'accepted_peeled_commit':commit,'release_id':40,'asset_id':99}
+        current={**previous,'accepted_tag':'v1.0.1','release_id':42,'asset_id':101}
+        old={'aur':None,'watchers':[previous]};new={'aur':None,'watchers':[current]}
+        lock={'sources':[{'id':source_id,'kind':'release','source':asset['browser_download_url'],
+                          'url':asset['browser_download_url'],'release_id':42,'asset_id':asset['id']}
+                         for source_id,asset in zip(('primary','term'),assets)]}
+        policy={'sources':[{'id':'primary','source_template':'https://example.invalid/fonts-{version}.zip'},
+                           {'id':'term','source_template':'https://example.invalid/fonts-term-{version}.zip'}]}
+        fetch=update.sources.fetch
+        def fixture_fetch(url,destination=None):
+            self.assertEqual(url,'https://api.github.com/repos/fixture/fonts/releases/tags/v1.0.1')
+            return fetch(payload.as_uri(),destination)
+        with patch.object(update.sources,'public_url',lambda value:value),patch.object(update.sources,'fetch',fixture_fetch):
+            self.assertEqual(update.verify_provenance(old,new,lock,policy),['font-release'])
+            for mutation in ('related-id','related-url','mapping','primary-watcher-id'):
+                with self.subTest(mutation=mutation):
+                    wrong=copy.deepcopy(lock);provenance=copy.deepcopy(new)
+                    if mutation=='related-id':
+                        wrong['sources'][1]['asset_id']=101
+                    elif mutation=='related-url':
+                        wrong['sources'][1]['url']=wrong['sources'][0]['url']
+                    elif mutation=='mapping':
+                        provenance['watchers'][0]['asset_templates']['term']='fonts-{version}.zip'
+                    else:
+                        provenance['watchers'][0]['asset_id']=999
+                    with self.assertRaises(ValueError):
+                        update.verify_provenance(old,provenance,wrong,policy)
+            payload.write_text(json.dumps({**release,'assets':assets+[assets[1]]}))
+            with self.assertRaisesRegex(ValueError,'identity mismatch'):
+                update.verify_provenance(old,new,lock,policy)
+
     def copy_trusted_controller(self, destination):
         repository = Path(update.__file__).resolve().parents[1]
         harness = ('tools/build.sh', 'tools/native.py', 'tools/sources.py',
-                   'tools/recipe_gate.py', 'tools/github_api.py')
+                   'tools/recipe_gate.py', 'tools/github_api.py', 'tools/dependency_repo.py',
+                   'keys/arch-packages.asc', 'keys/n3t.asc')
         for name in dict.fromkeys((*recipe_state.CONTROLS, *harness)):
             target = destination/name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -242,6 +388,48 @@ class CandidateBoundaries(unittest.TestCase):
         self.assertEqual((recipe/'.SRCINFO').read_text(),claims)
         with patch.object(update.sources,'fetch',return_value=b'changed remote bytes'),self.assertRaisesRegex(ValueError,'checksum'):
             update.static_metadata(recipe,lock,policy,self.root/'work')
+
+    def test_split_runtime_equalities_follow_only_automatic_native_version(self):
+        recipe=self.root/'split-discovery';recipe.mkdir()
+        payload=b'immutable split release'
+        digest=hashlib.sha256(payload).hexdigest()
+        claims=('pkgbase = sentencepiece\n\tpkgver = 1.0\n\tpkgrel = 3\n\tepoch = 2\n'
+                '\tarch = x86_64\n\tsource = code-1.0.tar.gz::https://example.invalid/v1.0.tar.gz\n'
+                '\tsha256sums = '+'a'*64+'\n\tmakedepends = sentencepiece=2:1.0-3\n'
+                '\tcheckdepends = sentencepiece=2:1.0-3\npkgname = sentencepiece\n'
+                'pkgname = python-sentencepiece\n\tdepends = sentencepiece=2:1.0-3\n'
+                '\tdepends_x86_64 = sentencepiece=2:1.0-3\n'
+                '\tdepends = python-sentencepiece=2:1.0-3\n'
+                '\tdepends = unrelated=2:1.0-3\n\tdepends = sentencepiece>=2:1.0-3\n'
+                '\tdepends = sentencepiece=2:0.9-1\n\tdepends_aarch64 = sentencepiece=2:1.0-3\n')
+        code=('pkgbase=sentencepiece\npkgname=(sentencepiece python-sentencepiece)\n'
+              'pkgver=1.1\npkgrel=1\nepoch=2\n'
+              'package_python-sentencepiece() { depends=("${pkgbase}=${pkgver}-${pkgrel}"); }\n')
+        (recipe/'PKGBUILD').write_text(code)
+        (recipe/'.SRCINFO').write_text(claims)
+        policy={'sources':[{'id':'code','source_template':'code-{version}.tar.gz::https://example.invalid/v{version}.tar.gz','checksum_algorithm':'sha256','checksum_index':0}],
+                'automatic':{'version':{'assignment':'pkgver','derivation':'literal-upstream-version','template':r'[0-9]+\.[0-9]+'},'pkgrel':{'value':'1'}}}
+        source={key:None for key in update.sources.FIELDS}
+        source.update(id='code',kind='archive',source='code-1.1.tar.gz::https://example.invalid/v1.1.tar.gz',
+                      url='https://example.invalid/v1.1.tar.gz',checksums={'sha256':digest})
+        lock={'schema':1,'version':'2:1.1-1','sources':[source]}
+        expected=claims.replace('pkgver = 1.0','pkgver = 1.1').replace('pkgrel = 3','pkgrel = 1')
+        expected=expected.replace('code-1.0.tar.gz','code-1.1.tar.gz').replace('/v1.0.tar.gz','/v1.1.tar.gz').replace('a'*64,digest)
+        for name in ('sentencepiece','python-sentencepiece'):
+            for key in ('depends','depends_x86_64'):
+                expected=expected.replace('\t'+key+' = '+name+'=2:1.0-3\n','\t'+key+' = '+name+'=2:1.1-1\n')
+        for render in (update.static_metadata,update.frozen_metadata):
+            with self.subTest(renderer=render.__name__),patch.object(update.sources,'fetch',return_value=payload):
+                result=render(recipe,lock,policy,self.root/'split-work')
+                self.assertEqual(result['srcinfo'],expected)
+                self.assertEqual(result['version'],'2:1.1-1')
+                submitted=render(recipe,lock,policy,self.root/'split-human',preserve_pkgrel=True)
+                self.assertEqual(submitted['srcinfo'],claims)
+                self.assertEqual(submitted['version'],'2:1.0-3')
+        self.assertEqual((recipe/'PKGBUILD').read_text(),code)
+        self.assertEqual((recipe/'.SRCINFO').read_text(),claims)
+        with patch.object(update.sources,'fetch',return_value=b'tampered archive'),self.assertRaisesRegex(ValueError,'checksum'):
+            update.static_metadata(recipe,lock,policy,self.root/'split-tamper')
 
     def test_aur_three_way_preserves_local_correction_and_payload(self):
         recipe=self.root/'maintained';recipe.mkdir()
