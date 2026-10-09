@@ -45,6 +45,33 @@ class SourceContracts(unittest.TestCase):
         sources.git('fetch', self.repo, 'HEAD', cwd=checkout)
         self.assertEqual(sources.git('rev-parse', 'FETCH_HEAD', cwd=checkout), sources.git('rev-parse', 'HEAD', cwd=self.repo))
 
+    def test_frozen_aur_uses_exact_commits_after_branch_advance(self):
+        watcher={'package':'example','url':self.url,'ref':'refs/heads/integration','work_dir':str(self.root/'frozen-aur')}
+        old=self.head
+        (self.repo/'file').write_text('second');sources.git('add','file',cwd=self.repo);sources.git('commit','-m','second',cwd=self.repo)
+        selected=sources.git('rev-parse','HEAD',cwd=self.repo)
+        (self.repo/'file').write_text('third');sources.git('add','file',cwd=self.repo);sources.git('commit','-m','third',cwd=self.repo)
+        with patch.object(sources,'public_url',lambda value:value):
+            transition=sources.frozen_aur(watcher,{'commit':old},{'commit':selected})
+            live=sources.discover_aur({**watcher,'work_dir':str(self.root/'live-aur')},{'commit':old})
+        self.assertEqual(transition['files'],[{'path':'file','mode':'100644','content':'second'}])
+        self.assertEqual(transition['previous_files'],[{'path':'file','mode':'100644','content':'first'}])
+        self.assertTrue(transition['fast_forward'])
+        self.assertNotEqual(live['commit'],transition['commit'])
+        with self.assertRaisesRegex(ValueError,'invalid frozen AUR'):
+            sources.frozen_aur({**watcher,'work_dir':str(self.root/'bad-aur')},{'commit':old},{'commit':'--upload-pack=bad'})
+
+    def test_frozen_ancestry_survives_new_tags_and_checks_immutable_identity(self):
+        frozen=self.freeze(self.root/'ancestry')
+        template=r'^([0-9]+(?:\.[0-9]+)+)\.fork\.r([0-9]+)\.g([0-9a-f]{12})$'
+        (self.repo/'file').write_text('second');sources.git('add','file',cwd=self.repo);sources.git('commit','-m','second',cwd=self.repo)
+        sources.git('tag','-f','v1.0.0',cwd=self.repo)
+        self.assertEqual(sources.frozen_ancestry_version(frozen,self.root/'ancestry/freeze.git',template),'1.0.0.fork.r0.g'+self.head[:12])
+        frozen['git_context']['version_tag']['commit']='f'*40
+        with self.assertRaisesRegex(ValueError,'version tag'):
+            sources.frozen_ancestry_version(frozen,self.root/'ancestry/freeze.git',template)
+
+
     def test_version_tag_context_changes_even_with_same_commit(self):
         frozen=self.freeze(self.root/'first')
         sources.git('tag','-a','v1.0.1','-m','new version',cwd=self.repo)
@@ -75,6 +102,50 @@ class SourceContracts(unittest.TestCase):
         with patch.object(sources,'public_url',lambda value:value):
             result=sources.discover_git({'url':self.url,'ref':'refs/heads/integration','work_dir':str(self.root/'discovery')},frozen)
         self.assertIsNone(result)
+
+    def test_static_ancestry_uses_authenticated_tag_count_and_twelve_digit_sha(self):
+        for value in ('second','third'):
+            (self.repo/'file').write_text(value)
+            sources.git('add','file',cwd=self.repo)
+            sources.git('commit','-m',value,cwd=self.repo)
+        self.head=sources.git('rev-parse','HEAD',cwd=self.repo)
+        frozen=self.freeze(self.root/'freeze')
+        template=r'^([0-9]+(?:\.[0-9]+)+)\.fork\.r([0-9]+)\.g([0-9a-f]{12})$'
+        version=sources.ancestry_version(frozen,self.root/'freeze/freeze.git',template)
+        self.assertEqual(version,'1.0.0.fork.r2.g'+self.head[:12])
+        sources.git('tag','-f','v1.0.0',cwd=self.repo)
+        with self.assertRaisesRegex(ValueError,'authentic tag'):
+            sources.ancestry_version(frozen,self.root/'freeze/freeze.git',template)
+
+    def test_frozen_archive_rejects_changed_transport_bytes(self):
+        archive=self.root/'release.tar'
+        archive.write_bytes(b'original immutable archive')
+        spec={'id':'archive','kind':'archive','source':'release.tar','url':archive.as_uri(),
+              'checksums':{'sha256':hashlib.sha256(archive.read_bytes()).hexdigest()}}
+        with patch.object(sources,'public_url',lambda value:value):
+            frozen=sources.freeze_source(spec)
+            self.assertEqual(frozen['checksums'],spec['checksums'])
+            archive.write_bytes(b'changed release bytes')
+            with self.assertRaisesRegex(ValueError,'source checksum mismatch'):
+                sources.freeze_source(frozen)
+
+
+    def test_static_git_integrity_matches_sanitized_native_archive(self):
+        (self.repo/'.gitattributes').write_text('file export-ignore\n')
+        sources.git('add','.gitattributes',cwd=self.repo)
+        sources.git('commit','-m','attributes',cwd=self.repo)
+        sources.git('tag','v1.0.1',cwd=self.repo)
+        self.head=sources.git('rev-parse','HEAD',cwd=self.repo)
+        spec={'id':'code','kind':'git','source':'git+'+self.url+'#tag=v1.0.1','url':self.url,'ref':'refs/tags/v1.0.1','checksums':{'sha256':'a'*64},'work_dir':str(self.root/'freeze')}
+        with patch.object(sources,'public_url',lambda value:value):
+            frozen=sources.freeze_source(spec)
+        mirror=self.root/'freeze/freeze.git'
+        archive=subprocess.run(['git','-c','core.abbrev=no','archive','--format','tar','refs/tags/v1.0.1'],cwd=mirror,check=True,capture_output=True).stdout
+        self.assertEqual(sources.git_checksums(frozen,mirror),{'sha256':hashlib.sha256(archive).hexdigest()})
+        # Attribute-controlled omission must not silently alter the pinned bytes.
+        (mirror/'info/attributes').write_text('')
+        with self.assertRaisesRegex(ValueError,'sanitized'):
+            sources.git_checksums(frozen,mirror)
 
     def test_version_tag_tamper_fails(self):
         frozen=self.freeze(self.root/'first')

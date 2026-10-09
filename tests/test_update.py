@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import io
 import json
@@ -9,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools import update
+from tools import recipe_state, update
 
 
 SRCINFO='pkgbase = example\n\tpkgver = 1.0\n\tpkgrel = 1\n\tarch = x86_64\npkgname = example\n'
@@ -40,6 +41,101 @@ class CandidateBoundaries(unittest.TestCase):
         root.mkdir(parents=True,exist_ok=True)
         self.temp=tempfile.TemporaryDirectory(dir=root);self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
+        for target in ('tools.recipe_state.save','tools.recipe_state.attest'):
+            mocked=patch(target)
+            mocked.start();self.addCleanup(mocked.stop)
+
+    def test_frozen_transition_survives_branch_advance_but_rejects_frozen_tamper(self):
+        git=update.sources.git
+        remote=self.root/'source';git('init',remote)
+        git('config','user.email','fixture@example.invalid',cwd=remote)
+        git('config','user.name','Fixture',cwd=remote)
+        (remote/'payload').write_text('first');git('add','payload',cwd=remote);git('commit','-m','first',cwd=remote)
+        git('branch','-M','integration',cwd=remote);git('tag','v1.0.0',cwd=remote)
+        template=r'^([0-9]+(?:\.[0-9]+)+)\.fork\.r([0-9]+)\.g([0-9a-f]{12})$'
+        native='git+'+str(remote)+'#branch=integration'
+        policy={'sources':[{'id':'code','kind':'git','mutable':True,'source_template':native},
+                           {'id':'patch','kind':'local','mutable':False,'source_template':'local.patch'}],
+                'automatic':{'version':{'derivation':'frozen-authentic-tag-ancestry','template':template}}}
+        locks=[]
+        with patch.object(update.sources,'public_url',lambda value:value):
+            for index,label in enumerate(('old','new')):
+                if index:
+                    (remote/'payload').write_text('second');git('add','payload',cwd=remote);git('commit','-m','second',cwd=remote)
+                head=git('rev-parse','HEAD',cwd=remote)
+                source=update.sources.freeze_source({'id':'code','kind':'git','source':native,'url':str(remote),'ref':'refs/heads/integration','commit':head,'checksums':{'sha256':'SKIP'},'work_dir':str(self.root/('freeze-'+label))})
+                version='1.0.0.fork.r'+str(index)+'.g'+head[:12]
+                tree=self.root/label
+                recipe=tree/'recipes/example';recipe.mkdir(parents=True)
+                (recipe/'PKGBUILD').write_text('pkgver='+version+'\n')
+                (recipe/'.SRCINFO').write_text(SRCINFO.replace('1.0',version))
+                (recipe/'local.patch').write_text('accepted patch')
+                auxiliary=update.sources.freeze_source({'id':'patch','kind':'local','source':'local.patch','checksums':{'sha256':hashlib.sha256(b'accepted patch').hexdigest()}})
+                lock={'schema':1,'version':version+'-1','sources':[source,auxiliary]};locks.append(lock)
+                update.dump(tree/'inputs/example.json',lock)
+                update.dump(tree/'upstream/example.json',{'aur':None,'watchers':[]})
+            (remote/'payload').write_text('third');git('add','payload',cwd=remote);git('commit','-m','third',cwd=remote)
+            sources=update.sources
+            with patch.object(sources,'discover_git',side_effect=AssertionError('no latest discovery')):
+                evidence=update.frozen_transition(self.root/'old',self.root/'new','example',policy,self.root/'historical')
+            self.assertTrue(evidence['fast_forward'])
+            self.assertTrue(evidence['authentic'])
+            with self.assertRaises(ValueError):
+                update.independent_transition(self.root/'old',self.root/'new','example',policy,self.root/'live')
+            accepted_lock=copy.deepcopy(locks[1])
+            lock_path=self.root/'new/inputs/example.json'
+            local_path=self.root/'old/recipes/example/local.patch'
+            accepted_local=local_path.read_bytes()
+            for mutation in ('count','tag','source','local'):
+                with self.subTest(mutation=mutation):
+                    proposed=copy.deepcopy(accepted_lock)
+                    if mutation=='count':
+                        proposed['version']=proposed['version'].replace('.r1.','.r9.')
+                    elif mutation=='tag':
+                        proposed['sources'][0]['git_context']['version_tag']['commit']='f'*40
+                    elif mutation=='source':
+                        proposed['sources'][0]['commit']=locks[0]['sources'][0]['commit']
+                    else:
+                        local_path.write_text('altered patch')
+                    update.dump(lock_path,proposed)
+                    try:
+                        with self.assertRaises(ValueError):
+                            update.frozen_transition(self.root/'old',self.root/'new','example',policy,self.root/('bad-'+mutation))
+                    finally:
+                        update.dump(lock_path,accepted_lock)
+                        local_path.write_bytes(accepted_local)
+            restored=update.frozen_transition(self.root/'old',self.root/'new','example',policy,self.root/'restored')
+            self.assertEqual(restored,evidence)
+
+
+    def copy_trusted_controller(self, destination):
+        repository = Path(update.__file__).resolve().parents[1]
+        harness = ('tools/build.sh', 'tools/native.py', 'tools/sources.py',
+                   'tools/recipe_gate.py', 'tools/github_api.py')
+        for name in dict.fromkeys((*recipe_state.CONTROLS, *harness)):
+            target = destination/name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(repository/name, target)
+
+    def test_controller_and_image_changes_do_not_select_packages(self):
+        old=self.root/'old';new=self.root/'new'
+        old.mkdir();new.mkdir()
+        for tree in (old,new):
+            update.dump(tree/'packages.json',{'schema':1,'packages':[{'pkgbase':'example','outputs':[]}]})
+        (new/'tools').mkdir();(new/'tools/controller.py').write_text('new controller')
+        (new/'build-image.txt').write_text('new image')
+        self.assertEqual(update.affected_packages(old,new,{'example':{}}),([],True))
+        update.dump(new/'packages.json',{'schema':1,'packages':[{'pkgbase':'example','outputs':[{'name':'example'}]}]})
+        self.assertEqual(update.affected_packages(old,new,{'example':{}}),(['example'],True))
+
+    def test_unapproved_main_tests_and_build_validation_never_execute(self):
+        record={'kind':'code','pr_number':1,'base':'a'*40,'head':'b'*40}
+        with patch('tools.recipe_candidates.verify_authorization',side_effect=ValueError('unapproved')),patch.object(update,'pr_identity'),patch.object(update,'checkout_data') as checkout,patch.object(update,'run_candidate_tests') as tests,patch.object(update,'validate_build_outputs') as outputs:
+            with self.assertRaisesRegex(ValueError,'unapproved'):
+                update.run_approved_tests(record,self.root)
+            with self.assertRaisesRegex(ValueError,'unapproved'):
+                update.validate_build(record,self.root)
+            checkout.assert_not_called();tests.assert_not_called();outputs.assert_not_called()
 
     def archive(self, entries):
         archive=self.root/'input.tar'
@@ -88,6 +184,64 @@ class CandidateBoundaries(unittest.TestCase):
         update.render_recipe(recipe,policy,'1.1',{'code':{'sha256':new}})
         self.assertEqual((recipe/'PKGBUILD').read_text(),first)
         self.assertEqual(first,text.replace('pkgver=1.0','pkgver=1.1').replace(old,new))
+
+    def test_static_human_metadata_is_preserved_without_evaluating_recipe(self):
+        recipe=self.root/'submitted';recipe.mkdir()
+        sentinel=self.root/'executed'
+        code='touch '+str(sentinel)+'\npkgver=$(printf 9.0)\npkgrel=7\n'
+        claims=SRCINFO.replace('pkgver = 1.0','pkgver = 9.0').replace('pkgrel = 1','pkgrel = 7')
+        (recipe/'PKGBUILD').write_text(code)
+        (recipe/'.SRCINFO').write_text(claims)
+        lock={'schema':1,'version':'9.0-7','sources':[]}
+        result=update.static_metadata(recipe,lock,{},self.root/'work',preserve_pkgrel=True)
+        self.assertEqual(result['version'],'9.0-7')
+        self.assertEqual(result['srcinfo'],claims)
+        self.assertEqual((recipe/'PKGBUILD').read_text(),code)
+        self.assertEqual((recipe/'.SRCINFO').read_text(),claims)
+        self.assertFalse(sentinel.exists())
+
+    def test_bootstrap_freezes_enrollment_without_executing_recipe(self):
+        control=self.root/'control';recipe=control/'recipes/example';recipe.mkdir(parents=True)
+        sentinel=self.root/'executed'
+        payload=b'enrolled local source'
+        digest=hashlib.sha256(payload).hexdigest()
+        (recipe/'payload').write_bytes(payload)
+        (recipe/'PKGBUILD').write_text('touch '+str(sentinel)+'\npkgver=1.0\npkgrel=7\n')
+        claims=SRCINFO.replace('pkgrel = 1','pkgrel = 7').replace('pkgname = example','\tsource = payload\n\tsha256sums = '+digest+'\npkgname = example')
+        (recipe/'.SRCINFO').write_text(claims)
+        policy={'sources':[{'id':'payload','kind':'local','source_template':'payload','url_template':None,'checksum_algorithm':'sha256','checksum_index':0}], 'automatic':{'version':{'assignment':'pkgver','literal_assignment':'pkgver=1.0','derivation':'literal-upstream-version','template':r'^[0-9]+(?:\.[0-9]+)*$'},'pkgrel':{'assignment':'pkgrel','literal_assignment':'pkgrel=7','value':'1'},'checksums':[]}}
+        output=self.root/'bootstrap'
+        with patch.object(update,'ROOT',control),patch.object(update,'control_checkout',return_value=('a'*40,{'example':'b'*40})),patch.object(update,'policy_at',return_value={'example':policy}),patch.object(update,'repository',return_value='owner/repo'):
+            update.bootstrap(output)
+        self.assertFalse(sentinel.exists())
+        lock=update.load(output/'example/lock.json')
+        self.assertEqual(lock['version'],'1.0-7')
+        self.assertEqual(lock['sources'][0]['checksums'],{'sha256':digest})
+        self.assertEqual((output/'example/recipe/.SRCINFO').read_text(),claims)
+        self.assertEqual(update.load(output/'bootstrap.json')['recipe_pins'],{'example':'b'*40})
+
+    def test_static_discovery_renders_version_sources_and_integrity_claims(self):
+        recipe=self.root/'discovery';recipe.mkdir()
+        payload=b'new immutable archive'
+        digest=hashlib.sha256(payload).hexdigest()
+        old='a'*64
+        claims=SRCINFO.replace('pkgname = example','\tsource = code-1.0.tar.gz::https://example.invalid/v1.0.tar.gz\n\tsha256sums = '+old+'\npkgname = example')
+        code="pkgver=1.1\npkgrel=1\npackage() { touch never-execute; }\n"
+        (recipe/'PKGBUILD').write_text(code)
+        (recipe/'.SRCINFO').write_text(claims)
+        policy={'sources':[{'id':'code','source_template':'code-{version}.tar.gz::https://example.invalid/v{version}.tar.gz','checksum_algorithm':'sha256','checksum_index':0}], 'automatic':{'version':{'assignment':'pkgver','derivation':'literal-upstream-version','template':r'^[0-9]+(?:\.[0-9]+)*$'},'pkgrel':{'value':'1'}}}
+        source={key:None for key in update.sources.FIELDS}
+        source.update(id='code',kind='archive',source='code-1.1.tar.gz::https://example.invalid/v1.1.tar.gz',url='https://example.invalid/v1.1.tar.gz',checksums={'sha256':digest})
+        lock={'schema':1,'version':'1.0-1','sources':[source]}
+        with patch.object(update.sources,'fetch',return_value=payload):
+            result=update.static_metadata(recipe,lock,policy,self.root/'work')
+        self.assertEqual(result['version'],'1.1-1')
+        self.assertIn('source = '+source['source'],result['srcinfo'])
+        self.assertIn('sha256sums = '+digest,result['srcinfo'])
+        self.assertEqual((recipe/'PKGBUILD').read_text(),code)
+        self.assertEqual((recipe/'.SRCINFO').read_text(),claims)
+        with patch.object(update.sources,'fetch',return_value=b'changed remote bytes'),self.assertRaisesRegex(ValueError,'checksum'):
+            update.static_metadata(recipe,lock,policy,self.root/'work')
 
     def test_aur_three_way_preserves_local_correction_and_payload(self):
         recipe=self.root/'maintained';recipe.mkdir()
@@ -142,13 +296,13 @@ class CandidateBoundaries(unittest.TestCase):
         evidence['packages'][0]['recipe_commit']='9'*40
         update.dump(self.root/'native-evidence.json',evidence)
         with patch.object(update,'pr_identity'),patch.object(update,'status') as status,self.assertRaisesRegex(ValueError,'frozen input'):
-            update.validate_build(record,self.root)
+            update.validate_build_outputs(record,self.root)
         status.assert_not_called()
         evidence['packages'][0]['recipe_commit']=record['packages'][0]['recipe_commit']
         evidence['recipe_pins']={'example':'9'*40}
         update.dump(self.root/'native-evidence.json',evidence)
         with patch.object(update,'pr_identity'),patch.object(update,'status') as status,self.assertRaisesRegex(ValueError,'recipe_pins'):
-            update.validate_build(record,self.root)
+            update.validate_build_outputs(record,self.root)
         status.assert_not_called()
 
     def test_affected_manifest_includes_hidden_content_modes_and_symlink_targets(self):
@@ -168,7 +322,7 @@ class CandidateBoundaries(unittest.TestCase):
                 (recipe/'link').unlink();(recipe/'link').symlink_to('other' if mutation=='link' else '.hidden')
                 self.assertEqual(update.affected_packages(old,new,{'example':{}}),(['example'],False))
         (new/'.gitmodules').write_text('untrusted URL')
-        self.assertEqual(update.affected_packages(old,new,{'example':{},'second':{}}),(['example','second'],True))
+        self.assertEqual(update.affected_packages(old,new,{'example':{},'second':{}}),(['example'],True))
 
     def test_prepare_classifies_full_pinned_recipe_and_history_not_opaque_sha(self):
         policy={'pkgbase':'example','sources':[],'automatic':{'version':{'assignment':'pkgver'},'pkgrel':{'assignment':'pkgrel'},'checksums':[]}}
@@ -177,6 +331,7 @@ class CandidateBoundaries(unittest.TestCase):
                 fixture=self.root/mutation
                 for label,version in [('old','1.0'),('new','1.1')]:
                     root=fixture/label;recipe=root/'recipes/example';recipe.mkdir(parents=True)
+                    self.copy_trusted_controller(root)
                     (root/'packages.json').write_text(json.dumps({'schema':1,'packages':[policy]}))
                     (root/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:'+'a'*64)
                     (root/'.gitmodules').write_text('enrolled modules')
@@ -199,7 +354,8 @@ class CandidateBoundaries(unittest.TestCase):
                     return Path(shutil.copytree(fixture/('old' if sha=='a'*40 else 'new'),destination))
                 evidence={'srcinfo':(recipe/'.SRCINFO').read_text(),'checksums':{},'source_templates_verified':True,'lock_verified':True,'auxiliary_inputs_verified':True,'authentic':True,'fast_forward':True}
                 with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'},clear=True),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'run_candidate_tests'),patch.object(update,'independent_transition',return_value=evidence),patch.object(update.recipes,'is_ancestor',return_value=mutation!='rewrite'),patch('tools.recipe_gate._compare',return_value=1),patch.object(update,'status'):
-                    record=update.prepare(1,fixture/'prepared')
+                    with patch.object(update,'run_candidate_tests',side_effect=AssertionError('unapproved execution')),patch.object(recipe_state,'load_optional',return_value=None):
+                        record=update.prepare(1,fixture/'prepared')
                 self.assertFalse(record['auto_merge'])
                 self.assertEqual(record['review_environment'],'code-review')
                 self.assertEqual(record['packages'][0]['recipe_commit'],'2'*40)
@@ -212,6 +368,7 @@ class CandidateBoundaries(unittest.TestCase):
         retired = {'pkgbase': 'retired', 'sources': [], 'automatic': {}}
         def checkout(sha, destination, pins):
             destination.mkdir()
+            self.copy_trusted_controller(destination)
             is_old = sha == 'a'*40
             pins.update({'kept': '1'*40, **({'retired': '2'*40} if is_old else {})})
             update.dump(destination/'packages.json', {'schema': 1, 'packages': [kept, retired] if is_old else [kept]})
@@ -223,10 +380,35 @@ class CandidateBoundaries(unittest.TestCase):
             (recipe/'.SRCINFO').write_text(SRCINFO.replace('example', 'kept'))
             return destination
         with patch.dict(os.environ, {'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1'}),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'), patch.object(update, 'repository', return_value='owner/repo'), patch.object(update, 'pr_identity', return_value=({}, 'a'*40, 'b'*40)), patch.object(update, 'checkout_data', side_effect=checkout), patch.object(update, 'harness_digest', return_value='e'*64), patch.object(update, 'run_candidate_tests'), patch.object(update, 'independent_transition', return_value=None), patch.object(update, 'status'):
-            record = update.prepare(1, self.root/'prepared-retirement')
-        self.assertEqual([package['pkgbase'] for package in record['packages']], ['kept'])
+            with patch.object(recipe_state, 'load_optional', return_value=None):
+                record = update.prepare(1, self.root/'prepared-retirement')
+        self.assertEqual(record['packages'], [])
         self.assertFalse(record['mechanical'])
         self.assertIn({'pkgbase': 'retired', 'decision': 'manual', 'reason': 'Package enrollment retired'}, record['decisions'])
+
+    def test_new_enrollment_is_frozen_for_one_authorized_build(self):
+        kept={'pkgbase':'kept','sources':[],'automatic':{}}
+        added={'pkgbase':'added','sources':[],'automatic':{}}
+        def checkout(sha,destination,pins):
+            is_old=sha=='a'*40
+            policies=[kept] if is_old else [kept,added]
+            self.copy_trusted_controller(destination)
+            update.dump(destination/'packages.json',{'schema':1,'packages':policies})
+            (destination/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:'+'e'*64)
+            for policy in policies:
+                name=policy['pkgbase'];pins[name]=('1' if name=='kept' else '2')*40
+                update.dump(destination/'inputs'/f'{name}.json',{'schema':1,'version':'1.0-1','sources':[]})
+                recipe=destination/'recipes'/name;recipe.mkdir(parents=True)
+                (recipe/'PKGBUILD').write_text('pkgver=1.0\\npkgrel=1\\n')
+                (recipe/'.SRCINFO').write_text(SRCINFO.replace('example',name))
+            return destination
+        with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'}),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'run_candidate_tests',side_effect=AssertionError('unapproved execution')),patch.object(update,'status'):
+            with patch.object(recipe_state,'load_optional',return_value=None):
+                record=update.prepare(1,self.root/'prepared-enrollment')
+        self.assertEqual([package['pkgbase'] for package in record['packages']],['added'])
+        self.assertIsNone(record['packages'][0]['previous_recipe_commit'])
+        self.assertEqual(record['review_environment'],'code-review')
+        self.assertFalse(record['auto_merge'])
 
     def test_pin_lookup_rejects_flattened_or_wrong_gitlink(self):
         for mode,kind,sha in [('100644','blob','1'*40),('040000','tree','1'*40),('160000','commit','not-a-sha')]:
@@ -237,18 +419,18 @@ class CandidateBoundaries(unittest.TestCase):
         record,evidence,path=self.record()
         evidence['packages'][0]['files']=[];update.dump(self.root/'native-evidence.json',evidence)
         with patch.object(update,'pr_identity'),patch.object(update,'status') as status,self.assertRaisesRegex(ValueError,'missing/extra'):
-            update.validate_build(record,self.root)
+            update.validate_build_outputs(record,self.root)
         status.assert_not_called()
 
     def test_native_metadata_and_bytes_are_bound(self):
         record,evidence,path=self.record()
         path.write_bytes(b'altered')
         with patch.object(update,'pr_identity'),patch.object(update,'status') as status,self.assertRaisesRegex(ValueError,'bytes/version'):
-            update.validate_build(record,self.root)
+            update.validate_build_outputs(record,self.root)
         status.assert_not_called()
         path.write_bytes(b'package bytes');evidence['packages'][0]['metadata']['srcinfo']=SRCINFO.replace('1.0','2.0');update.dump(self.root/'native-evidence.json',evidence)
         with patch.object(update,'pr_identity'),patch.object(update,'status'),self.assertRaisesRegex(ValueError,'metadata'):
-            update.validate_build(record,self.root)
+            update.validate_build_outputs(record,self.root)
 
     def test_stale_head_after_human_approval_cannot_finalize(self):
         record,evidence,path=self.record();record['auto_merge']=False

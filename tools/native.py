@@ -212,12 +212,35 @@ def omp_proof(cli: Path, addon: Path, version: str, cwd: Path, env: dict) -> dic
     return {'runtime_identity': expected, 'cli_version': observed, 'help': help_text, 'addon_sha256': hashlib.sha256(addon.read_bytes()).hexdigest(), 'dynamic': dynamic}
 
 
+def compilation_checkpoint(bundle, state):
+    checkpoint = Path('/compilation.json')
+    checkpoint.write_bytes(canonical({
+        'schema': 1, 'state': state,
+        'input_digest': bundle['packages'][0]['input_digest'],
+        'pkgbase': bundle['packages'][0]['pkgbase'],
+        'image': bundle['image'], 'harness_sha': bundle['harness_sha'],
+        'run_id': bundle['run_id'], 'run_attempt': bundle['run_attempt'],
+    }))
+    checkpoint.chmod(0o600)
+
+
+def recipe_makepkg(bundle, argv, directory, env):
+    try:
+        return builder(argv, directory, env, stream=True)
+    except subprocess.CalledProcessError:
+        compilation_checkpoint(bundle, 'failure')
+        raise
+
+
 def build(path: Path, output: Path):
     if os.geteuid() != 0 or os.uname().machine != 'x86_64' or not Path('/etc/arch-release').exists():
         raise ValueError('native build requires disposable root Arch x86_64 container')
     from tools.recipe_gate import parse_srcinfo, tree_manifest, input_digest, harness_digest
     from tools.sources import materialize_sources
     bundle = validate_bundle(path)
+    if len(bundle['packages']) != 1:
+        raise ValueError('approved worker requires exactly one compilation input')
+    compilation_checkpoint(bundle, 'not-started')
     persistent_cache_env = {}
     if os.environ.get('ARCH_PACKAGE_CACHE') == '1':
         if len(bundle['packages']) != 1:
@@ -277,7 +300,8 @@ def build(path: Path, output: Path):
         env = {'PATH': '/usr/bin', 'HOME': str(home), 'LANG': 'C.UTF-8', 'GOTOOLCHAIN': 'local', 'MAKEPKG_GIT_CONFIG': str(gitconfig), 'GIT_CONFIG_SYSTEM': str(gitconfig), 'GIT_CONFIG_GLOBAL': '/dev/null'}
         env.update(persistent_cache_env)
         command = ['makepkg', '--config', str(config)]
-        prepared_log = builder([*command, '--nobuild', '--noconfirm', '--cleanbuild'], directory, env, stream=True)
+        compilation_checkpoint(bundle, 'started')
+        prepared_log = recipe_makepkg(bundle, [*command, '--nobuild', '--noconfirm', '--cleanbuild'], directory, env)
         prepared = builder([*command, '--printsrcinfo'], directory, env)
         if prepared != (original / '.SRCINFO').read_text():
             raise ValueError(f'{name}: complete prepared .SRCINFO differs from accepted metadata')
@@ -294,7 +318,8 @@ def build(path: Path, output: Path):
             version_tuple = lambda value: tuple(int(x) for x in value.split('.')) + (0,) * (3-len(value.split('.')))
             if not requirement or not installed or version_tuple(installed[1]) < version_tuple(requirement[1]):
                 raise ValueError('installed Go does not meet carapace go.mod (GOTOOLCHAIN=local)')
-        build_log = builder([*command, '--noextract', '--noconfirm'], directory, env, stream=True)
+        build_log = recipe_makepkg(bundle, [*command, '--noextract', '--noconfirm'], directory, env)
+        compilation_checkpoint(bundle, 'success')
         if builder([*command, '--printsrcinfo'], directory, env) != prepared:
             raise ValueError('native metadata changed during build')
         files = []

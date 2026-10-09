@@ -69,6 +69,25 @@ resource "github_actions_repository_permissions" "packages" {
   sha_pinning_required = false
 }
 
+resource "github_repository_ruleset" "source_review" {
+  name        = "source-review-immutable"
+  repository  = github_repository.packages.name
+  target      = "tag"
+  enforcement = "active"
+
+  conditions {
+    ref_name {
+      include = ["refs/tags/source-review-*"]
+      exclude = []
+    }
+  }
+
+  rules {
+    update   = true
+    deletion = true
+  }
+}
+
 resource "github_branch_protection" "main" {
   repository_id       = github_repository.packages.node_id
   pattern             = "main"

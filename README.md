@@ -86,26 +86,30 @@ tab contains the actual `PKGBUILD`, patches, install scripts and other recipe
 files, not generated main-branch records or copied description diffs. Changed
 package contents require a version or `pkgrel` bump.
 
-Source updates are checked every six hours. Verified mechanical
-version/source/checksum changes merge automatically on the recipe branch.
-Non-mechanical recipe changes require approval in the `recipe-review` environment
-and a human recipe-branch merge. Recipe branches require passing validation and
-an up-to-date PR; merge commits preserve the reviewed and upstream histories.
+Source updates are checked every six hours. Before any recipe execution,
+trusted-main tools statically freeze the exact review head, recipe tree, source
+inputs, metadata claims and build policy. Strictly mechanical
+version/source/checksum changes require independently recomputed automatic
+authorization; other changes require genuine approval in the `recipe-review`
+environment for that exact proposal. Non-mechanical changes also require a human
+recipe-branch merge. Recipe branches require passing validation and an up-to-date
+PR; merge commits preserve the reviewed and upstream histories. Enrollment and
+retirement require human review.
 
-After a recipe merge, automation validates the accepted recipe against its exact
-source and build evidence, then records its gitlink, source lock and provenance
-on protected main. This generated bookkeeping merges automatically without a
-second human approval. Changes to main's automation or policy instead require
-the separate `code-review` approval and a human merge.
+Only after authorization does each affected package execute its recipe and build
+in a disposable container without credentials or host mounts. Validation checks
+the resulting metadata and runtime behavior against the frozen inputs.
+Metadata-only events and explicit dispatches start the pipeline; scheduled
+reconciliation recovers missed events. A changed review head needs new
+authorization, but bookkeeping or controller movement must not cancel or repeat
+an already authorized compilation.
 
-Validation uses trusted-main tools and frozen recipe inputs in disposable
-containers without credentials or host mounts. Metadata-only events and explicit
-dispatches start the pipeline; scheduled reconciliation recovers missed events.
-A newer candidate run supersedes an older run, including an obsolete review wait.
-Retiring a package requires human review. Candidate validation excludes retired
-enrollments from builds and requires the proposed package list to match its recipe
-pins. New enrollments need a separate hosted build and consumer proof before merge,
-because candidate build policies come from trusted main.
+After a recipe merge, automation verifies the exact correspondence between the
+reviewed head and accepted merge, then records its gitlink, source lock and
+original build provenance on protected main. This generated bookkeeping merges
+automatically without a second human approval or another build. Changes to main's
+automation or policy instead require separate `code-review` approval before
+proposed code executes and a human merge.
 
 Validation can also be started manually:
 
@@ -116,21 +120,34 @@ gh workflow run update.yml --repo vith/arch-packages
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Each affected package builds in its own independent hosted x86_64 workflow run,
-using accepted-main worker tools without a per-worker environment approval.
-The parent dispatches those runs and collects verified outputs; it does not compile
-packages. Its live log links each discovered child run and reports state transitions,
-including queued, waiting and in-progress runs. Open a child run for live package
-build stdout; the same output remains in its build receipt. The meaningful human
-checkpoint stays on the exact non-mechanical PR diff, not on empty worker gates.
+Each authorized package input builds once in its own independent hosted x86_64
+workflow run, using accepted-main worker tools without a per-worker environment
+approval. The candidate coordinator dispatches those runs and collects verified
+outputs; it does not compile packages. Its live log links each child run and
+reports state transitions. Open a child run for live package build stdout; the
+same output remains in its build receipt. All approved build workers restore and
+save compatible trusted dependency/compiler caches, including progress from
+failed compilation attempts.
 
-Documentation changes do not rebuild packages. Trusted release builds cache
-dependencies and compiler output; candidate builds do not read or write those
-caches. Publication reuses unchanged signed packages, including across CI-only
-changes. To rebuild a package with new tooling, bump its `pkgrel`.
+A successful compilation is not repeated if later validation, collection,
+storage or publication fails. Recovery uses the exact original bytes and
+authenticated provenance, retained in durable draft build storage independently
+of expiring workflow artifacts. If those bytes cannot be recovered, automation
+refuses with a missing-byte error rather than recompiling. An actual failed
+compilation may retry using its trusted cache; a cache is not a substitute for
+original package output.
 
-Publication verifies packages, signs the snapshot and checks public downloads
-before updating `latest`. Older snapshots remain available. The manual
+Documentation, tooling, image and controller-only changes, and acceptance
+bookkeeping, select no package compilations. Unchanged approved inputs reuse
+their original output and provenance across compatible controller changes and
+ordinary upstream-ref advancement. To request a rebuild, bump the package's
+`pkgrel`.
+
+Publication never dispatches workers or compiles packages. It verifies and reuses
+existing signed packages or authenticated durable unsigned build output,
+preserving the original producer's provenance, then signs the snapshot and
+checks public downloads before updating `latest`. Older snapshots remain
+available. The manual
 `consumer-proof.yml` workflow installs a snapshot in a clean Arch container and
 exercises the packages; it is separate from publication and needs only the snapshot
 tag, not expiring workflow artifacts. Historical consumer checks use the package

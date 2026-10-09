@@ -251,11 +251,21 @@ class PublicationBoundaries(unittest.TestCase):
         (output/'surprise.pkg.tar.zst').write_bytes(b'extra')
         with self.assertRaisesRegex(ValueError,'extra/missing'):
             publish.validate_unsigned(output,{'packages':[]})
+    def test_artifact_member_bound_rejects_before_extracting_any_bytes(self):
+        archive_path = self.root / 'many-members.tar'
+        with tarfile.open(archive_path,'w') as archive:
+            for index in range(1001):
+                archive.addfile(tarfile.TarInfo('member-' + str(index)))
+        destination = self.root / 'bounded-output'
+        with self.assertRaisesRegex(ValueError,'too many'):
+            publish.safe_extract(archive_path,destination)
+        self.assertEqual(list(destination.iterdir()), [])
+
     def test_shell_shaped_and_duplicate_pkginfo_keys_rejected(self):
         for content in (b'$(touch owned) = value\n',b'pkgname = x\npkgname = y\npkgver = 1-1\narch = any\n'):
             with self.subTest(content=content), patch.object(publish,'bounded_metadata',return_value=content), self.assertRaises(ValueError):
                 publish.pkginfo(self.root/'unused')
-    def test_full_input_digest_reuses_unchanged_and_rebuilds_source_only_change(self):
+    def test_full_input_digest_reuses_signed_content_but_not_changed_sources(self):
         checkout = self.root / 'checkout'; checkout.mkdir()
         (checkout / 'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:' + 'a'*64)
         policies = []
@@ -306,27 +316,137 @@ class PublicationBoundaries(unittest.TestCase):
             upstream.write_text(json.dumps({'aur':{'url':'https://github.com/archlinux/aur.git','commit':'e'*40}}))
             with_aur = publish.expectations('d'*40,3,1,previous,pins)
             self.assertEqual(with_aur['packages'][1]['aur']['commit'],'e'*40)
-    def test_receipt_hash_and_run_identity_are_not_authority(self):
+    def approved_output(self, pkgbase='example', version='1-1'):
         output = self.root / 'unsigned'; output.mkdir()
-        metadata = publish.parse_srcinfo('pkgbase = example\n\tpkgver = 1\n\tpkgrel = 1\n\tarch = any\npkgname = example\n')
-        text = 'pkgbase = example\n\tpkgver = 1\n\tpkgrel = 1\n\tarch = any\npkgname = example\n'
-        package = {'recipe_commit':'e'*40,'pkgbase':'example','lock':{'version':'1-1','sources':[]},'input_digest':'a'*64,'tree_sha':'b'*64,'metadata':metadata,'reuse':False,'policy':{'outputs':[{'name':'example','arch':'any'}]}}
-        plan = {'recipe_pins':{'example':'e'*40},'schema':1,'repository':publish.REPOSITORY,'base':'a'*40,'head':'a'*40,'run_id':'1','run_attempt':'1','image':'image','harness_sha':'c'*64,'packages':[package]}
-        filename = 'example-1-1-any.pkg.tar.zst'
+        text = f'pkgbase = {pkgbase}\n\tpkgver = {version.rsplit("-", 1)[0]}\n\tpkgrel = {version.rsplit("-", 1)[1]}\n\tarch = any\npkgname = {pkgbase}\n'
+        metadata = publish.parse_srcinfo(text)
+        package = {'recipe_commit':'e'*40,'pkgbase':pkgbase,'lock':{'version':version,'sources':[]},
+                   'input_digest':'a'*64,'tree_sha':'b'*64,'metadata':metadata,'reuse':False,
+                   'policy':{'outputs':[{'name':pkgbase,'arch':'any'}]}}
+        original_record = {'head':'d'*40,'base':'c'*40,'run_id':'1','run_attempt':'2',
+                           'image':'original-image','harness_sha':'c'*64,'packages':[copy.deepcopy(package)]}
+        original_record['packages'][0]['recipe_commit'] = 'd'*40
+        # Publication has different controls and identity; it cannot relabel the producer.
+        plan = {'head':'f'*40,'run_id':'99','run_attempt':'3','image':'new-image',
+                'harness_sha':'f'*64,'packages':[package]}
+        descriptor = {'record':original_record,'producer':{'run_id':'7','run_attempt':'2'}}
+        package['build'] = descriptor
+        package['acceptance'] = {'head':'d'*40,'accepted':'e'*40,'recipe_tree':'b'*40}
+        filename = next(iter(publish.filenames(package)))
         (output / filename).write_bytes(b'original bytes')
-        receipt = {'recipe_commit':'e'*40,'pkgbase':'example','source_lock':package['lock'],'input_digest':package['input_digest'],'tree_sha':package['tree_sha'],'metadata':metadata | {'srcinfo':text},**{k:plan[k] for k in ('run_id','run_attempt','image','harness_sha')},'files':[{'filename':filename,'sha256':publish.sha(output/filename),'name':'example','version':'1-1','arch':'any'}]}
-        evidence = {k:v for k,v in plan.items() if k != 'packages'} | {'packages':[receipt]}
-        evidence_path = output / 'native-evidence.json'
-        info = {'pkgname':'example','pkgver':'1-1','arch':'any'}
-        with patch.object(publish,'pkginfo',return_value=info):
-            evidence_path.write_text(json.dumps(evidence))
+        receipt = {'recipe_commit':'d'*40,'pkgbase':pkgbase,'source_lock':package['lock'],
+                   'input_digest':package['input_digest'],'tree_sha':package['tree_sha'],
+                   'metadata':metadata | {'srcinfo':text},
+                   **{k:original_record[k] for k in ('run_id','run_attempt','image','harness_sha')},
+                   'files':[{'filename':filename,'sha256':publish.sha(output/filename),
+                             'name':pkgbase,'version':version,'arch':'any'}]}
+        native = {'head':'d'*40,'run_id':'1','run_attempt':'2','packages':[receipt]}
+        def materialize(descriptor, destination):
+            destination.mkdir()
+            (destination / filename).write_bytes(b'original bytes')
+            (destination / 'native-evidence.json').write_text(json.dumps(native))
+            return destination
+        (output / 'native-evidence.json').write_text(json.dumps({'schema':2,'builds':{pkgbase:descriptor}}))
+        return output, plan, native, materialize
+
+    def test_publication_keeps_original_proof_across_control_and_transport_changes(self):
+        output, plan, native, materialize = self.approved_output()
+        from tools import build_store, recipe_acceptance
+        mapping = plan['packages'][0]['acceptance']
+        with patch.object(build_store,'materialize',side_effect=materialize), patch.object(recipe_acceptance,'verify_accepted_build',return_value={'mapping':mapping}), patch.object(publish,'pkginfo',return_value={'pkgname':'example','pkgver':'1-1','arch':'any'}):
+            proof = publish.validate_unsigned(output,plan)
+        self.assertEqual(proof['example'],native)
+        self.assertEqual(proof['example']['run_id'],'1')
+        self.assertEqual(proof['example']['run_attempt'],'2')
+
+    def test_publication_rejects_approved_bytes_with_wrong_metadata_source_or_receipt_hash(self):
+        output, plan, native, materialize = self.approved_output()
+        from tools import build_store, recipe_acceptance
+        mapping = plan['packages'][0]['acceptance']
+        receipt = native['packages'][0]
+        cases = [
+            ('source_lock', {'version':'wrong','sources':[]}),
+            ('tree_sha', 'f'*64),
+            ('run_attempt', '3'),
+            ('metadata', receipt['metadata'] | {'version':'wrong'}),
+            ('files', [receipt['files'][0] | {'sha256':'f'*64}]),
+        ]
+        for field, bad in cases:
+            saved = receipt[field]
+            receipt[field] = bad
+            with self.subTest(field=field), patch.object(build_store,'materialize',side_effect=materialize), patch.object(recipe_acceptance,'verify_accepted_build',return_value={'mapping':mapping}), patch.object(publish,'pkginfo',return_value={'pkgname':'example','pkgver':'1-1','arch':'any'}), self.assertRaises(ValueError):
+                publish.validate_unsigned(output,plan)
+            receipt[field] = saved
+
+    def test_publication_rejects_replaced_original_transport_and_accepted_mapping(self):
+        output, plan, native, materialize = self.approved_output()
+        from tools import build_store, recipe_acceptance
+        mapping = plan['packages'][0]['acceptance']
+        with patch.object(build_store,'materialize',side_effect=materialize), patch.object(recipe_acceptance,'verify_accepted_build',return_value={'mapping':mapping}):
+            filename = next(iter(publish.filenames(plan['packages'][0])))
+            (output / filename).write_bytes(b'replacement')
+            with self.assertRaisesRegex(ValueError,'original approved package bytes'):
+                publish.validate_unsigned(output,plan)
+        with patch.object(recipe_acceptance,'verify_accepted_build',return_value={'mapping':{}}), self.assertRaisesRegex(ValueError,'merge mapping'):
             publish.validate_unsigned(output,plan)
-            (output / filename).write_bytes(b'tampered bytes')
-            with self.assertRaisesRegex(ValueError,'metadata/hash'):
+
+    def test_publication_rejects_relabelled_or_missing_original_descriptor(self):
+        output, plan, native, materialize = self.approved_output()
+        envelope = json.loads((output/'native-evidence.json').read_text())
+        envelope['builds']['example']['producer']['run_attempt'] = '3'
+        (output/'native-evidence.json').write_text(json.dumps(envelope))
+        with self.assertRaisesRegex(ValueError,'original build identity'):
+            publish.validate_unsigned(output,plan)
+        envelope['builds'].clear()
+        (output/'native-evidence.json').write_text(json.dumps(envelope))
+        with self.assertRaisesRegex(ValueError,'original build identity'):
+            publish.validate_unsigned(output,plan)
+
+    def test_unsigned_omp_rejects_wrong_cli_addon_or_pipewire_proof(self):
+        output, plan, native, materialize = self.approved_output('oh-my-pi-vith-git','365.vith.r4.gabcdef123456-1')
+        from tools import build_store, recipe_acceptance
+        mapping = plan['packages'][0]['acceptance']
+        proof = {'runtime_identity':'365+vith-fork.4.abcdef123456',
+                 'cli_version':'omp/365+vith-fork.4.abcdef123456',
+                 'dynamic':'libpipewire-0.3.so.0','addon_sha256':'a'*64,'help':'usage'}
+        native['packages'][0]['runtime'] = proof
+        for field, bad in [('runtime_identity','wrong'),('cli_version','omp/wrong'),('dynamic',''),('addon_sha256','bad'),('help','')]:
+            native['packages'][0]['runtime'] = proof | {field:bad}
+            with self.subTest(field=field), patch.object(build_store,'materialize',side_effect=materialize), patch.object(recipe_acceptance,'verify_accepted_build',return_value={'mapping':mapping}), self.assertRaisesRegex(ValueError,'OMP runtime'):
                 publish.validate_unsigned(output,plan)
-            evidence['run_attempt']='2'; evidence_path.write_text(json.dumps(evidence))
-            with self.assertRaisesRegex(ValueError,'identity mismatch'):
-                publish.validate_unsigned(output,plan)
+
+    def test_signed_catalog_rejects_original_producer_source_and_package_hash_laundering(self):
+        catalog = self.catalog_fixture('vith-gh')
+        original = {'pkgbase':'example','recipe_commit':'d'*40,'input_digest':'c'*64,
+                    'lock':{'sources':[]}}
+        record = {'repository':publish.REPOSITORY,'base':'b'*40,'head':'d'*40,
+                  'run_id':'4','run_attempt':'2','image':'original-image',
+                  'harness_sha':'f'*64,'recipe_tree':'a'*40,'packages':[original]}
+        native = {k:v for k,v in record.items() if k != 'packages'}
+        native['packages'] = [{'recipe_commit':'d'*40,'input_digest':'c'*64,
+                               'pkgbase':'example','source_lock':original['lock'],
+                               'files':[{'filename':'example-1-1-any.pkg.tar.zst','sha256':'b'*64}]}]
+        catalog['recipes']['example'] = {
+            'recipe_commit':'d'*40,'accepted_recipe_commit':'e'*40,'input_digest':'c'*64,
+            'sources':[], 'accepted_mapping':{'head':'d'*40,'accepted':'e'*40,'recipe_tree':'a'*40},
+            'build_provenance':{'pkgbase':'example','input_digest':'c'*64,'record':record},
+            'native_evidence':native,
+        }
+        publish.validate_catalog(catalog,publish.REPOSITORY,'A'*40)
+        for field, bad in [('recipe_commit','e'*40),('input_digest','a'*64),('sources',[{}])]:
+            broken = copy.deepcopy(catalog)
+            broken['recipes']['example'][field] = bad
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                publish.validate_catalog(broken,publish.REPOSITORY,'A'*40)
+        broken = copy.deepcopy(catalog)
+        broken['recipes']['example']['native_evidence']['run_attempt'] = '3'
+        with self.assertRaisesRegex(ValueError,'evidence identity'):
+            publish.validate_catalog(broken,publish.REPOSITORY,'A'*40)
+        broken = copy.deepcopy(catalog)
+        broken['files']['example-1-1-any.pkg.tar.zst']['sha256'] = 'f'*64
+        with self.assertRaisesRegex(ValueError,'original build hash'):
+            publish.validate_catalog(broken,publish.REPOSITORY,'A'*40)
+
     def test_signed_catalog_destination_cannot_redirect_to_arbitrary_host(self):
         with self.assertRaisesRegex(ValueError,'immutable repository'):
             publish.previous_catalog('https://attacker.example/catalog.json',self.root,self.root/'ring')
