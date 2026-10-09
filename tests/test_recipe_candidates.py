@@ -512,6 +512,32 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             yield record, stored, state
             native_run.assert_not_called()
 
+    def test_reviewed_native_candidate_merges_and_defers_receipt_until_real_parent_completion(self):
+        record = {'pr_number': 1, 'base': 'c'*40, 'head': 'a'*40,
+                  'mechanical': False, 'review_environment': 'recipe-review'}
+        with patch.object(update, 'load', return_value=record), patch.object(candidates, 'controller_context', return_value=None), patch.object(candidates, 'validate_build'), patch.object(recipe_state, 'assert_recipe_identity'), patch.object(candidates, 'verify_authorization'), patch.object(candidates, 'required_statuses'), patch.object(update, 'api', side_effect=[{'merged': True, 'sha': 'f'*40}, None]) as api, patch('tools.recipe_acceptance.reconcile', side_effect=AssertionError('parent is not completed')):
+            result = candidates.finalize(1, record['base'], record['head'], 'candidate.json', 'outputs')
+        self.assertTrue(result['merged'])
+        self.assertEqual(api.call_args_list[0].args[2], {'sha': record['head'], 'merge_method': 'merge'})
+        self.assertIn('/actions/workflows/update.yml/dispatches', api.call_args_list[1].args[0])
+
+    def test_historical_code_review_keeps_actual_environment_history_without_current_reviewers(self):
+        record = {'base': 'c'*40, 'head': 'a'*40, 'pr_number': 1, 'review_environment': 'code-review'}
+        run = {'head_sha': record['base'], 'head_branch': 'main', 'event': 'workflow_dispatch',
+               'path': '.github/workflows/candidate.yml', 'display_title': 'Candidate PR 1 head '+record['head'],
+               'run_attempt': 1}
+        job = {'id': 71, 'name': f"Review PR 1 head {record['head']} base {record['base']}", 'conclusion': 'success'}
+        history = [{'state': 'approved', 'user': {'type': 'User'}, 'environments': [{'id': 31, 'name': 'code-review'}]}]
+        proof = {'run_id': '10', 'run_attempt': '1', 'job_id': 71}
+        responses = [run, {'jobs': [job], 'total_count': 1}, {'id': 31, 'protection_rules': []}, history]
+        with patch.object(update, 'api', side_effect=responses), patch.object(update, 'require_review_environment', side_effect=AssertionError('historical configuration is not authority')):
+            self.assertEqual(candidates._authority(record, proof), proof)
+        history[0]['environments'][0]['id'] = 99
+        with patch.object(update, 'api', side_effect=responses), patch.object(update, 'require_review_environment'), self.assertRaisesRegex(ValueError, 'genuine exact'):
+            candidates._authority(record, proof)
+        with patch.object(update, 'api', side_effect=[run, {'jobs': [job], 'total_count': 1}]), patch.object(update, 'require_review_environment'), self.assertRaisesRegex(ValueError, 'new human'):
+            candidates._authority(record, proof, issuing=True)
+
     def test_human_review_authorizes_static_inputs_before_any_build(self):
         with tempfile.TemporaryDirectory() as work, self.authorization_fixture(work) as (record, stored, state):
             state['jobs']['jobs'][0].update(status='in_progress', conclusion=None)
@@ -621,9 +647,9 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             state['statuses'][0]['description'] = recipe_state.digest(stored['candidate', key])
             state['jobs']['jobs'][0]['name'] = f"Authorize PR 1 head {record['head']} base {record['base']}"
             self.candidate_transport(record, state)
-            # Changing flags cannot convert this local payload edit into a
-            # mechanical transition, even with a genuine static checkpoint.
-            with self.assertRaisesRegex(ValueError, 'mechanical'):
+            # Flags cannot authorize the dependency/build-code edit, even with
+            # a genuine automatic checkpoint and independently frozen payload.
+            with self.assertRaisesRegex(ValueError, 'PKGBUILD'):
                 candidates.authorize(record)
             self.assertNotIn(('approved', key), stored)
 

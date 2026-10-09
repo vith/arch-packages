@@ -88,13 +88,14 @@ package contents require a version or `pkgrel` bump.
 
 Source updates are checked every six hours. Before any recipe execution,
 trusted-main tools statically freeze the exact review head, recipe tree, source
-inputs, metadata claims and build policy. Strictly mechanical
-version/source/checksum changes require independently recomputed automatic
-authorization; other changes require genuine approval in the `recipe-review`
-environment for that exact proposal. Non-mechanical changes also require a human
-recipe-branch merge. Recipe branches require passing validation and an up-to-date
-PR; merge commits preserve the reviewed and upstream histories. Enrollment and
-retirement require human review.
+inputs, metadata claims and build policy. Only non-trivial `PKGBUILD` changes,
+including a newly introduced recipe, require your approval in the `recipe-review`
+environment for that exact proposal. Unchanged recipe code and enrolled literal
+version, `pkgrel` and checksum edits are authorized automatically after independent
+source and metadata validation. Unsupported or inconsistent inputs fail validation;
+they do not create another approval prompt. After validation succeeds, recipe PRs
+merge automatically through the normal branch protections, with no separate merge
+approval. Merge commits preserve the reviewed and upstream histories.
 
 Only after authorization does each affected package execute its recipe and build
 in a disposable container without credentials or host mounts. Validation checks
@@ -107,9 +108,10 @@ an already authorized compilation.
 After a recipe merge, automation verifies the exact correspondence between the
 reviewed head and accepted merge, then records its gitlink, source lock and
 original build provenance on protected main. This generated bookkeeping merges
-automatically without a second human approval or another build. Changes to main's
-automation or policy instead require separate `code-review` approval before
-proposed code executes and a human merge.
+automatically without a second human approval or another build. Automation,
+workflow, policy and documentation changes also validate and merge automatically.
+Source-only changes run isolated exact-revision tests and verify unchanged package
+inputs, with zero package compilations and no approval prompt.
 
 Validation can also be started manually:
 

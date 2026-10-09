@@ -479,9 +479,12 @@ def prepare(number, output):
     package = {'pkgbase': name, 'recipe_commit': head, 'previous_recipe_commit': base, 'recipe_dir': f'recipes/{name}', 'lock': lock, 'policy': policy, 'input_digest': input_digest(recipe, lock, policy, image, harness), 'tree_sha': recipe_state.digest(recipe_manifest), 'expected_srcinfo': native['srcinfo']}
     bundle = {'schema': 1, 'repository': u.repository(), 'base': control, 'head': head, 'recipe_pins': {name: head}, 'previous_recipe_pins': {name: base}, 'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'image': image, 'harness_sha': harness, 'packages': [package]}
     mechanical = decision['decision'] == 'mechanical'
-    if not mechanical:
+    needs_review = recipe_gate.needs_pkgbuild_review(comparison/'recipes'/name, recipe, policy)
+    if needs_review:
         u.require_review_environment('recipe-review')
-    record = {**bundle, **record_identity, 'control_digest': recipe_state.control_digest(old), 'mechanical': mechanical, 'review_environment': '' if mechanical else 'recipe-review', 'decisions': [{'pkgbase': name, **decision}], 'predecessor_lock': predecessor_lock, 'predecessor_provenance': predecessor_provenance, 'baseline_lock': oldlock, 'baseline_provenance': oldpro, 'provenance': provenance, 'proposal_head': receipt['recipe_head']}
+    else:
+        recipe_gate.verify_automatic_recipe(comparison/'recipes'/name, recipe, policy, oldlock, lock, transition)
+    record = {**bundle, **record_identity, 'control_digest': recipe_state.control_digest(old), 'mechanical': mechanical, 'review_environment': 'recipe-review' if needs_review else '', 'decisions': [{'pkgbase': name, **decision}], 'predecessor_lock': predecessor_lock, 'predecessor_provenance': predecessor_provenance, 'baseline_lock': oldlock, 'baseline_provenance': oldpro, 'provenance': provenance, 'proposal_head': receipt['recipe_head']}
     recipe_state.assert_recipe_identity(record)
     if manual:
         recipe_state.save('proposal', head, receipt)
@@ -558,7 +561,10 @@ def _authority(record, proof, issuing=False):
     if not (job.get('conclusion') == 'success' or issuing and job.get('status') == 'in_progress'):
         raise ValueError('approval checkpoint did not succeed')
     if environment:
-        u.require_review_environment(environment)
+        if issuing or environment != 'code-review':
+            u.require_review_environment(environment)
+        if issuing and environment != 'recipe-review':
+            raise ValueError('new human authorization requires recipe-review')
         actual = u.api(u.route('/environments/' + environment))
         history = u.api(u.route('/actions/runs/' + run_id + '/approvals'))
         if not any(review.get('state') == 'approved'
@@ -789,22 +795,42 @@ def _verify_inputs(record, automatic, transition_verifier, metadata_verifier):
             if (recipe/'.SRCINFO').read_text() != package['expected_srcinfo']:
                 raise ValueError('approved submitted metadata mismatch')
             u.validate_source_policy(package['lock'], policy)
+            if u.load(new/'inputs'/f'{name}.json') != package['lock']:
+                raise ValueError('approved source lock differs from frozen tree')
             if input_digest(recipe, package['lock'], policy, record['image'], record['harness_sha']) != package['input_digest']:
                 raise ValueError('approved compilation input mismatch')
-            u.static_metadata(recipe, package['lock'], policy, root/('freeze-' + name), preserve_pkgrel=True)
+            derived = metadata_verifier(recipe, package['lock'], policy, root/('freeze-' + name), preserve_pkgrel=True)
+            if derived['version'] != package['lock']['version'] or derived['srcinfo'] != package['expected_srcinfo'] or derived['sources'] != package['lock']['sources']:
+                raise ValueError('authorization metadata differs from independent static derivation')
             if automatic:
+                oldpolicy = u.policy_at(old).get(name)
+                if oldpolicy is None:
+                    raise ValueError('new recipe enrollment requires recipe-review')
+                oldlock = u.load(old/'inputs'/f'{name}.json')
+                source_boundaries(oldlock, package['lock'], policy)
                 transition = transition_verifier(old, new, name, policy, root/('transition-' + name))
-                decision = classify_recipe_update(old/'recipes'/name, recipe, {**policy, '_verified_transition': transition} if transition else policy)
-                if decision['decision'] != 'mechanical':
-                    raise ValueError('automatic authorization requires independent mechanical transition')
-                derived = metadata_verifier(recipe, package['lock'], policy, root/('derive-' + name))
-                if derived['version'] != package['lock']['version'] or derived['srcinfo'] != package['expected_srcinfo'] or derived['sources'] != package['lock']['sources']:
-                    raise ValueError('automatic authorization metadata differs from independent static derivation')
-        if automatic and record.get('kind') != 'recipe':
+                recipe_gate.verify_automatic_recipe(old/'recipes'/name, recipe, oldpolicy, oldlock, package['lock'], transition)
+        if record.get('kind') != 'recipe':
+            oldpolicy, newpolicy = u.policy_at(old), u.policy_at(new)
+            if set(newpolicy) != set(newpins):
+                raise ValueError('candidate package enrollment and recipe pins differ')
+            names, _ = u.affected_packages(old, new, newpolicy)
+            names = sorted((set(names) | {name for name in newpolicy if pins.get(name) != newpins.get(name)}) & set(newpolicy))
             from tools.recipe_acceptance import validate_bookkeeping
             pr = u.api(u.route('/pulls/' + str(record['pr_number'])))
-            if not record.get('auto_merge') or validate_bookkeeping(pr, record['base'], record['head'], old, new) is None or record['packages']:
-                raise ValueError('automatic main authorization requires exact no-build bookkeeping')
+            bookkeeping = validate_bookkeeping(pr, record['base'], record['head'], old, new)
+            if bookkeeping is not None:
+                names = []
+            if names != sorted(package['pkgbase'] for package in record['packages']):
+                raise ValueError('main candidate compilation selection differs from independent scope')
+            if not names and bookkeeping is None and oldpolicy == newpolicy:
+                from tools.source_review import unchanged_packages
+                unchanged_packages(old, new, pins, newpins)
+            # Retirement/policy transitions execute no omitted recipe: selection
+            # above is reconstructed from all frozen trees, policies and pins.
+            for name in names:
+                if pins.get(name) and pins[name] != newpins[name] and not recipes.is_ancestor(u.repository(), pins[name], newpins[name]):
+                    raise ValueError('recipe history is not a fast-forward of the accepted pin')
 
 
 def verify_authorization(record):
@@ -882,12 +908,8 @@ def finalize(number, base, head, record_path, directory):
     required_statuses(head)
     accepted = (current.get('accepted') if current else None) or record.get('accepted')
     if accepted:
-        if not record['mechanical']:
-            u.api(u.route('/actions/workflows/update.yml/dispatches'), 'POST', {'ref': 'main', 'inputs': {}})
-            return {'merged': True, 'sha': accepted, 'reason': 'Bookkeeping awaits successful approval workflow reconciliation'}
-        return recipe_acceptance.reconcile(number)
-    if not record['mechanical']:
-        return {'merged': False, 'reason': 'Human merge required'}
+        u.api(u.route('/actions/workflows/update.yml/dispatches'), 'POST', {'ref': 'main', 'inputs': {}})
+        return {'merged': True, 'sha': accepted, 'reason': 'Bookkeeping awaits successful authorization workflow reconciliation'}
     if context:
         verify_current_controller(record, context)
     else:
@@ -895,5 +917,7 @@ def finalize(number, base, head, record_path, directory):
     result = u.api(u.route('/pulls/' + str(number) + '/merge'), 'PUT', {'sha': head, 'merge_method': 'merge'})
     if not result.get('merged') or not u.SHA.fullmatch(result.get('sha', '')):
         raise ValueError('expected-head recipe merge failed')
-    recipe_acceptance.reconcile(number)
+    # The producer run is still in progress; reconciliation consumes its real
+    # successful conclusion after completion, never a synthetic parent status.
+    u.api(u.route('/actions/workflows/update.yml/dispatches'), 'POST', {'ref': 'main', 'inputs': {}})
     return result

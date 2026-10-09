@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Draft main PR number for human-approved source-only verification
+        description: Exact main PR number for automatic source-only verification
         required: true
         type: string
       expected_head:
@@ -16,14 +16,10 @@ on:
         required: true
         type: string
       bootstrap:
-        description: Exact operator-admitted one-time controller bootstrap
+        description: Select the initial controller from the exact immutable source-review-H tag
         required: false
         default: false
         type: boolean
-      admission_review_id:
-        description: Authenticated configured-human explicit bootstrap authorization statement review ID
-        required: false
-        type: string
 permissions:
   contents: read
   statuses: write
@@ -34,31 +30,26 @@ concurrency:
   group: verification-${{ github.event_name }}-${{ inputs.pr_number || github.ref }}
   cancel-in-progress: false
 jobs:
-  source-approval:
+  source-identity:
     if: github.event_name == 'workflow_dispatch'
-    name: Approve source PR ${{ inputs.pr_number }} head ${{ inputs.expected_head }} base ${{ inputs.expected_base }}
-    environment: code-review
+    name: Bind source PR ${{ inputs.pr_number }} head ${{ inputs.expected_head }} base ${{ inputs.expected_base }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
       actions: read
     steps:
-      # Default: accepted C controls the gate before any H execution.
-      # Bootstrap: the operator must admit this exact H graph before dispatch;
-      # its configured-human PR review is separate from this environment approval.
-      - name: Bind approved workflow to exact draft main PR
+      # Check Git objects read-only before any controller or candidate checkout.
+      - name: Bind workflow and zero-package scope to exact main PR
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
           EXPECTED_HEAD: ${{ inputs.expected_head }}
           EXPECTED_BASE: ${{ inputs.expected_base }}
           BOOTSTRAP: ${{ inputs.bootstrap }}
-          ADMISSION_REVIEW_ID: ${{ inputs.admission_review_id }}
         run: |
           python3 - <<'PY'
-          from datetime import datetime
-          import hashlib, json, os, re, subprocess
+          import json, os, re, subprocess
           repo=os.environ['GITHUB_REPOSITORY'];number=os.environ['PR_NUMBER']
           head=os.environ['EXPECTED_HEAD'];base=os.environ['EXPECTED_BASE']
           bootstrap=os.environ['BOOTSTRAP']=='true'
@@ -67,62 +58,46 @@ jobs:
           def api(path):
               return json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/'+path]))
           pr=api('pulls/'+number);main=api('git/ref/heads/main')['object']['sha']
-          if (pr['state']!='open' or not pr['draft'] or pr['base']['ref']!='main'
+          if (pr['state']!='open' or pr['base']['ref']!='main'
               or pr['base']['repo']['full_name']!=repo or pr['head']['repo']['full_name']!=repo
               or pr['base']['sha']!=base or main!=base or pr['head']['sha']!=head):
-              raise SystemExit('Approved source-review PR/base/head changed')
+              raise SystemExit('Source-review PR/base/head changed')
           workflow_sha=head if bootstrap else base
           workflow_branch='source-review-'+head if bootstrap else 'main'
           workflow_ref='refs/tags/'+workflow_branch if bootstrap else 'refs/heads/main'
           if os.environ['GITHUB_SHA']!=workflow_sha or os.environ['GITHUB_REF']!=workflow_ref:
-              raise SystemExit('Approved source-review workflow identity changed')
+              raise SystemExit('Source-review workflow identity changed')
+          run=api('actions/runs/'+os.environ['GITHUB_RUN_ID']+'/attempts/'+os.environ['GITHUB_RUN_ATTEMPT'])
+          if (run.get('id')!=int(os.environ['GITHUB_RUN_ID']) or run.get('run_attempt')!=int(os.environ['GITHUB_RUN_ATTEMPT'])
+              or run.get('head_sha')!=workflow_sha or run.get('head_branch')!=workflow_branch
+              or run.get('event')!='workflow_dispatch' or run.get('path')!='.github/workflows/verification.yml'
+              or run.get('display_title')!=f'Source review PR {number} head {head} base {base}'):
+              raise SystemExit('Source-review actual workflow run mismatch')
           if bootstrap:
               tag=api('git/ref/tags/'+workflow_branch)
               if tag.get('ref')!=workflow_ref or tag.get('object',{}).get('type')!='commit' or tag['object'].get('sha')!=head:
                   raise SystemExit('Bootstrap immutable tag identity mismatch')
-              admission=os.environ['ADMISSION_REVIEW_ID']
-              if not admission.isdecimal() or int(admission)<1:
-                  raise SystemExit('Bootstrap requires authenticated operator admission review ID')
-              scopes=[];workflow=None
-              for sha in (base,head):
-                  tree=api('git/trees/'+sha+'?recursive=1')
-                  if tree.get('truncated') is not False:
-                      raise SystemExit('Bootstrap scope tree is truncated or incomplete')
-                  scope=[]
-                  for entry in tree['tree']:
-                      path=entry['path']
-                      if path in {'packages.json','.gitmodules','recipes','inputs','upstream','acceptance'} or path.startswith(('recipes/','inputs/','upstream/','acceptance/')):
-                          scope.append({key:entry[key] for key in ('path','mode','type','sha')})
-                      if sha==head and path=='.github/workflows/verification.yml':
-                          if entry['mode']!='100644' or entry['type']!='blob':
-                              raise SystemExit('Bootstrap workflow must be a regular Git blob')
-                          workflow=entry['sha']
-                  scopes.append(sorted(scope,key=lambda entry:entry['path']))
-              if scopes[0]!=scopes[1] or not workflow or not any(entry['path']=='packages.json' for entry in scopes[0]):
-                  raise SystemExit('Bootstrap unchanged package scope or workflow missing')
-              digest=hashlib.sha256(json.dumps(scopes[0],sort_keys=True,separators=(',',':')).encode()).hexdigest()
-              claim={'decision':'approve-bootstrap','repository':repo,'base':base,'head':head,'pr_number':int(number),
-                     'workflow_blob_sha':workflow,'zero_package_scope_digest':digest}
-              body='arch-packages/source-bootstrap/v1\n'+json.dumps(claim,sort_keys=True,separators=(',',':'))
-              environment=api('environments/code-review')
-              if environment.get('can_admins_bypass') is not False:
-                  raise SystemExit('Required human approval environment permits bypass')
-              reviewers={item['reviewer']['id'] for rule in environment.get('protection_rules',[])
-                         if rule.get('type')=='required_reviewers' for item in rule.get('reviewers',[])
-                         if item.get('type')=='User' and item.get('reviewer',{}).get('type')=='User'}
-              review=api('pulls/'+number+'/reviews/'+str(int(admission)))
-              user=review.get('user',{})
-              if (review.get('state') not in {'APPROVED','COMMENTED'} or review.get('commit_id')!=head
-                  or user.get('type')!='User' or user.get('id') not in reviewers or review.get('body')!=body):
-                  raise SystemExit('Bootstrap authenticated operator admission mismatch')
-              run=api('actions/runs/'+os.environ['GITHUB_RUN_ID']+'/attempts/'+os.environ['GITHUB_RUN_ATTEMPT'])
-              if datetime.fromisoformat(review['submitted_at'].replace('Z','+00:00'))>=datetime.fromisoformat(run['run_started_at'].replace('Z','+00:00')):
-                  raise SystemExit('Bootstrap admission must precede this attempt')
-          elif os.environ['ADMISSION_REVIEW_ID']:
-              raise SystemExit('Operator admission is only valid for explicit bootstrap')
+          scopes=[];workflow=None
+          for sha in (base,head):
+              tree=api('git/trees/'+sha+'?recursive=1')
+              if tree.get('truncated') is not False:
+                  raise SystemExit('Source-only scope tree is truncated or incomplete')
+              scope=[]
+              for entry in tree['tree']:
+                  path=entry['path']
+                  if path in {'packages.json','.gitmodules','recipes','inputs','upstream','acceptance'} or path.startswith(('recipes/','inputs/','upstream/','acceptance/')):
+                      scope.append({key:entry[key] for key in ('path','mode','type','sha')})
+                  if sha==head and path=='.github/workflows/verification.yml':
+                      if entry['mode']!='100644' or entry['type']!='blob':
+                          raise SystemExit('Source-only workflow must be a regular Git blob')
+                      workflow=entry['sha']
+              scopes.append(sorted(scope,key=lambda entry:entry['path']))
+          if scopes[0]!=scopes[1] or not workflow or not any(entry['path']=='packages.json' for entry in scopes[0]):
+              raise SystemExit('Source-only unchanged package scope or workflow missing')
           PY
   source-validation:
-    needs: source-approval
+    needs: source-identity
+    name: Validate source PR ${{ inputs.pr_number }} head ${{ inputs.expected_head }} base ${{ inputs.expected_base }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -135,17 +110,16 @@ jobs:
         with:
           ref: ${{ inputs.bootstrap && inputs.expected_head || inputs.expected_base }}
           persist-credentials: false
-      - name: Verify genuine exact authority and unchanged packages, then run approved source tests
+      - name: Verify exact authority and unchanged packages, then run isolated source tests
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
           EXPECTED_HEAD: ${{ inputs.expected_head }}
           EXPECTED_BASE: ${{ inputs.expected_base }}
           BOOTSTRAP: ${{ inputs.bootstrap }}
-          ADMISSION_REVIEW_ID: ${{ inputs.admission_review_id }}
         run: |
           args=()
-          if [ "$BOOTSTRAP" = true ]; then args+=(--bootstrap --admission "$ADMISSION_REVIEW_ID"); fi
+          if [ "$BOOTSTRAP" = true ]; then args+=(--bootstrap); fi
           python3 -m tools.source_review --pr "$PR_NUMBER" --base "$EXPECTED_BASE" --head "$EXPECTED_HEAD" --directory "$ARCH_WORK/evidence" "${args[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -153,6 +127,30 @@ jobs:
           path: ${{ env.ARCH_WORK }}/evidence/source-review-evidence.json
           if-no-files-found: error
           retention-days: 90
+  source-merge:
+    needs: source-validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+      statuses: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.bootstrap && inputs.expected_head || inputs.expected_base }}
+          persist-credentials: false
+      - name: Merge exact validated head through ordinary branch protection
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_BASE: ${{ inputs.expected_base }}
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+        run: |
+          args=()
+          if [ "$BOOTSTRAP" = true ]; then args+=(--bootstrap); fi
+          python3 -m tools.source_review --pr "$PR_NUMBER" --base "$EXPECTED_BASE" --head "$EXPECTED_HEAD" --finalize "${args[@]}"
   regression-tests:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest

@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tarfile
 
-from tools import sources, recipes
+from tools import sources, recipes, recipe_gate
 from tools.github_api import api, download
 from tools.recipe_gate import classify_recipe_update, input_digest, parse_srcinfo, tree_manifest, harness_digest
 
@@ -310,16 +310,24 @@ def prepare(number,output):
             trusted=dict(policies[name]); trusted['_verified_transition']=evidence
             decision=classify_recipe_update(old/'recipes'/name,new/'recipes'/name,trusted)
         if oldpins.get(name) and oldpins[name]!=newpins[name] and not recipes.is_ancestor(repository(),oldpins[name],newpins[name]):
-            decision={'decision':'manual','reason':'Recipe history is not a fast-forward of the accepted pin'}
+            raise ValueError('Recipe history is not a fast-forward of the accepted pin')
+        static=static_metadata(new/'recipes'/name,lock,proposed[name],output/f'static-{name}',preserve_pkgrel=True)
+        if static['version']!=lock['version'] or static['srcinfo']!=(new/'recipes'/name/'.SRCINFO').read_text() or static['sources']!=lock['sources']:
+            raise ValueError('candidate static metadata differs from frozen source lock')
+        if name in policies and not recipe_gate.needs_pkgbuild_review(old/'recipes'/name,new/'recipes'/name,policies[name]):
+            from tools.recipe_candidates import source_boundaries
+            source_boundaries(load(old/'inputs'/f'{name}.json'),lock,proposed[name])
+            recipe_gate.verify_automatic_recipe(old/'recipes'/name,new/'recipes'/name,policies[name],load(old/'inputs'/f'{name}.json'),lock,evidence)
         decisions.append({'pkgbase':name,**decision})
         recipe=output/'bundle'/'recipes'/name;recipes.copy_recipe(new/'recipes'/name,recipe)
         digest=input_digest(recipe,lock,proposed[name],build_image,harness)
         packages.append({'pkgbase':name,'recipe_commit':newpins[name],'previous_recipe_commit':oldpins.get(name),'recipe_dir':f'recipes/{name}','tree_sha':recipe_state.digest(tree_manifest(recipe)),'lock':lock,'policy':proposed[name],'input_digest':digest,'expected_srcinfo':(recipe/'.SRCINFO').read_text()})
-    auto_merge=acceptance is not None
+    needs_review=any(recipe_gate.needs_pkgbuild_review(old/'recipes'/name,new/'recipes'/name,policies.get(name,proposed[name])) for name in names)
+    auto_merge=not needs_review
     mechanical=False
     bundle={'schema':1,'repository':repository(),'base':base,'head':head,'recipe_pins':newpins,'previous_recipe_pins':oldpins,'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'image':image,'harness_sha':harness,'packages':packages}
     dump(output/'bundle'/'bundle.json',bundle)
-    record={**bundle,'control_digest':recipe_state.control_digest(old),'pr_number':int(number),'mechanical':mechanical,'auto_merge':auto_merge,'decisions':decisions,'kind':'bookkeeping' if auto_merge else 'code','review_environment':'' if auto_merge else 'code-review'}
+    record={**bundle,'control_digest':recipe_state.control_digest(old),'pr_number':int(number),'mechanical':mechanical,'auto_merge':auto_merge,'decisions':decisions,'kind':'bookkeeping' if acceptance is not None else 'code','review_environment':'recipe-review' if needs_review else ''}
     if record['review_environment']:
         require_review_environment(record['review_environment'])
     from tools import recipe_state
@@ -343,7 +351,7 @@ def prepare(number,output):
             handle.write(f'PR #{number}\nBase `{base}`\nHead `{head}`\n'+json.dumps(decisions,indent=2)+'\n')
     # Only bounded explicit data goes to the build. Neither candidate automation
     # nor base/head full trees leave the control artifact directory.
-    for path in output.glob('verify-*'):
+    for path in (*output.glob('verify-*'), *output.glob('static-*')):
         remove_verification_tree(path)
     shutil.rmtree(old);shutil.rmtree(new)
     return record
@@ -643,8 +651,6 @@ def finalize(number,base,head,record_path,directory):
     states={s['context']:s['state'] for s in reversed(api(route('/commits/'+head+'/statuses')))}
     if any(states.get(k)!='success' for k in ('verify','candidate-build','recipe-policy')):
         raise ValueError('required exact-head statuses missing')
-    if not record['auto_merge']:
-        return {'merged':False,'reason':'Human merge required'}
     result=api(route('/pulls/'+str(number)+'/merge'),'PUT',{'sha':head,'merge_method':'merge'})
     if not result.get('merged') or not SHA.fullmatch(result.get('sha','')):
         raise ValueError('expected-head merge failed')

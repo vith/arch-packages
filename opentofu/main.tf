@@ -160,14 +160,12 @@ resource "github_repository_environment" "recipe_review" {
   }
 }
 
+# Retain the environment ID for historical producer proof, without new approvals.
 resource "github_repository_environment" "code_review" {
   repository          = github_repository.packages.name
   environment         = "code-review"
   can_admins_bypass   = false
   prevent_self_review = false
-  reviewers {
-    users = [3265539]
-  }
 }
 
 resource "github_actions_environment_secret" "signing" {

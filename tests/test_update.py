@@ -355,15 +355,19 @@ class CandidateBoundaries(unittest.TestCase):
                 evidence={'srcinfo':(recipe/'.SRCINFO').read_text(),'checksums':{},'source_templates_verified':True,'lock_verified':True,'auxiliary_inputs_verified':True,'authentic':True,'fast_forward':True}
                 with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'},clear=True),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'run_candidate_tests'),patch.object(update,'independent_transition',return_value=evidence),patch.object(update.recipes,'is_ancestor',return_value=mutation!='rewrite'),patch('tools.recipe_gate._compare',return_value=1),patch.object(update,'status'):
                     with patch.object(update,'run_candidate_tests',side_effect=AssertionError('unapproved execution')),patch.object(recipe_state,'load_optional',return_value=None):
+                        if mutation == 'rewrite':
+                            with self.assertRaisesRegex(ValueError, 'fast-forward'):
+                                update.prepare(1,fixture/'prepared')
+                            continue
                         record=update.prepare(1,fixture/'prepared')
-                self.assertFalse(record['auto_merge'])
-                self.assertEqual(record['review_environment'],'code-review')
+                self.assertEqual(record['auto_merge'], mutation != 'code')
+                self.assertEqual(record['review_environment'], 'recipe-review' if mutation == 'code' else '')
                 self.assertEqual(record['packages'][0]['recipe_commit'],'2'*40)
                 self.assertEqual(record['packages'][0]['previous_recipe_commit'],'1'*40)
                 if mutation not in {'version','modules'}:
                     self.assertNotEqual(record['decisions'][0]['decision'],'mechanical')
 
-    def test_retired_enrollment_is_not_built_and_requires_review(self):
+    def test_retired_enrollment_is_not_built_and_requires_no_review(self):
         kept = {'pkgbase': 'kept', 'sources': [], 'automatic': {}}
         retired = {'pkgbase': 'retired', 'sources': [], 'automatic': {}}
         def checkout(sha, destination, pins):
@@ -384,6 +388,8 @@ class CandidateBoundaries(unittest.TestCase):
                 record = update.prepare(1, self.root/'prepared-retirement')
         self.assertEqual(record['packages'], [])
         self.assertFalse(record['mechanical'])
+        self.assertTrue(record['auto_merge'])
+        self.assertEqual(record['review_environment'], '')
         self.assertIn({'pkgbase': 'retired', 'decision': 'manual', 'reason': 'Package enrollment retired'}, record['decisions'])
 
     def test_new_enrollment_is_frozen_for_one_authorized_build(self):
@@ -407,7 +413,7 @@ class CandidateBoundaries(unittest.TestCase):
                 record=update.prepare(1,self.root/'prepared-enrollment')
         self.assertEqual([package['pkgbase'] for package in record['packages']],['added'])
         self.assertIsNone(record['packages'][0]['previous_recipe_commit'])
-        self.assertEqual(record['review_environment'],'code-review')
+        self.assertEqual(record['review_environment'],'recipe-review')
         self.assertFalse(record['auto_merge'])
 
     def test_pin_lookup_rejects_flattened_or_wrong_gitlink(self):
@@ -441,14 +447,14 @@ class CandidateBoundaries(unittest.TestCase):
         status.assert_not_called()
         self.assertTrue(all(call.args[1:] == () for call in api.call_args_list))
 
-    def test_human_candidate_never_auto_merges(self):
+    def test_reviewed_candidate_merges_after_full_successful_checks(self):
         record,evidence,path=self.record();record['auto_merge']=False
         update.dump(self.root/'candidate.json',record)
         states=[{'context':name,'state':'success'} for name in ('verify','candidate-build','recipe-policy')]
-        with patch.object(update,'pr_identity'),patch.object(update,'validate_build'),patch.object(update,'api',return_value=states) as api,patch.object(update,'repository',return_value='owner/repo'):
+        with patch.object(update,'pr_identity'),patch.object(update,'validate_build'),patch.object(update,'api',side_effect=[states, {'merged':True,'sha':'f'*40}, None]) as api,patch.object(update,'repository',return_value='owner/repo'):
             result=update.finalize(1,record['base'],record['head'],self.root/'candidate.json',self.root)
-        self.assertFalse(result['merged'])
-        self.assertTrue(all(call.args[0].endswith('/statuses') for call in api.call_args_list))
+        self.assertTrue(result['merged'])
+        self.assertEqual(api.call_args_list[1].args[2], {'sha':record['head'],'merge_method':'merge'})
 
     def test_bookkeeping_merge_requires_successful_exact_head_verification(self):
         record, evidence, path = self.record()

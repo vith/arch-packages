@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.recipe_gate import classify_recipe_update, parse_srcinfo, tree_manifest, input_digest
+from tools.recipe_gate import classify_recipe_update, parse_srcinfo, tree_manifest, input_digest, needs_pkgbuild_review, verify_automatic_recipe
 
 
 class GateTests(unittest.TestCase):
@@ -24,6 +24,44 @@ class GateTests(unittest.TestCase):
 
     def result(self):
         return classify_recipe_update(self.old, self.new, self.policy)
+
+    def test_only_recipe_code_requires_review_not_auxiliary_files_or_modes(self):
+        (self.new / 'PKGBUILD').write_bytes((self.old / 'PKGBUILD').read_bytes())
+        (self.new / 'desktop').write_bytes(b'new auxiliary bytes')
+        (self.new / 'PKGBUILD').chmod(0o755)
+        self.assertFalse(needs_pkgbuild_review(self.old, self.new, self.policy))
+        (self.new / 'PKGBUILD').write_text((self.old / 'PKGBUILD').read_text() + '# changed code\n')
+        self.assertTrue(needs_pkgbuild_review(self.old, self.new, self.policy))
+        self.assertTrue(needs_pkgbuild_review(self.old / 'absent', self.new, self.policy))
+
+    def test_literal_pkgrel_and_local_checksum_can_authorize_without_upstream_advance(self):
+        for path in ('PKGBUILD', '.SRCINFO'):
+            text = (self.old / path).read_text().replace(self.oldsum, self.newsum)
+            text = text.replace('pkgrel=1', 'pkgrel=2') if path == 'PKGBUILD' else text.replace('pkgrel = 1', 'pkgrel = 2')
+            (self.new / path).write_text(text)
+        source = 'example-1.0.tar.gz::https://example.org/v1.0.tar.gz'
+        oldlock = {'version': '1.0-1', 'sources': [
+            {'id': 'release', 'kind': 'local', 'source': source, 'checksums': {'sha256': self.oldsum}},
+            {'id': 'fixed', 'kind': 'git', 'source': 'git+https://example.org/fixed.git#tag=v1'}]}
+        newlock = {'version': '1.0-2', 'sources': [
+            {**oldlock['sources'][0], 'checksums': {'sha256': self.newsum}}, oldlock['sources'][1]]}
+        self.assertFalse(needs_pkgbuild_review(self.old, self.new, self.policy))
+        self.assertTrue(verify_automatic_recipe(self.old, self.new, self.policy, oldlock, newlock, None))
+        (self.new / '.SRCINFO').write_text((self.new / '.SRCINFO').read_text().replace('license = MIT', 'license = GPL3'))
+        with self.assertRaisesRegex(ValueError, 'unaffected metadata'):
+            verify_automatic_recipe(self.old, self.new, self.policy, oldlock, newlock, None)
+
+    def test_literal_remote_change_needs_authentic_transition_not_stored_flags(self):
+        source = lambda version, checksum: {'id': 'release', 'kind': 'archive',
+            'source': f'example-{version}.tar.gz::https://example.org/v{version}.tar.gz',
+            'checksums': {'sha256': checksum}}
+        fixed = {'id': 'fixed', 'kind': 'git', 'source': 'git+https://example.org/fixed.git#tag=v1'}
+        oldlock = {'version': '1.0-1', 'sources': [source('1.0', self.oldsum), fixed]}
+        newlock = {'version': '1.1-1', 'sources': [source('1.1', self.newsum), fixed]}
+        self.assertFalse(needs_pkgbuild_review(self.old, self.new, self.policy))
+        with self.assertRaisesRegex(ValueError, 'authentic transition'):
+            verify_automatic_recipe(self.old, self.new, self.policy, oldlock, newlock, None)
+        self.assertTrue(verify_automatic_recipe(self.old, self.new, self.policy, oldlock, newlock, self.policy['_verified_transition']))
 
     def test_enrolled_bump_preserves_build_code_and_vcs_skip(self):
         self.assertEqual(self.result()['decision'], 'mechanical')
@@ -60,7 +98,7 @@ class GateTests(unittest.TestCase):
                 self.policy['_verified_transition']['srcinfo'] = text
                 self.assertNotEqual(self.result()['decision'], 'mechanical')
 
-    def test_payload_and_mode_changes_require_human(self):
+    def test_payload_and_mode_changes_are_not_mechanical(self):
         (self.old / 'desktop').write_bytes(b'accepted')
         (self.new / 'desktop').write_bytes(b'changed')
         self.assertEqual(self.result()['decision'], 'manual')
@@ -68,7 +106,7 @@ class GateTests(unittest.TestCase):
         (self.new / 'desktop').chmod(0o755)
         self.assertEqual(self.result()['decision'], 'manual')
 
-    def test_metadata_unknown_dependency_license_arch_changes_require_human(self):
+    def test_metadata_unknown_dependency_license_arch_changes_are_not_mechanical(self):
         original = (self.new / '.SRCINFO').read_text()
         for text in [original.replace('license = MIT', 'license = GPL3'), original.replace('arch = x86_64', 'arch = any'), original.replace('pkgname = example', '\tdepends = curl\npkgname = example'), original.replace('pkgname = example', '\tfuture_policy = execute\npkgname = example')]:
             with self.subTest(text=text):
