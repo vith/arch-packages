@@ -101,6 +101,8 @@ An unchanged source receipt with no open proposal PR is a no-op: automation leav
 any retained proposal branch untouched and continues with other source updates.
 Changed proposals and refreshes of open PRs still require authenticated watcher
 ownership before automation can update or dispatch them.
+Post-build validation runs after either authorization route; a skipped inactive
+review or automatic-authorization job does not skip validation.
 
 Only after authorization does each affected package execute its recipe and build
 in a disposable container without credentials or host mounts. Validation checks
