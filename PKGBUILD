@@ -1,6 +1,6 @@
 pkgname=carapace-spec
 pkgver=1.9.0
-pkgrel=1
+pkgrel=2
 pkgdesc='A multi-shell completion spec'
 arch=('x86_64')
 url='https://github.com/carapace-sh/carapace-spec'
@@ -10,15 +10,14 @@ makedepends=('git' 'go>=1.24')
 conflicts=('carapace-spec-bin')
 options=('!strip' '!debug')
 source=("$pkgname::git+${url}.git#tag=v${pkgver}")
-sha256sums=('SKIP')
+sha256sums=('84ff9c9bd0f1b6cbc7ead9c9452d45eeebcea8c9fc46d95ae857b9e8a2a0b005')
 
 build() {
   cd "$srcdir/$pkgname"
   [[ $CARCH == x86_64 ]] || { error "Unsupported package target: $CARCH"; return 1; }
   export CGO_ENABLED=0 GOFLAGS='-mod=readonly -modcacherw'
-  # The schema generator must execute natively, before selecting the target.
-  GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" go generate ./schema.go
-  GOOS=linux GOARCH=amd64 GOAMD64=v1 go build -trimpath -buildmode=pie \
+  go generate ./schema.go
+  GOAMD64=v1 go build -trimpath -buildmode=pie \
     -ldflags="-s -w -X main.version=v${pkgver}" \
     -o carapace-spec ./cmd/carapace-spec
 }
