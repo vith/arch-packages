@@ -12,6 +12,50 @@ from tools import recipe_state as state
 from tools import update as u
 
 
+class ControlDigestTests(unittest.TestCase):
+    original_files = (
+        'tools/update.py', 'tools/recipes.py', 'tools/recipe_candidates.py',
+        'tools/recipe_acceptance.py', 'tools/recipe_state.py', 'tools/package_runs.py',
+        'tools/build_store.py', 'tools/attestations.py', '.github/workflows/update.yml',
+        '.github/workflows/candidate.yml', '.github/workflows/candidate-dispatch.yml',
+        '.github/workflows/build-package.yml', 'tools/source_review.py',
+        '.github/workflows/verification.yml',
+    )
+
+    def setUp(self):
+        root = Path.home() / '.local/state/arch-packages/work/arch-control-tests'
+        root.mkdir(parents=True, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=root)
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def fixture(self, files):
+        for index, name in enumerate(files):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(('accepted payload ' + str(index)).encode())
+            path.chmod(0o644)
+        self.declare(files)
+
+    def declare(self, files):
+        (self.root / 'tools/recipe_state.py').write_text(
+            "raise RuntimeError('historical controller must not execute')\n"
+            'CONTROLS = ' + repr(tuple(files)) + '\n')
+
+    def expected(self, files):
+        records = [
+            {'path': name, 'mode': (self.root / name).stat().st_mode & 0o7777,
+             'sha256': hashlib.sha256((self.root / name).read_bytes()).hexdigest()}
+            for name in files
+        ]
+        encoded = (json.dumps(records, sort_keys=True, separators=(',', ':'),
+                              ensure_ascii=False) + '\n').encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def test_original_controller_manifest_without_later_import_registration(self):
+        self.fixture(self.original_files)
+        self.assertFalse((self.root / 'tools/imports.py').exists())
+        self.assertEqual(state.control_digest(self.root), self.expected(self.original_files))
 class ReceiptStore:
     """Git object/ref model retaining complete trees across competing writes."""
     def __init__(self):
@@ -127,7 +171,6 @@ class ReceiptConcurrency(unittest.TestCase):
         self.assertEqual(self.store.value('proposal','other'),{'revision':32})
         rows=self.store.trees[self.store.commits[self.store.tip]['tree']]
         self.assertNotIn(state.record_path('candidate','ours'),rows)
-
 
 class RecipeIdentity(unittest.TestCase):
     def setUp(self):
@@ -363,6 +406,7 @@ class RecipeIdentity(unittest.TestCase):
                 path=root/name
                 path.parent.mkdir(parents=True,exist_ok=True)
                 path.write_text('accepted')
+            (root/'tools/recipe_state.py').write_text('CONTROLS = '+repr(state.CONTROLS)+'\n')
             original=state.control_digest(root)
             (root/'README.md').write_text('unrelated human documentation')
             self.assertEqual(state.control_digest(root),original)

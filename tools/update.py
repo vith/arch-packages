@@ -162,7 +162,8 @@ def checkout_data(sha,destination,pins=None,selected=None):
         # Parse authenticated historical declarations as data, never source code.
         # Cross-root harness inputs require the complete historical payload set.
         if any(path.startswith('recipes/') and path.split('/')[1] not in selected
-               for path in recipe_gate._harness_files(root)):
+               for path in recipe_gate._manifest_files(
+                   root, 'tools/recipe_gate.py', 'HARNESS_FILES', 'harness_digest', 'files')):
             selected=None
     exact=recipes.materialize(root,sha,repository(),extract_tree,selected=selected)
     if pins is not None:

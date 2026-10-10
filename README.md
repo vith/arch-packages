@@ -170,10 +170,12 @@ refuses with a missing-byte error rather than recompiling. An actual failed
 compilation may retry using its trusted cache; a cache is not a substitute for
 original package output.
 
-Retained builds authenticate the ordered build-harness manifest declared in their
-own immutable controller source, including that declaring source's bytes and
-mode. Recovery parses the literal declaration without executing historical
-Python, so later harness additions do not invalidate the original build proof.
+Retained builds authenticate the ordered build-harness and controller manifests
+declared in their own immutable source files, including each declaring source's
+bytes and mode. Recovery parses the literal declarations without executing
+historical Python, so later harness or controller additions do not invalidate
+the original build proof. Missing declared files and unsafe paths are refused.
+Single-root export fallback reads that same historical harness declaration.
 
 Workers provision `libarchive-tools` before approval or recovery preparation;
 candidate authorization also provisions it before validating accepted original
