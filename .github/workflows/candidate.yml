@@ -207,7 +207,11 @@ jobs:
       pull-requests: read
       statuses: write
     steps:
-      - run: mkdir -p "$ARCH_WORK" "$TMPDIR"
+      - name: Prepare persistent scratch and trusted validation tools
+        run: |
+          mkdir -p "$ARCH_WORK" "$TMPDIR"
+          sudo apt-get update
+          sudo apt-get install --yes libarchive-tools
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.prepare.outputs.base }}

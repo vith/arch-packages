@@ -166,8 +166,9 @@ own immutable controller source, including that declaring source's bytes and
 mode. Recovery parses the literal declaration without executing historical
 Python, so later harness additions do not invalidate the original build proof.
 
-Workers provision `libarchive-tools` before approval or recovery preparation so
-`bsdtar` is available for both normal persistence and original-output recovery.
+Workers provision `libarchive-tools` before approval or recovery preparation;
+candidate authorization also provisions it before validating accepted original
+archives. `bsdtar` is required for persistence, recovery and bookkeeping proof.
 Downloads negotiate the GitHub Actions ZIP media type separately from release
 asset bytes; storage redirects never receive the API authorization token.
 
