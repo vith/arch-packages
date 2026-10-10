@@ -1,7 +1,7 @@
 pkgbase = ttf-ioskeley-mono
 	pkgdesc = Iosevka configuration to mimic the look and feel of Berkeley Mono as closely as possible
 	pkgver = 2.0.0
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/ahatem/IoskeleyMono
 	arch = any
 	license = OFL-1.1
