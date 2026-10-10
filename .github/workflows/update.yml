@@ -111,7 +111,7 @@ jobs:
             python3 -m tools.update discover --directory "$ARCH_WORK/discovery"
           fi
           python3 -m tools.update pack --directory "$ARCH_WORK/discovery" --archive "$ARCH_WORK/source-data.tar"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: source-receipts
           path: ${{ env.ARCH_WORK }}/source-data.tar

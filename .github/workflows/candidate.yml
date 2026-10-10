@@ -66,7 +66,7 @@ jobs:
           CANDIDATE: ${{ steps.prepare.outputs.candidate }}
           BUNDLE: ${{ steps.candidate-provenance.outputs.bundle-path }}
         run: python3 -m tools.update source-provenance --record "$CANDIDATE" --bundle "$BUNDLE"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: prepared-candidate-${{ github.run_attempt }}
           path: ${{ env.ARCH_WORK }}/prepared
@@ -106,7 +106,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 -m tools.package_runs collect "$ARCH_WORK/prepared" --kind candidate
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native-candidate-${{ github.run_attempt }}
           path: ${{ env.ARCH_WORK }}/prepared/unsigned

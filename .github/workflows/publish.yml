@@ -71,13 +71,13 @@ jobs:
         run: |
           mkdir -p "$HOME/.local/state/arch-packages/work"
           python3 tools/publish.py plan --accepted-sha "$ACCEPTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --output-dir "$HOME/.local/state/arch-packages/work/publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: publication-plan-${{ github.run_attempt }}
           path: ~/.local/state/arch-packages/work/publication-${{ github.run_id }}-${{ github.run_attempt }}/publication-plan.json
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: unsigned-publication-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -109,7 +109,7 @@ jobs:
           python3 tools/publish.py rollback --target-tag "$TARGET_TAG" --expected-tag "$EXPECTED_TAG" --expected-release-id "$EXPECTED_RELEASE_ID" --work-dir "$HOME/.local/state/arch-packages/work/rollback-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Record rollback receipt
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: rollback-receipt-${{ github.run_id }}-${{ github.run_attempt }}
           path: ~/.local/state/arch-packages/work/rollback-${{ github.run_id }}-${{ github.run_attempt }}/publication-result.json
@@ -157,7 +157,7 @@ jobs:
           python3 tools/publish.py publish --accepted-sha "$ACCEPTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --plan "$HOME/.local/state/arch-packages/work/publication-input-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/publication-plan.json" --artifact "$HOME/.local/state/arch-packages/work/publication-input-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/unsigned.tar" --work-dir "$HOME/.local/state/arch-packages/work/signed-publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Record public verification and rollback evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: publication-receipt-${{ github.run_id }}-${{ github.run_attempt }}
           path: ~/.local/state/arch-packages/work/signed-publication-${{ github.run_id }}-${{ github.run_attempt }}/publication-result.json
