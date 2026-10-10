@@ -2,7 +2,7 @@
 
 pkgname=mdevctl
 pkgver=1.4.0
-pkgrel=2
+pkgrel=3
 pkgdesc="A mediated device management utility for Linux"
 url="https://github.com/mdevctl/mdevctl"
 arch=('x86_64')
@@ -17,19 +17,8 @@ options+=(emptydirs)
 
 _target=x86_64-unknown-linux-gnu
 
-_cross_env() {
-    [[ $CARCH == x86_64 ]] || { error "Unsupported package target: $CARCH"; return 1; }
-    if [[ $(uname -m) != "$CARCH" ]]; then
-        export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
-        export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc
-        export CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++
-        export AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar
-    fi
-}
-
 prepare() {
     cd "$pkgname-$pkgver"
-    _cross_env
     install -m 644 "$srcdir/Cargo.lock" Cargo.lock
     # The generated Makefile otherwise assumes the host-default target/release path.
     sed -i 's|@@mdevctl@@|$(MDEVCTL_BIN)|' Makefile.in
@@ -38,19 +27,12 @@ prepare() {
 
 build() {
     cd "$pkgname-$pkgver"
-    _cross_env
     cargo build --frozen --release --all-features --target "$_target"
     mv Makefile Makefile.release
 }
 
 check() {
-    if [[ $(uname -m) != "$CARCH" ]]; then
-        msg2 "Target execution tests require $CARCH; not emulating them on $(uname -m)"
-        return 0
-    fi
-
     cd "$pkgname-$pkgver"
-    _cross_env
     cargo test --frozen --all-features --target "$_target"
 }
 
