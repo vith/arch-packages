@@ -86,6 +86,13 @@ tab contains the actual `PKGBUILD`, patches, install scripts and other recipe
 files, not generated main-branch records or copied description diffs. Changed
 package contents require a version or `pkgrel` bump.
 
+New recipe roots can be registered as authenticated pending imports without
+executing their recipes. Pending imports are not published or included in routine
+source-update discovery. Their first conversion is reviewed in a package-root PR
+and uses the same exact-input recipe approval as other new code. Only a successful
+authorized build and accepted recipe merge activate the package, through automatic
+bookkeeping that retains the original build rather than compiling it again.
+
 Source updates are checked every six hours. Before any recipe execution,
 trusted-main tools statically freeze the exact review head, recipe tree, source
 inputs, metadata claims and build policy. Only non-trivial `PKGBUILD` changes,

@@ -102,7 +102,7 @@ class AcceptanceInvariants(unittest.TestCase):
         from tools import recipe_candidates, recipe_state
         C0, C1, C2, B, H, T, A = (value*40 for value in '123bdea')
         branch = 'recipe-updates/demo/dependency-change'
-        policy = {'outputs': []}
+        policy = {'pkgbase': 'demo', 'outputs': []}
         lock = {'version': '1-2', 'sources': []}
         provenance = {'watchers': []}
         candidate = {'schema': 1, 'kind': 'recipe', 'repository': 'owner/repo',
@@ -148,6 +148,7 @@ class AcceptanceInvariants(unittest.TestCase):
         def checkout(sha, destination, pins):
             destination.mkdir()
             (destination/'build-image.txt').write_text('advanced-image')
+            update.dump(destination/'packages.json', {'schema': 1, 'packages': [policy]})
             pins['demo'] = B
             return destination
         read_json = update.load
@@ -164,7 +165,6 @@ class AcceptanceInvariants(unittest.TestCase):
                 patch.object(update, 'main_sha', return_value=C2),
                 patch.object(update, 'ref_head', return_value=A),
                 patch.object(update, 'checkout_data', side_effect=checkout),
-                patch.object(update, 'policy_at', return_value={'demo': policy}),
                 patch.object(update, 'harness_digest', return_value='advanced-harness'),
                 patch.object(recipe_state, 'control_digest', return_value='advanced-controller'),
                 patch.object(update, 'load', side_effect=load),
@@ -227,8 +227,12 @@ class AcceptanceInvariants(unittest.TestCase):
             with patch.object(update, 'api', side_effect=lambda path: changed_pr if '/pulls/' in path else response(path)):
                 with self.assertRaisesRegex(ValueError, 'compatible original build'):
                     acceptance.accepted_receipt(7)
-            with patch.object(update, 'policy_at', return_value={'demo': {'outputs': [], 'authority': 'changed'}}):
-                with self.assertRaisesRegex(ValueError, 'compatible original build'):
+            def changed_policy(sha, destination, pins):
+                result = checkout(sha, destination, pins)
+                update.dump(result/'packages.json', {'schema': 1, 'packages': [{**policy, 'authority': 'changed'}]})
+                return result
+            with patch.object(update, 'checkout_data', side_effect=changed_policy):
+                with self.assertRaises(ValueError):
                     acceptance.accepted_receipt(7)
             with patch.object(update, 'load', side_effect=lambda path: {'version': 'changed'} if '/inputs/' in str(path) else load(path)):
                 with self.assertRaisesRegex(ValueError, 'predecessor source state changed'):
@@ -347,7 +351,7 @@ class AcceptanceInvariants(unittest.TestCase):
         from tools import recipe_state, recipes
         C, L, Q, M, P, B, H, T = (value*40 for value in 'c1234bde')
         oldlock, lock = {'version': '1', 'sources': []}, {'version': '2', 'sources': []}
-        policy = {'policy': 'exact', 'outputs': [{'name': 'demo', 'arch': 'x86_64'}]}
+        policy = {'pkgbase': 'demo', 'policy': 'exact', 'outputs': [{'name': 'demo', 'arch': 'x86_64'}]}
         original_load = update.load
         oldpro = {'watchers': [{'id': 'release', 'tag': '1'}]}
         provenance = {'watchers': [{'id': 'release', 'tag': '2'}]}
@@ -400,11 +404,14 @@ class AcceptanceInvariants(unittest.TestCase):
         pins = {'demo': H}
         current_lock = lock
         current_pin = H
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(prefix='legacy-adoption-', dir=acceptance.scratch_root()) as directory:
             current = Path(directory)/'current'
+            current.mkdir()
+            update.dump(current/'packages.json', {'schema': 1, 'packages': [policy]})
             def checkout(sha, destination, recipe_pins=None):
                 destination.mkdir()
                 (destination/'build-image.txt').write_text('image')
+                update.dump(destination/'packages.json', {'schema': 1, 'packages': [policy]})
                 if recipe_pins is not None:
                     recipe_pins['demo'] = B if sha == L else current_pin if sha == C else H
                 return destination
@@ -420,7 +427,6 @@ class AcceptanceInvariants(unittest.TestCase):
                     patch.object(update, 'api', side_effect=response),
                     patch.object(update, 'repository', return_value='owner/repo'),
                     patch.object(update, 'checkout_data', side_effect=checkout),
-                    patch.object(update, 'policy_at', return_value={'demo': policy}),
                     patch.object(update, 'load', side_effect=load),
                     patch.object(recipes, 'is_ancestor', return_value=True),
                     patch.object(acceptance, 'leaves', side_effect=lambda sha: leafsets[sha]),

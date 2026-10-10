@@ -49,10 +49,8 @@ def _modules(root, repository):
     modules = root / ".gitmodules"
     if not policy.is_file() or policy.is_symlink() or policy.stat().st_size > 4 * 1024 * 1024:
         raise ValueError("bounded recipe enrollment required")
-    value = json.loads(policy.read_text())
-    if value.get("schema") != 1 or not isinstance(value.get("packages"), list) or not value["packages"]:
-        raise ValueError("nonempty recipe enrollment required")
-    names = [package.get("pkgbase") for package in value["packages"]]
+    from tools.imports import policies
+    names = list(policies(root))
     if any(not isinstance(name, str) or not NAME.fullmatch(name) for name in names) or len(names) != len(set(names)):
         raise ValueError("invalid/duplicate enrolled recipe")
     if not modules.is_file() or modules.is_symlink() or modules.stat().st_size > 1024 * 1024:
@@ -79,11 +77,14 @@ def copy_recipe(source, destination):
     return destination
 
 
-def materialize(root, control_sha, repository, extract_tree):
+def materialize(root, control_sha, repository, extract_tree, selected=None):
     """Export every enrolled immutable gitlink; fail instead of overwriting changes."""
     root = Path(root)
     _identity(repository, control_sha)
     names = _modules(root, repository)
+    selected = set(names) if selected is None else set(selected)
+    if not selected <= set(names):
+        raise ValueError("unregistered recipe export selection")
     tree = _tree(repository, control_sha)
     links = {path: entry for path, entry in tree.items() if entry.get("mode") == "160000" or entry.get("type") == "commit"}
     if set(links) != {"recipes/" + name for name in names}:
@@ -120,6 +121,8 @@ def materialize(root, control_sha, repository, extract_tree):
                 raise ValueError("materialized recipe differs from its immutable gitlink")
             pins[name] = sha
         for name in names:
+            if name not in selected:
+                continue
             destination = recipes / name
             if destination.exists():
                 if any(destination.iterdir()):
