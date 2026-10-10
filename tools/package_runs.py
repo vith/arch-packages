@@ -1,419 +1,246 @@
-"""Authorize isolated package workers, recover original bytes, and collect without rebuilding."""
+"""Reserve exact package workers and collect successful durable metadata."""
 import argparse
 import hashlib
-import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
-import tarfile
-import tempfile
+import shutil
 import time
-import zipfile
 
-from tools import build_store, github_api, publish, recipe_candidates, recipe_state, recipes, update
+from tools import build_store, github_api, recipe_state, recipes, update
 
 WORKFLOW = 'build-package.yml'
-REPOSITORY = publish.REPOSITORY
 
 
 def select(plan, name):
-    selected = [p for p in plan['packages'] if p['pkgbase'] == name and not p.get('reuse', False)]
-    if len(selected) != 1:
-        raise ValueError('package is not an explicitly authorized compilation input')
-    return {**plan, 'packages': selected}
+    packages = [p for p in plan['packages'] if p['pkgbase'] == name and not p.get('reuse', False)]
+    if len(packages) != 1:
+        raise ValueError('worker requires exactly one requested package')
+    return {**plan, 'packages': packages}
 
 
 def title(plan, name):
-    package = select(plan, name)['packages'][0]
-    return f"Build {name} / {plan['run_id']}.{plan['run_attempt']} / {package['input_digest']}"
-
-
-def artifact_name(name, run, attempt):
-    return f'package-{name}-{run}-{attempt}'
-
-
-def rows(path, key):
-    for page in range(1, 101):
-        separator = '&' if '?' in path else '?'
-        result = github_api.api(path + f'{separator}per_page=100&page={page}')[key]
-        if not isinstance(result, list) or len(result) > 100:
-            raise ValueError('invalid paginated package worker response')
-        yield from result
-        if len(result) < 100:
-            return
-    raise ValueError('package worker history exceeds recovery bound; refusing compilation')
-
-
-class OriginalTransportRecoveryRequired(RuntimeError):
-    def __init__(self, record, producer, artifact, directory):
-        self.record = record
-        self.producer = producer
-        self.artifact = artifact
-        self.directory = directory
-        super().__init__(f"Original compilation {producer['run_id']}.{producer['run_attempt']} requires accepted-main transport attestation; no recompilation permitted")
-
-
-def download_artifact(run, attempt, name, directory, legacy=False, expected=None):
-    artifacts = rows(f'repos/{REPOSITORY}/actions/runs/{run}/artifacts', 'artifacts')
-    expected_name = 'package-' + name if legacy else artifact_name(name, run, attempt)
-    matches = [a for a in artifacts if a['name'] == expected_name]
-    if len(matches) != 1 or matches[0]['expired']:
-        raise RuntimeError(f'Original successful compilation {run}.{attempt} has no recoverable archive; refusing recompilation')
-    artifact = matches[0]
-    if expected is not None and any(artifact.get(key) != value for key, value in expected.items()):
-        raise ValueError('transport recovery artifact differs from explicitly selected immutable ID/digest')
-    producer_run = github_api.api(f'repos/{REPOSITORY}/actions/runs/{run}/attempts/{attempt}')
-    associated = artifact.get('workflow_run', {})
-    if (associated.get('id') != int(run) or associated.get('head_sha') != producer_run['head_sha']
-            or producer_run['path'] != '.github/workflows/' + WORKFLOW
-            or producer_run['head_branch'] != 'main'):
-        raise ValueError('original archive artifact is not bound to exact trusted producer')
-    digest = artifact.get('digest', '')
-    if not digest.startswith('sha256:') or not build_store.DIGEST.fullmatch(digest[7:]):
-        raise ValueError('original artifact lacks immutable server SHA256 digest')
-    directory.parent.mkdir(parents=True, exist_ok=True)
-    directory = Path(tempfile.mkdtemp(prefix=directory.name + '-', dir=directory.parent))
-    archive = directory / 'artifact.zip'
-    build_store.download_api(f'repos/{REPOSITORY}/actions/artifacts/{artifact["id"]}/zip', archive, build_store.MAXIMUM + github_api.MAX_JSON, accept='application/vnd.github+json')
-    if build_store.sha(archive) != digest[7:] or archive.stat().st_size != artifact['size_in_bytes']:
-        raise ValueError('original artifact ZIP digest or size differs')
-    allowed = {'unsigned.tar', 'candidate.json', 'attestation.jsonl', 'compilation.json', 'attestation-context.json'}
-    with zipfile.ZipFile(archive) as stream:
-        entries = stream.infolist()
-        if len(entries) > len(allowed) or len({e.filename for e in entries}) != len(entries):
-            raise ValueError('duplicate or excessive original artifact ZIP entries')
-        total = 0
-        for entry in entries:
-            mode = entry.external_attr >> 16
-            if entry.filename not in allowed or mode & 0o170000 not in (0, 0o100000):
-                raise ValueError('unsafe original artifact ZIP entry')
-            total += entry.file_size
-            if entry.file_size > build_store.MAXIMUM or total > build_store.MAXIMUM + github_api.MAX_JSON:
-                raise ValueError('original artifact ZIP exceeds bounds')
-        for entry in entries:
-            with stream.open(entry) as source, (directory / entry.filename).open('xb') as target:
-                shutil.copyfileobj(source, target)
-    proof = {'id': artifact['id'], 'name': artifact['name'], 'digest': digest,
-             'size': artifact['size_in_bytes'], 'run_id': str(run), 'run_attempt': str(attempt),
-             'head_sha': producer_run['head_sha']}
-    update.dump(directory / 'original-artifact.json', proof)
-    return directory
-
-
-def recover(plan, name, directory):
-    package = select(plan, name)['packages'][0]
-    descriptor = build_store._lookup_durable(package, record=plan)
-    if descriptor is not None:
-        return descriptor
-    compatible_inputs = {package['input_digest']} if package.get('input_digest') is not None else set()
-    if all(key in package for key in ('recipe_commit', 'previous_recipe_commit', 'tree_sha', 'lock', 'policy', 'expected_srcinfo')):
-        for key in recipe_state.keys('candidate', ''):
-            candidate = recipe_state.load('candidate', key)
-            for original in candidate.get('packages', []):
-                if build_store.compatible(package, original):
-                    compatible_inputs.add(original['input_digest'])
-    runs = rows(f'repos/{REPOSITORY}/actions/workflows/{WORKFLOW}/runs?event=workflow_dispatch', 'workflow_runs')
-    for run in runs:
-        legacy_title = f"Build {name} / {plan.get('run_id')}.{plan.get('run_attempt')}"
-        legacy = run['display_title'] == legacy_title
-        if not legacy and not any(run['display_title'].endswith(' / ' + digest) for digest in compatible_inputs):
-            continue
-        if run.get('path') != '.github/workflows/' + WORKFLOW or run.get('head_branch') != 'main':
-            continue
-        for attempt in range(int(run['run_attempt']), 0, -1):
-            jobs = list(rows(f'repos/{REPOSITORY}/actions/runs/{run["id"]}/attempts/{attempt}/jobs', 'jobs'))
-            steps = [step for job in jobs if job.get('name') == 'package' for step in job.get('steps', [])]
-            marker = 'Build package without credentials' if legacy else 'Authenticate actual compilation success'
-            success = any(step.get('name') == marker and step.get('conclusion') == 'success' for step in steps)
-            failure = any(step.get('name') in ('Authenticate actual compilation failure', 'Authenticate compilation not started') and step.get('conclusion') == 'success' for step in steps)
-            attempted = any(step.get('name') == 'Build package without credentials' and step.get('conclusion') not in (None, 'skipped') for step in steps)
-            if failure and not success:
-                continue
-            if not success:
-                if attempted:
-                    raise RuntimeError(f'Compilation outcome for {run["id"]}.{attempt} is unprovable; refusing recompilation')
-                continue
-            artifact = download_artifact(run['id'], attempt, name, directory / f'recovery-{run["id"]}-{attempt}', legacy=legacy)
-            archive = artifact / 'unsigned.tar'
-            original = plan if legacy else update.load(artifact / 'candidate.json')
-            recipe_candidates.verify_authorization(original)
-            original_package = select(original, name)['packages'][0]
-            if (original_package['input_digest'] != package.get('input_digest')
-                    and not build_store.compatible(package, original_package)):
-                raise ValueError('original successful artifact has different compilation inputs')
-            unpacked = artifact / 'original'
-            build_store.unpack_original(archive, unpacked, original, legacy=legacy)
-            producer = {'run_id': str(run['id']), 'run_attempt': str(attempt), 'head_sha': run['head_sha'], 'path': '.github/workflows/' + WORKFLOW, 'pkgbase': name}
-            if legacy:
-                producer['legacy'] = True
-            build_store.producer_run(original, producer)
-            build_store.validate_outputs(original, unpacked, name)
-            if legacy or not (artifact / 'attestation.jsonl').is_file():
-                raise OriginalTransportRecoveryRequired(original, producer, update.load(artifact / 'original-artifact.json'), artifact)
-            # A genuine original attestation does not need a recovery signer.
-            (artifact / 'original-artifact.json').unlink()
-            return build_store.persist(original, unpacked, producer)
-    return None
-
-
-def checkpoint(directory, state):
-    bundle = update.load(directory / 'input/bundle.json')
-    path = directory / 'compilation.json'
-    if not path.is_file() or path.is_symlink() or path.stat().st_size > 8192:
-        raise ValueError('missing or unsafe original compilation checkpoint')
-    actual = update.load(path)
-    package = bundle['packages'][0]
-    expected = {'schema': 1, 'state': state, 'input_digest': package['input_digest'],
-                'pkgbase': package['pkgbase'], **{key: bundle[key] for key in
-                ('image', 'harness_sha', 'run_id', 'run_attempt')}}
-    if actual != expected:
-        raise ValueError('actual compilation checkpoint identity/outcome differs')
+    return f"Build {name} / {plan['request_id']}"
 
 
 def outputs(values):
     if os.environ.get('GITHUB_OUTPUT'):
-        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
             for key, value in values.items():
-                output.write(f'{key}={value}\n')
+                stream.write(f'{key}={value}\n')
 
 
-def prepare_recovery(directory, name, parent, attempt):
-    package = {'pkgbase': name, 'input_digest': os.environ['INPUT_DIGEST']}
-    descriptor = build_store._lookup_durable(package)
-    if descriptor is not None:
-        build_store.materialize(descriptor, directory / 'output')
-        update.dump(directory / 'build-descriptor.json', descriptor)
-        outputs({'reused': 'true'})
-        return
-    run = os.environ.get('ORIGINAL_RUN', '')
-    run_attempt = os.environ.get('ORIGINAL_ATTEMPT', '')
-    if not run.isdigit() or not run_attempt.isdigit() or min(int(run), int(run_attempt)) < 1:
-        raise ValueError('transport recovery requires exact original producer run and attempt')
-    legacy = os.environ.get('ARCHIVE_FORMAT') == 'legacy-native-v1'
-    expected = json.loads(os.environ.get('ORIGINAL_ARTIFACT', '{}'))
-    if set(expected) != {'id', 'digest', 'size_in_bytes', 'name'}:
-        raise ValueError('transport recovery requires explicit original immutable artifact binding')
-    artifact = download_artifact(run, run_attempt, name, directory / 'original-source', legacy=legacy, expected=expected)
-    if legacy:
-        key = os.environ.get('ORIGINAL_CANDIDATE_KEY', '')
-        record = {**recipe_state.load('candidate', key), 'run_id': parent, 'run_attempt': attempt}
-    else:
-        record = update.load(artifact / 'candidate.json')
-    selected = select(record, name)['packages'][0]
-    if (selected['input_digest'] != package['input_digest'] or record['run_id'] != parent
-            or record['run_attempt'] != attempt):
-        raise ValueError('transport source differs from original authorized candidate')
-    recipe_candidates.verify_authorization(record)
-    original_run = github_api.api(f'repos/{REPOSITORY}/actions/runs/{run}/attempts/{run_attempt}')
-    producer = {'run_id': run, 'run_attempt': run_attempt, 'head_sha': original_run['head_sha'],
-                'path': '.github/workflows/' + WORKFLOW, 'pkgbase': name}
-    if legacy:
-        producer['legacy'] = True
-    build_store.producer_run(record, producer)
-    original = build_store.unpack_original(artifact / 'unsigned.tar', artifact / 'original', record, legacy=legacy)
-    build_store.validate_outputs(record, original, name)
-    shutil.copyfile(artifact / 'unsigned.tar', directory / 'unsigned.tar')
-    shutil.copytree(original, directory / 'output')
-    update.dump(directory / 'candidate.json', record)
-    update.dump(directory / 'producer.json', producer)
-    update.dump(directory / 'original-artifact.json', update.load(artifact / 'original-artifact.json'))
-    outputs({'reused': 'true', 'transport-recovered': 'true'})
+def dispatch(plan, package, retry=False):
+    request = select(plan, package['pkgbase'])
+    pending, created = recipe_state.reserve_build(request, retry=retry)
+    if created:
+        github_api.api(f"repos/{request['repository']}/actions/workflows/{WORKFLOW}/dispatches", 'POST', {
+            'ref': 'main', 'inputs': {'package': package['pkgbase'], 'pr_number': str(request['pr_number']),
+                                    'recipe_sha': package['recipe_commit'], 'request_id': request['request_id']}})
+    return pending, created
 
 
-def prepare(directory, name, parent, attempt, kind='candidate'):
-    if kind != 'candidate':
-        raise ValueError('publication is not permitted to dispatch compilation')
-    if os.environ.get('RECOVERY_MODE') == 'true':
-        prepare_recovery(directory, name, parent, attempt)
-        return
-    record = github_api.api(f'repos/{REPOSITORY}/actions/runs/{parent}/attempts/{attempt}')
-    plan = update.load(directory / 'candidate.json')
+def accepted_cache_key(root, name, image, harness):
+    """Restore only a fully successful producer explicitly accepted on trusted main."""
+    if not recipes.NAME.fullmatch(name):
+        raise ValueError('invalid accepted cache package')
+    path = Path(root) / 'acceptance' / (name + '.json')
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 8 * 1024 * 1024:
+        raise ValueError('unsafe accepted cache authority')
+    acceptance = update.load(path)
+    descriptor = acceptance.get('build')
+    if descriptor is None or descriptor.get('schema') != 3:
+        return None
+    if acceptance.get('pkgbase') != name or descriptor.get('pkgbase') != name:
+        raise ValueError('accepted cache authority belongs to another package')
+    descriptor = build_store.lookup({'pkgbase': name, 'build': descriptor})
+    evidence = descriptor['evidence']
+    if evidence['image'] != image or evidence['harness_sha'] != harness:
+        return None
+    build_store.producer_run(descriptor['record'], descriptor['producer'])
+    original = descriptor['record']
+    if (not str(original['pr_number']).isdigit()
+            or not recipes.SHA.fullmatch(original['head'])):
+        raise ValueError('invalid accepted cache producer namespace')
+    scope = hashlib.sha256(github_api.canonical({'image': image, 'harness': harness})).hexdigest()[:24]
+    receipt = evidence['packages'][0]
+    key = (f"pr-build-v2-{name}-{original['pr_number']}-{original['head']}-{scope}-"
+           f"{receipt['input_digest']}-{descriptor['producer']['run_id']}-{descriptor['producer']['run_attempt']}")
+    return {'key': key, 'path': str(Path.home() / '.local/state/arch-packages/cache/pr' / name / original['head'])}
+
+
+def admit_cache(source, destination, expected_key, matched_key):
+    """Do not expose prefix-matched cross-PR caches to the compiler."""
+    source, destination = Path(source), Path(destination)
+    root = Path.home() / '.local/state/arch-packages/cache/pr'
+    for path in (source, destination):
+        relative = path.relative_to(root)
+        if (len(relative.parts) != 2 or not recipes.NAME.fullmatch(relative.parts[0])
+                or not recipes.SHA.fullmatch(relative.parts[1])):
+            raise ValueError('unsafe cache admission path')
+    if not expected_key or matched_key != expected_key:
+        if source.is_symlink():
+            source.unlink()
+        elif source.exists():
+            shutil.rmtree(source)
+        return False
+    if not source.is_dir() or source.is_symlink():
+        raise ValueError('unsafe accepted cache directory')
+    if source != destination:
+        if destination.exists() or destination.is_symlink():
+            raise ValueError('accepted cache would overwrite existing isolated cache')
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(destination)
+    return True
+
+
+def prepare(directory, name, pr_number, recipe_sha, request_id):
+    directory = Path(directory)
+    request = recipe_state.build_request(request_id)
+    selected = select(request, name)
+    package = selected['packages'][0]
+    if (request['repository'] != update.repository() or str(request['pr_number']) != str(pr_number)
+            or request['head'] != recipe_sha or package['recipe_commit'] != recipe_sha):
+        raise ValueError('worker arguments differ from exact reserved request')
+    producer = {'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                'head_sha': os.environ['GITHUB_SHA'], 'path': '.github/workflows/' + WORKFLOW, 'pkgbase': name}
+    run = build_store.producer_run(request, producer, completed=False)
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-    if (record['path'] != '.github/workflows/candidate.yml' or record['head_sha'] != plan['base']
-            or record['head_branch'] != 'main'
-            or plan['run_id'] != parent or plan['run_attempt'] != attempt):
-        raise ValueError('authorized parent workflow identity mismatch')
-    recipe_candidates.verify_authorization(plan)
-    selected = select(plan, name)
-    if selected['packages'][0]['input_digest'] != os.environ.get('INPUT_DIGEST'):
-        raise ValueError('worker concurrency input digest differs from approved package')
-    descriptor = recover(plan, name, directory)
-    if descriptor is not None:
-        build_store.materialize(descriptor, directory / 'output')
-        update.dump(directory / 'build-descriptor.json', descriptor)
-        outputs({'reused': 'true'})
-        return
-    current = github_api.api(f'repos/{REPOSITORY}/git/ref/heads/main')['object']['sha']
-    if current != plan['base'] or head != plan['base']:
-        raise ValueError('approved control differs from executing worker or moved before compilation admission')
-    if plan.get('kind') == 'recipe':
-        recipe_state.assert_recipe_identity(plan)
-    else:
-        update.pr_identity(plan['pr_number'], plan['base'], plan['head'])
-    update.extract_tree(directory / 'bundle.tar', directory / 'frozen', {'recipes', 'bundle.json'})
-    bundle = update.load(directory / 'frozen/bundle.json')
-    for key in ('schema', 'repository', 'base', 'head', 'run_id', 'run_attempt', 'image', 'harness_sha', 'recipe_pins', 'previous_recipe_pins', 'packages'):
-        if bundle[key] != plan[key]:
-            raise ValueError('frozen bundle differs from approved input: ' + key)
+    if (os.environ.get('GITHUB_REPOSITORY') != request['repository'] or os.environ.get('GITHUB_REF') != 'refs/heads/main'
+            or head != run['head_sha']):
+        raise ValueError('worker is not executing the requested trusted controller')
+    current_main = github_api.api(f"repos/{request['repository']}/git/ref/heads/main")['object']['sha']
+    if current_main != head:
+        raise ValueError('worker controller moved before admission')
+    recipe_state.assert_recipe_identity(request, control=head)
+    recipe_state.register_build(name, request_id, producer)
+    directory.mkdir(parents=True, exist_ok=True)
+    update.dump(directory / 'candidate.json', selected)
+    update.dump(directory / 'producer.json', producer)
     target = directory / 'input'
     target.mkdir()
-    package = selected['packages'][0]
-    recipes.copy_recipe(directory / 'frozen' / package['recipe_dir'], target / package['recipe_dir'])
-    (target / 'bundle.json').write_bytes(github_api.canonical({**bundle, 'packages': selected['packages']}))
-    scope = hashlib.sha256(github_api.canonical({'image': plan['image'], 'harness': plan['harness_sha']})).hexdigest()[:24]
-    prefix = f'trusted-build-v1-linux-x86_64-{name}-{scope}-'
-    input_prefix = prefix + package['input_digest'] + '-'
-    outputs({'reused': 'false', 'cache-prefix': prefix, 'cache-input-prefix': input_prefix, 'cache-key': input_prefix + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT']})
+    archive = directory / 'recipe.tar.gz'
+    github_api.download(f"https://api.github.com/repos/{request['repository']}/tarball/{recipe_sha}", archive, maximum=recipes.MAX_TREE)
+    exported = directory / 'exported'
+    update.extract_tree(archive, exported)
+    recipe = target / package['recipe_dir']
+    recipe.parent.mkdir(parents=True, exist_ok=True)
+    recipes.copy_recipe(exported, recipe)
+    if (recipe / '.SRCINFO').read_text() != package['expected_srcinfo']:
+        raise ValueError('exported recipe metadata differs from reserved request')
+    from tools.recipe_gate import tree_manifest, harness_digest, input_digest
+    if hashlib.sha256(github_api.canonical(tree_manifest(recipe))).hexdigest() != package['tree_sha']:
+        raise ValueError('exported recipe tree differs from reserved request')
+    actual_harness = harness_digest(Path.cwd())
+    actual_digest = input_digest(recipe, package['lock'], package['policy'], request['image'], actual_harness)
+    actual_package = {**package, 'request_input_digest': package['input_digest'], 'input_digest': actual_digest}
+    update.dump(target / 'bundle.json', {**selected, 'harness_sha': actual_harness, 'producer': producer,
+                                       'packages': [actual_package], 'run_id': producer['run_id'],
+                                       'run_attempt': producer['run_attempt']})
+    scope = hashlib.sha256(github_api.canonical({'image': request['image'], 'harness': actual_harness})).hexdigest()[:24]
+    trusted = accepted_cache_key(Path.cwd(), name, request['image'], actual_harness)
+    isolated = f'pr-build-v2-{name}-{pr_number}-{recipe_sha}-{scope}-'
+    outputs({'accepted-cache-key': trusted['key'] if trusted else '',
+             'accepted-cache-path': trusted['path'] if trusted else '',
+             'cache-input-prefix': isolated + actual_digest + '-',
+             'cache-key': isolated + actual_digest + '-' + producer['run_id'] + '-' + producer['run_attempt']})
 
 
 def context(directory):
     record = update.load(directory / 'candidate.json')
-    evidence = update.load(directory / 'output/native-evidence.json')
-    name = evidence['packages'][0]['pkgbase']
-    producer_path = directory / 'producer.json'
-    producer = update.load(producer_path) if producer_path.exists() else {
-        'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
-        'head_sha': record['base'], 'path': '.github/workflows/' + WORKFLOW, 'pkgbase': name}
-    signer = {'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
-              'head_sha': os.environ['GITHUB_SHA'], 'path': '.github/workflows/' + WORKFLOW}
-    source_path = directory / 'original-artifact.json'
-    source = update.load(source_path) if source_path.exists() else None
-    update.dump(directory / 'attestation-signer.json', signer)
-    update.dump(directory / 'attestation-context.json', build_store.attestation_context(record, producer, signer, source))
+    producer = update.load(directory / 'producer.json')
+    signer = {key: producer[key] for key in ('run_id', 'run_attempt', 'head_sha', 'path')}
+    update.dump(directory / 'attestation-context.json', build_store.attestation_context(record, producer, signer))
 
 
 def persist(directory):
-    record = update.load(directory / 'candidate.json')
-    producer_path = directory / 'producer.json'
-    producer = update.load(producer_path) if producer_path.exists() else None
-    descriptor = build_store.persist(record, directory / 'output', producer)
+    descriptor = build_store.persist(update.load(directory / 'candidate.json'), directory / 'output',
+                                     update.load(directory / 'producer.json'))
     update.dump(directory / 'build-descriptor.json', descriptor)
 
 
-def dispatch(plan, package, recovery=None):
-    if recovery is not None:
-        plan = recovery.record
-        package = select(plan, package['pkgbase'])['packages'][0]
-    if recovery is None:
-        current = github_api.api(f'repos/{REPOSITORY}/git/ref/heads/main')['object']['sha']
-        if current != plan['base']:
-            raise ValueError('approved control moved before dispatch; recover original bytes or obtain exact current-control authorization')
-        if plan.get('kind') == 'recipe':
-            recipe_state.assert_recipe_identity(plan)
-        else:
-            update.pr_identity(plan['pr_number'], plan['base'], plan['head'])
-    github_api.api(f'repos/{REPOSITORY}/actions/workflows/{WORKFLOW}/dispatches', 'POST', {
-        'ref': 'main', 'inputs': {'package': package['pkgbase'],
-        'publication_run': plan['run_id'], 'publication_attempt': plan['run_attempt'],
-        'input_digest': package['input_digest'], 'recovery_mode': 'true' if recovery is not None else 'false',
-        'original_run': recovery.producer['run_id'] if recovery is not None else '',
-        'original_attempt': recovery.producer['run_attempt'] if recovery is not None else '',
-        'original_artifact': json.dumps({'id': recovery.artifact['id'], 'digest': recovery.artifact['digest'],
-                                       'size_in_bytes': recovery.artifact['size'], 'name': recovery.artifact['name']},
-                                      sort_keys=True, separators=(',', ':')) if recovery is not None else '',
-        'archive_format': 'legacy-native-v1' if recovery is not None and recovery.producer.get('legacy') else 'native-v2',
-        'original_candidate_key': recipe_state.identity_key(plan) if recovery is not None and recovery.producer.get('legacy') else ''}})
-    return title(plan, package['pkgbase'])
-
-
-def collect(directory, timeout=10800, kind='candidate'):
+def collect(directory, timeout=10800, kind='candidate', retry=False):
     if kind != 'candidate':
-        raise ValueError('publication must consume original durable builds, never dispatch workers')
+        raise ValueError('publication cannot dispatch compilation')
+    directory = Path(directory)
     plan = update.load(directory / 'candidate.json')
-    recipe_candidates.verify_authorization(plan)
-    context_path = recipe_candidates.controller_context(directory / 'candidate.json')
-    if context_path is not None:
-        recipe_candidates.verify_current_controller(plan, context_path)
-    output = directory / 'unsigned'
-    output.mkdir()
-    evidence = {**{key: value for key, value in plan.items() if key != 'packages'}, 'packages': [], 'package_runs': []}
-    pending = {}
-    worker_titles = {}
-    recovery_workers = set()
-    descriptors = {}
+    requests = {}
     for package in plan['packages']:
-        if package.get('reuse', False):
-            continue
-        name = package['pkgbase']
-        recovery_needed = None
-        try:
-            descriptor = recover(plan, name, directory)
-        except OriginalTransportRecoveryRequired as error:
-            descriptor = None
-            recovery_needed = error
-        if descriptor is not None:
-            descriptors[name] = descriptor
-            continue
-        worker_titles[name] = dispatch(plan, package, recovery=recovery_needed)
-        if recovery_needed is not None:
-            recovery_workers.add(name)
-        pending[name] = package
+        if not package.get('reuse', False):
+            pending, _ = dispatch(plan, package, retry=retry)
+            if pending['head'] != plan['head']:
+                raise ValueError('another active package request must finish before this head')
+            requests[package['pkgbase']] = pending['request_id']
+    if len(requests) == 1 and len(plan['packages']) == 1:
+        snapshot = recipe_state.StateSnapshot()
+        original = recipe_state.build_request(next(iter(requests.values())), snapshot=snapshot)
+        if original['head'] != plan['head'] or original['pr_number'] != plan['pr_number']:
+            raise ValueError('reserved original request belongs to another recipe PR')
+        plan = original
+        update.dump(directory / 'candidate.json', plan)
+    descriptors = {}
     deadline = time.monotonic() + timeout
-    while pending:
-        if time.monotonic() >= deadline:
-            raise TimeoutError('approved package workers still pending: ' + ', '.join(sorted(pending)))
-        runs = github_api.api(f'repos/{REPOSITORY}/actions/workflows/{WORKFLOW}/runs?event=workflow_dispatch&per_page=100')['workflow_runs']
-        for name in list(pending):
-            descriptor = build_store._lookup_durable(pending[name], record=plan)
-            if descriptor is not None:
-                descriptors[name] = descriptor
-                del pending[name]
+    while requests:
+        snapshot = recipe_state.StateSnapshot()
+        for name, request_id in list(requests.items()):
+            pending = recipe_state.pending_build(name, snapshot=snapshot)
+            if pending is None or pending['request_id'] != request_id:
+                raise ValueError('active build request changed during collection')
+            if pending['state'] == 'failure':
+                raise RuntimeError('Package worker failed: ' + name + '; explicit retry builds fresh')
+            producer = pending.get('worker')
+            if producer is None:
                 continue
-            matches = [run for run in runs if run['display_title'] == worker_titles[name]]
-            finished = [run for run in matches if run['status'] == 'completed']
-            if finished and not any(run['status'] != 'completed' for run in matches):
-                try:
-                    descriptor = recover(plan, name, directory)
-                except OriginalTransportRecoveryRequired as error:
-                    if name in recovery_workers:
-                        raise RuntimeError('Original-byte transport recovery failed for ' + name + '; retry transport only, never compilation') from error
-                    worker_titles[name] = dispatch(plan, pending[name], recovery=error)
-                    recovery_workers.add(name)
-                    continue
-                if descriptor is None:
-                    raise RuntimeError('Approved compilation failed for ' + name + '; failed compiler progress remains cached')
-                descriptors[name] = descriptor
-                del pending[name]
-        if pending:
+            request = recipe_state.build_request(request_id, snapshot=snapshot)
+            run = build_store.producer_run(request, producer, completed=False)
+            if run['status'] != 'completed':
+                continue
+            if run['conclusion'] != 'success':
+                recipe_state.finish_build(name, request_id, 'failure')
+                raise RuntimeError('Entire package worker failed: ' + name)
+            stored = snapshot.load_optional('build-result', request_id)
+            descriptor = (build_store.lookup({'pkgbase': name, 'request_id': request_id, 'build': stored}, record=request)
+                          if stored is not None else None)
+            if descriptor is None:
+                recipe_state.finish_build(name, request_id, 'failure')
+                raise RuntimeError('Successful worker lacks durable output: ' + name)
+            if descriptor['producer'] != producer:
+                raise ValueError('durable output belongs to another worker')
+            recipe_state.finish_build(name, request_id, 'success', result=descriptor)
+            descriptors[name] = descriptor
+            del requests[name]
+        if requests:
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Exact package workers still pending: ' + ', '.join(sorted(requests)))
             time.sleep(30)
-    for name, descriptor in sorted(descriptors.items()):
-        unpacked = build_store.materialize(descriptor, directory / ('verified-' + name))
-        original = update.load(unpacked / 'native-evidence.json')
-        # Original package proof is never rewritten to the collecting attempt.
-        evidence['packages'].extend(original['packages'])
-        evidence['package_runs'].append({'pkgbase': name, **{k: descriptor['producer'][k] for k in ('run_id', 'run_attempt')}, 'build': descriptor})
-        for file in original['packages'][0]['files']:
-            filename = file['filename']
-            if (output / filename).exists():
-                raise ValueError('duplicate package output')
-            shutil.copyfile(unpacked / filename, output / filename)
-    (output / 'native-evidence.json').write_bytes(github_api.canonical(evidence))
-    with tarfile.open(directory / 'unsigned.tar', 'w') as archive:
-        for path in sorted(output.iterdir()):
-            archive.add(path, arcname=path.name, recursive=False)
+    update.dump(directory / 'build-results.json', descriptors)
+    evidence = {key: value for key, value in plan.items() if key != 'packages'}
+    evidence['packages'] = [d['evidence']['packages'][0] for _, d in sorted(descriptors.items())]
+    evidence['package_runs'] = [{'pkgbase': name, **d['producer'], 'build': d} for name, d in sorted(descriptors.items())]
+    update.dump(directory / 'native-evidence.json', evidence)
+    return descriptors
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=('prepare', 'collect', 'persist', 'checkpoint', 'context'))
+    parser.add_argument('operation', choices=('prepare', 'collect', 'persist', 'context'))
     parser.add_argument('directory', type=Path)
-    parser.add_argument('--state', choices=('success', 'failure', 'not-started'))
     parser.add_argument('--package')
-    parser.add_argument('--publication-run')
-    parser.add_argument('--publication-attempt')
-    parser.add_argument('--kind', choices=('publication', 'candidate'), default='candidate')
+    parser.add_argument('--pr-number')
+    parser.add_argument('--recipe-sha')
+    parser.add_argument('--request-id')
+    parser.add_argument('--retry', action='store_true')
     args = parser.parse_args()
     if args.operation == 'prepare':
-        prepare(args.directory, args.package, args.publication_run, args.publication_attempt, args.kind)
+        prepare(args.directory, args.package, args.pr_number, args.recipe_sha, args.request_id)
     elif args.operation == 'context':
         context(args.directory)
-    elif args.operation == 'checkpoint':
-        checkpoint(args.directory, args.state)
     elif args.operation == 'persist':
         persist(args.directory)
     else:
-        collect(args.directory, kind=args.kind)
+        collect(args.directory, retry=args.retry)
 
 
 if __name__ == '__main__':

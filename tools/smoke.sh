@@ -18,7 +18,6 @@ if [[ ${1:-} != --inside ]]; then
   trap 'docker rm -f "$container" >/dev/null' EXIT
   docker cp "$root/tools/smoke.sh" "$container:/smoke.sh"
   docker cp "$root/tools/apexshot-smoke.sh" "$container:/apexshot-smoke.sh"
-  docker cp "$root/tools/native.py" "$container:/native.py"
   docker cp "$root/tools/public-smoke.sh" "$container:/public-smoke.sh"
   docker cp "$root/tools/dependency_repo.py" "$container:/dependency_repo.py"
   docker cp "$root/tools/github_api.py" "$container:/github_api.py"
@@ -145,6 +144,14 @@ chown -R 1000:1000 /fresh/root/fresh/home /fresh/root/fresh/config /fresh/root/f
 consumer_namespace=()
 consumer() { "${consumer_namespace[@]}" chroot /fresh/root /usr/bin/setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs -- env -i PATH=/usr/bin HOME=/fresh/home XDG_CONFIG_HOME=/fresh/config XDG_DATA_HOME=/fresh/data XDG_RUNTIME_DIR=/fresh/runtime LANG=C.UTF-8 TERM=xterm-256color "$@"; }
 offline_consumer() { local -a consumer_namespace=(unshare --net); consumer "$@"; }
+enrolled() {
+  python - "$@" <<'PY'
+import json, sys
+names = {i['name'] for p in json.load(open('/expected.json'))['packages'] for i in p['files']}
+sys.exit(0 if names.intersection(sys.argv[1:]) else 1)
+PY
+}
+if enrolled archive-mounter; then
 desktop=/fresh/root/usr/share/applications/mount-archive.desktop
 desktop-file-validate "$desktop"
 cp "$desktop" /evidence/mount-archive.desktop
@@ -158,6 +165,8 @@ expected={'application/x-cd-image','application/x-bzip-compressed-tar','applicat
 actual=set(filter(None,d['MimeType'].split(';')))
 if actual != expected: raise SystemExit('archive-mounter exact MIME mismatch: '+repr(actual))
 PY
+fi
+if enrolled apexshot; then
 # Share installed ApexShot checks with the credential-free candidate proof.
 cp /apexshot-smoke.sh /fresh/root/apexshot-smoke.sh
 # Keep the explicit /fresh/db database, but report paths as seen inside the chroot.
@@ -172,6 +181,8 @@ apexshot_status=0
 consumer bash /apexshot-smoke.sh "$apexshot_version" /fresh/data/apexshot /apexshot-files.txt || apexshot_status=$?
 cp -a /fresh/root/fresh/data/apexshot/. /evidence/
 [[ $apexshot_status == 0 ]] || exit "$apexshot_status"
+fi
+if enrolled carapace; then
 consumer carapace --list --names > /evidence/carapace-list.txt
 consumer carapace git export git checko > /evidence/carapace-completion.json
 python - <<'PY'
@@ -183,6 +194,8 @@ if not isinstance(value,dict) or not isinstance(value.get('values'),list): raise
 values={x['value'] for x in value['values']}
 if not {'checkout','checkout-index'} <= values: raise SystemExit('missing real git checkout completions')
 PY
+fi
+if enrolled nasctui nasc-tui-bin; then
 python - <<'PY'
 import hashlib,json,pathlib,subprocess
 # Historical snapshots retain the old binary package; current snapshots use nasctui.
@@ -228,6 +241,8 @@ if consumer tmux -S /fresh/runtime/nasc.sock has-session -t nasc; then
   exit 1
 fi
 trap - EXIT
+fi
+if enrolled cloudflare-speed-cli; then
 consumer cloudflare-speed-cli --text --idle-latency-duration 1s --download-duration 1s --upload-duration 1s --download-bytes-per-req 4096 --upload-bytes-per-req 4096 --concurrency 1 --export-json /fresh/data/speed.json > /evidence/cloudflare-speed.txt 2>&1
 cp /fresh/root/fresh/data/speed.json /evidence/cloudflare-speed.json
 python - <<'PY'
@@ -242,19 +257,8 @@ text=open('/evidence/cloudflare-speed.txt').read()
 for phase in ('IdleLatency','Download','Upload'):
     if '== '+phase+' ==' not in text: raise SystemExit('missing speed phase '+phase)
 PY
-consumer omp --version > /evidence/omp-version.txt
-consumer omp --help > /evidence/omp-help.txt
-python - <<'PY'
-import importlib.util,json
-s=importlib.util.spec_from_file_location('native','/native.py'); n=importlib.util.module_from_spec(s); s.loader.exec_module(n)
-p=next(x for x in json.load(open('/expected.json'))['packages'] if x['pkgbase']=='oh-my-pi-vith-git')
-expected=n.runtime_identity(p['source_lock']['version'])
-if open('/evidence/omp-version.txt').read().strip()!='omp/'+expected: raise SystemExit('OMP exact runtime version mismatch')
-if not open('/evidence/omp-help.txt').read().strip(): raise SystemExit('OMP help missing')
-if expected.encode() not in open('/fresh/root/usr/bin/omp','rb').read(): raise SystemExit('OMP appended native stamp missing')
-proof={'runtime_identity': expected, 'cli_version': open('/evidence/omp-version.txt').read().strip()}
-open('/evidence/omp-native.json','w').write(json.dumps(proof,sort_keys=True)+'\n')
-PY
+fi
+if enrolled python-google-genai; then
 consumer python - > /evidence/google-genai.json <<'PY'
 import http.server
 import importlib.metadata
@@ -311,6 +315,7 @@ finally:
     thread.join(timeout=5)
     server.server_close()
 PY
+fi
 # Actual signed output membership gates new proofs; dependencies never enroll a case.
 cp /public-smoke.sh /fresh/root/public-smoke.sh
 cp /expected.json /fresh/root/expected.json

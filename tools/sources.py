@@ -264,7 +264,9 @@ def discover_git(watcher, accepted):
     authentic=previous_tag is None or advertised.get(previous_tag['name'])==previous_tag['object']
     if not authentic:
         raise ValueError('accepted authentic tag changed or disappeared')
-    if old==commit and accepted['git_context']==context:
+    previous_context=accepted['git_context']
+    comparison=context if 'tag_refs_sha256' in previous_context else {key:value for key,value in context.items() if key!='tag_refs_sha256'}
+    if old==commit and previous_context==comparison:
         return None
     return {'kind':'git','commit':commit,'ref':ref,'git_context':context,'authentic':authentic,'fast_forward':not old or git('merge-base','--is-ancestor',old,commit,cwd=repository,check=False).returncode==0}
 
@@ -275,7 +277,11 @@ def version_context(repository,commit):
     if described.returncode==0:
         reference='refs/tags/'+described.stdout.strip()
         tag={'name':reference,'object':git('rev-parse',reference,cwd=repository),'commit':git('rev-parse',reference+'^{commit}',cwd=repository)}
-    return {'object_format':git('rev-parse','--show-object-format',cwd=repository),'version_tag':tag}
+    # Track reachable tag identities, including non-v tags used by pkgver().
+    # Frozen inspection mirrors still need only the selected derivation tag.
+    tags=git('for-each-ref','--merged='+commit,'--sort=refname','--format=%(refname) %(objectname)','refs/tags/',cwd=repository)
+    return {'object_format':git('rev-parse','--show-object-format',cwd=repository),'version_tag':tag,
+            'tag_refs_sha256':hashlib.sha256(tags.encode()).hexdigest()}
 
 
 def pinned_refs(source):
@@ -433,7 +439,11 @@ def validate_lock(lock):
             public_url(source['url'])
         if source['kind']=='git':
             context=source['git_context']
-            if not isinstance(context,dict) or set(context)!={'object_format','version_tag'} or context['object_format'] not in {'sha1','sha256'}:
+            if (not isinstance(context,dict) or not {'object_format','version_tag'}<=set(context)
+                    or set(context)-{'object_format','version_tag','tag_refs_sha256'}
+                    or context['object_format'] not in {'sha1','sha256'}
+                    or 'tag_refs_sha256' in context and (not isinstance(context['tag_refs_sha256'],str)
+                        or not re.fullmatch(r'[0-9a-f]{64}',context['tag_refs_sha256']))):
                 raise ValueError('invalid Git context')
             if not isinstance(source['ref'],str) or not source['ref'].startswith(('refs/heads/','refs/tags/')):
                 raise ValueError('invalid pinned Git ref')
@@ -473,88 +483,3 @@ def materialize_sources(lock, destination):
         mapping[source['url']]=mirror
     return mapping
 
-
-def probe_recipe(recipe_dir, lock, policy, preserve_pkgrel=False):
-    """Execute only inside the enrolled Arch container as an unprivileged user."""
-    if not Path('/etc/arch-release').is_file() or os.geteuid()==0:
-        raise RuntimeError('probe_recipe requires isolated unprivileged Arch runtime')
-    from tools.recipe_gate import parse_srcinfo
-    original_pkgrel=parse_srcinfo((Path(recipe_dir)/'.SRCINFO').read_text())['pkgrel']
-    validate_lock(lock)
-    configuration=os.environ.get('GIT_CONFIG_SYSTEM')
-    if any(source['kind']=='git' for source in lock['sources']):
-        if (os.environ.get('MAKEPKG_GIT_CONFIG')!=configuration
-                or os.environ.get('GIT_CONFIG_NOSYSTEM','0')!='0'
-                or os.environ.get('GIT_CONFIG_GLOBAL')!='/dev/null'):
-            raise ValueError('native Git and makepkg require the same frozen system configuration')
-        if not configuration or not Path(configuration).is_file():
-            raise ValueError('native probe requires root-owned frozen mirror configuration')
-        info=Path(configuration).stat()
-        if info.st_uid!=0 or info.st_mode&0o222 and not os.statvfs(configuration).f_flag&os.ST_RDONLY:
-            raise ValueError('native frozen configuration is writable by recipe')
-        entries=git('config','--file',configuration,'--get-regexp',r'^url\..*\.insteadof$',check=False)
-        mapping={}
-        for row in entries.stdout.splitlines():
-            key,url=row.split(None,1)
-            target=key.removeprefix('url.').removesuffix('.insteadof')
-            if not target.startswith('file:///'):
-                raise ValueError('native Git source mapping is not a frozen local mirror')
-            mirror=Path(target.removeprefix('file://'))
-            readonly=not mirror.stat().st_mode&0o222 or os.statvfs(mirror).f_flag&os.ST_RDONLY
-            if mirror.stat().st_uid!=0 or not readonly:
-                raise ValueError('native Git mirror is not root-owned readonly')
-            mapping[url]=mirror
-        for source in lock['sources']:
-            if source['kind']=='git':
-                mirror=mapping.get(source['url'])
-                if mirror is None:
-                    raise ValueError('native mirror context differs from frozen lock')
-                verify_git_source(source,mirror)
-    vcs_rules=[r for r in policy['automatic']['checksums'] if next(s for s in lock['sources'] if s['id']==r['source_id'])['kind']=='git']
-    if vcs_rules:
-        import shlex
-        generated=subprocess.run(['makepkg','--geninteg'],cwd=recipe_dir,check=True,capture_output=True,text=True).stdout
-        if len(generated.encode())>1048576:
-            raise ValueError('native checksum output exceeds bound')
-        text=(Path(recipe_dir)/'PKGBUILD').read_text()
-        for rule in vcs_rules:
-            rows=re.findall(r'^'+re.escape(rule['algorithm']+'sums')+r'=\(([^)]*)\)',generated,re.M|re.S)
-            if len(rows)!=1:
-                raise ValueError('ambiguous native VCS checksum output')
-            values=shlex.split(rows[0])
-            value=values[rule['index']]
-            expected_length=hashlib.new(rule['algorithm']).digest_size*2
-            if not re.fullmatch('[0-9a-f]{'+str(expected_length)+'}',value):
-                raise ValueError('invalid native generated VCS checksum')
-            source=next(s for s in lock['sources'] if s['id']==rule['source_id'])
-            old=source['checksums'][rule['algorithm']]
-            if old!=value:
-                if text.count(old)!=1:
-                    raise ValueError('ambiguous enrolled VCS checksum literal')
-                text=text.replace(old,value)
-                source['checksums'][rule['algorithm']]=value
-        (Path(recipe_dir)/'PKGBUILD').write_text(text)
-    subprocess.run(['makepkg','--nobuild','--noconfirm'],cwd=recipe_dir,check=True,stdout=subprocess.PIPE)
-    text=subprocess.run(['makepkg','--printsrcinfo'],cwd=recipe_dir,check=True,capture_output=True,text=True).stdout
-    if len(text.encode())>1048576:
-        raise ValueError('native metadata exceeds bound')
-    metadata=parse_srcinfo(text)
-    if preserve_pkgrel and metadata['pkgrel']!=original_pkgrel:
-        from tools.update import render_recipe
-        render_recipe(Path(recipe_dir),policy,metadata['pkgver'],{source['id']:source['checksums'] for source in lock['sources']},pkgrel=original_pkgrel)
-        text=subprocess.run(['makepkg','--printsrcinfo'],cwd=recipe_dir,check=True,capture_output=True,text=True).stdout
-        if len(text.encode())>1048576:
-            raise ValueError('native metadata exceeds bound')
-        metadata=parse_srcinfo(text)
-        if metadata['pkgrel']!=original_pkgrel:
-            raise ValueError('native enrollment did not preserve pkgrel')
-    runtime_identity=None
-    if policy['pkgbase']=='oh-my-pi-vith-git':
-        match=re.fullmatch(r'([0-9]+(?:\.[0-9]+){2})\.vith\.r([0-9]+)\.g([0-9a-f]{12})',metadata['pkgver'])
-        if not match:
-            raise ValueError('unexpected native fork identity')
-        source=next(s for s in lock['sources'] if s['id']=='omp-git')
-        if source['commit'][:12]!=match[3]:
-            raise ValueError('native fork SHA differs from frozen commit')
-        runtime_identity=f'{match[1]}+vith-fork.{match[2]}.{match[3]}'
-    return {'schema':1,'version':metadata['version'],'pkgver':metadata['pkgver'],'pkgrel':metadata['pkgrel'],'srcinfo':text,'checksums':{s['id']:s['checksums'] for s in lock['sources']},'sources':lock['sources'],'runtime_identity':runtime_identity}

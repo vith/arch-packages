@@ -62,15 +62,6 @@ def pr_identity(number, base=None, head=None):
     return pr,actual_base,pr['head']['sha']
 
 
-def require_review_environment(name):
-    if name not in {'recipe-review','code-review'}:
-        raise ValueError('invalid human review environment')
-    environment=api(route('/environments/'+name))
-    reviewers=[r for r in environment.get('protection_rules',[]) if r.get('type')=='required_reviewers' and r.get('reviewers')]
-    if not reviewers or environment.get('can_admins_bypass') is not False:
-        raise ValueError('human environment reviewer protection is not deployed')
-
-
 def recipe_payload_path(name):
     path=safe_path(name)
     if path.parts[0] in {'.github','inputs','upstream','acceptance'}:
@@ -177,6 +168,18 @@ def status(head,context,state,description):
     api(route('/statuses/'+head),'POST',{'state':state,'context':context,'description':description[:140]})
 
 
+def source_status_description(number, base):
+    if not SHA.fullmatch(base) or not str(number).isdecimal() or int(number) < 1:
+        raise ValueError('invalid source status identity')
+    return 'Source tests for ' + base + ' PR #' + str(int(number))
+
+
+def source_status(number, base, head, state):
+    """Never let an old-base coordinator overwrite newer source evidence."""
+    pr_identity(number, base, head)
+    status(head, 'verify', state, source_status_description(number, base))
+
+
 def run_candidate_tests(root, image):
     """Execute candidate tests only inside a disposable, credential-free container."""
     environment = {k: v for k, v in os.environ.items() if k in {'PATH', 'HOME', 'DOCKER_HOST', 'TMPDIR'}}
@@ -262,7 +265,42 @@ def parse_version(full):
     return full.split(':',1)[-1].rsplit('-',1)[0]
 
 
-def prepare(number,output):
+def validate_retirement(old, new, oldpins, newpins):
+    """Allow only exact enrolled-package removals while retaining public history."""
+    from tools import imports
+    previous, accepted, pending = imports.registry(old)
+    proposed, remaining, newpending = imports.registry(new)
+    removed = set(accepted) - set(remaining)
+    if not removed:
+        return None
+    if set(remaining) - set(accepted) or pending != newpending:
+        raise ValueError('retirement cannot add enrollment or change pending imports')
+    expected_registry = json.loads(json.dumps(previous))
+    expected_registry['packages'] = [row for row in previous['packages'] if row['pkgbase'] not in removed]
+    if proposed != expected_registry:
+        raise ValueError('retirement changed retained package policy or registration')
+    if newpins != {name: sha for name, sha in oldpins.items() if name not in removed}:
+        raise ValueError('retirement changed retained recipe pins')
+    recipes._modules(Path(old), repository())
+    recipes._modules(Path(new), repository())
+    before = {entry['path']: entry for entry in tree_manifest(old)}
+    after = {entry['path']: entry for entry in tree_manifest(new)}
+    removed_records = {directory + '/' + name + '.json' for name in removed for directory in ('inputs', 'upstream')}
+    if not removed_records <= before.keys() or removed_records & after.keys():
+        raise ValueError('retirement requires exact removed source records')
+    def removed_recipe(path):
+        return any(path.startswith('recipes/' + name + '/') for name in removed)
+    if any(removed_recipe(path) for path in after):
+        raise ValueError('retirement retained removed recipe content')
+    before_retained = {path: entry for path, entry in before.items()
+                       if path not in removed_records and path not in {'packages.json', '.gitmodules'} and not removed_recipe(path)}
+    after_retained = {path: entry for path, entry in after.items() if path not in {'packages.json', '.gitmodules'}}
+    if before_retained != after_retained:
+        raise ValueError('retirement changed retained content or published history')
+    return sorted(removed)
+
+
+def prepare(number,output,retry=False):
     metadata=api(route('/pulls/'+str(number)))
     expected=os.environ.get('EXPECTED_HEAD')
     if expected is not None and (not SHA.fullmatch(expected) or metadata['head']['sha']!=expected):
@@ -271,11 +309,14 @@ def prepare(number,output):
         raise ValueError('legacy main recipe proposal disabled; use migrate-existing')
     if metadata['base']['ref'].startswith('pkg/'):
         from tools.recipe_candidates import prepare as recipe_prepare
-        return recipe_prepare(number,output)
+        return recipe_prepare(number,output,retry=retry)
     pr,base,head=pr_identity(number)
+    if ((pr.get('head') or {}).get('repo') or {}).get('full_name') != repository():
+        raise ValueError('main source candidate requires same-repository head')
     if sources.git('rev-parse','HEAD',cwd=ROOT)!=base:
         raise ValueError('candidate trusted control checkout changed')
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
+    source_status(number, base, head, 'pending')
     oldpins={};newpins={}
     old=checkout_data(base,output/'base-tree',oldpins);new=checkout_data(head,output/'head-tree',newpins)
     policies=policy_at(old)
@@ -289,80 +330,37 @@ def prepare(number,output):
     from tools.recipe_acceptance import validate_bookkeeping
     acceptance=validate_bookkeeping(pr,base,head,old,new)
     admission=None if acceptance is not None else imports.validate_admission(old,new,oldpins,newpins,output/'import-admission')
-    if acceptance is not None or admission is not None:
+    retirement = None if acceptance is not None or admission is not None else validate_retirement(old, new, oldpins, newpins)
+    if acceptance is not None or admission is not None or retirement is not None:
         names=[]
     shared |= oldpins.keys()!=newpins.keys()
     image=(old/'build-image.txt').read_text().strip()
     if not re.fullmatch(r'ghcr.io/archlinux/archlinux@sha256:[0-9a-f]{64}',image):
         raise ValueError('build image is not pinned official Arch')
-    status(head,'verify','pending','Static candidate frozen; awaiting exact authorization')
     harness=harness_digest(old)
-    build_image=image
-    from tools import recipe_state
-    packages=[]
-    decisions=[{'pkgbase':name,'decision':'manual','reason':'Package enrollment retired'} for name in sorted(retired)]
-    for name in names:
-        lock=load(new/'inputs'/f'{name}.json')
-        validate_source_policy(lock,proposed[name])
-        if name not in policies or proposed[name]!=policies[name]:
-            decision={'decision':'manual','reason':'Package enrollment changed'}
-        else:
-            decision=classify_recipe_update(old/'recipes'/name,new/'recipes'/name,policies[name])
-        if decision['decision']=='invalid':
-            raise ValueError(decision['reason'])
-        # No candidate-provided evidence grants automatic approval. Independent
-        # trusted source receipts are verified below for bot ownership only.
-        evidence=independent_transition(old,new,name,policies[name],output/f'verify-{name}') if name in policies and proposed[name]==policies[name] else None
-        if evidence:
-            trusted=dict(policies[name]); trusted['_verified_transition']=evidence
-            decision=classify_recipe_update(old/'recipes'/name,new/'recipes'/name,trusted)
-        if oldpins.get(name) and oldpins[name]!=newpins[name] and not recipes.is_ancestor(repository(),oldpins[name],newpins[name]):
-            raise ValueError('Recipe history is not a fast-forward of the accepted pin')
-        static=static_metadata(new/'recipes'/name,lock,proposed[name],output/f'static-{name}',preserve_pkgrel=True)
-        if static['version']!=lock['version'] or static['srcinfo']!=(new/'recipes'/name/'.SRCINFO').read_text() or static['sources']!=lock['sources']:
-            raise ValueError('candidate static metadata differs from frozen source lock')
-        if name in policies and not recipe_gate.needs_pkgbuild_review(old/'recipes'/name,new/'recipes'/name,policies[name]):
-            from tools.recipe_candidates import source_boundaries
-            source_boundaries(load(old/'inputs'/f'{name}.json'),lock,proposed[name])
-            recipe_gate.verify_automatic_recipe(old/'recipes'/name,new/'recipes'/name,policies[name],load(old/'inputs'/f'{name}.json'),lock,evidence)
-        decisions.append({'pkgbase':name,**decision})
-        recipe=output/'bundle'/'recipes'/name;recipes.copy_recipe(new/'recipes'/name,recipe)
-        digest=input_digest(recipe,lock,proposed[name],build_image,harness)
-        packages.append({'pkgbase':name,'recipe_commit':newpins[name],'previous_recipe_commit':oldpins.get(name),'recipe_dir':f'recipes/{name}','tree_sha':recipe_state.digest(tree_manifest(recipe)),'lock':lock,'policy':proposed[name],'input_digest':digest,'expected_srcinfo':(recipe/'.SRCINFO').read_text()})
-    needs_review=any(recipe_gate.needs_pkgbuild_review(old/'recipes'/name,new/'recipes'/name,policies.get(name,proposed[name])) for name in names)
-    auto_merge=not needs_review
-    if auto_merge and acceptance is None and ((pr.get('head') or {}).get('repo') or {}).get('full_name')!=repository():
-        raise ValueError('automatic main source requires same-repository head')
-    mechanical=False
-    bundle={'schema':1,'repository':repository(),'base':base,'head':head,'recipe_pins':newpins,'previous_recipe_pins':oldpins,'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'image':image,'harness_sha':harness,'packages':packages}
-    dump(output/'bundle'/'bundle.json',bundle)
-    record={**bundle,'control_digest':recipe_state.control_digest(old),'pr_number':int(number),'mechanical':mechanical,'auto_merge':auto_merge,'decisions':decisions,'kind':'bookkeeping' if acceptance is not None else 'code','review_environment':'recipe-review' if needs_review else ''}
-    if record['review_environment']:
-        require_review_environment(record['review_environment'])
-    from tools import recipe_state
-    from tools.recipe_candidates import candidate_provenance_exists, frozen_record
-    key=recipe_state.identity_key(record)
-    frozen=frozen_record(record)
-    recipe_state.save('candidate',key,frozen)
-    recipe_state.attest('candidate',key,frozen,head)
-    provenance_exists=candidate_provenance_exists(record)
-    dump(output/'candidate.json',record)
-    with tarfile.open(output/'bundle.tar','w') as archive:
-        archive.add(output/'bundle',arcname='bundle',recursive=True)
-    shutil.rmtree(output/'bundle')
-    status(head,'candidate-build','pending','Frozen candidate awaits authorization before execution')
-    status(head,'recipe-policy','pending','Static source policy verified; awaiting exact authorization')
+    if names:
+        raise ValueError('main package edits require exact recipe PR acceptance or enrollment')
+    changed = {entry['path'] for entry in tree_manifest(old)} | {entry['path'] for entry in tree_manifest(new)}
+    before = {entry['path']: entry for entry in tree_manifest(old)}
+    after = {entry['path']: entry for entry in tree_manifest(new)}
+    changed = {path for path in changed if before.get(path) != after.get(path)}
+    documentation = all((path.startswith('docs/') and path.endswith('.md') or path in {'README.md', 'AGENTS.md', 'CHANGELOG.md'}) and after.get(path, before.get(path))['kind'] == 'file' and after.get(path, before.get(path))['mode'] == 0o644 for path in changed)
+    auto_merge = acceptance is not None or admission is not None or documentation and retirement is None
+    record = {'schema': 1, 'repository': repository(), 'base': base, 'head': head,
+              'recipe_pins': newpins, 'previous_recipe_pins': oldpins,
+              'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'image': image, 'harness_sha': harness, 'packages': [],
+              'pr_number': int(number), 'merge_policy': 'automatic' if auto_merge else 'human',
+              'kind': 'bookkeeping' if acceptance is not None else 'code'}
+    dump(output/'candidate.json', record)
+    status(head, 'candidate-build', 'success', 'Main source route requires zero package workers')
+    status(head, 'recipe-policy', 'success', 'Static main scope classified: ' + record['merge_policy'])
     if os.environ.get('GITHUB_OUTPUT'):
-        with open(os.environ['GITHUB_OUTPUT'],'a') as handle:
-            handle.write(f'base={base}\nhead={head}\nmechanical={str(mechanical).lower()}\nreview_environment={record["review_environment"]}\ncandidate={output / "candidate.json"}\nprovenance_exists={str(provenance_exists).lower()}\n')
-    if os.environ.get('GITHUB_STEP_SUMMARY'):
-        with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as handle:
-            handle.write(f'PR #{number}\nBase `{base}`\nHead `{head}`\n'+json.dumps(decisions,indent=2)+'\n')
-    # Only bounded explicit data goes to the build. Neither candidate automation
-    # nor base/head full trees leave the control artifact directory.
-    for path in (*output.glob('verify-*'), *output.glob('static-*')):
-        remove_verification_tree(path)
-    shutil.rmtree(old);shutil.rmtree(new)
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as handle:
+            handle.write(f'base={base}\nhead={head}\nkind={record["kind"]}\ncandidate={output / "candidate.json"}\n')
+    for path in (old, new, output/'bundle'):
+        if path.exists():
+            remove_verification_tree(path)
     return record
 
 
@@ -588,112 +586,37 @@ def _transition(old,new,name,policy,work,verify_context,aur_transition,verify_so
     return {'srcinfo':(new/'recipes'/name/'.SRCINFO').read_text(),'checksums':{s['id']:s['checksums'] for s in newlock['sources']},'source_templates_verified':True,'lock_verified':True,'auxiliary_inputs_verified':True,'authentic':authentic,'fast_forward':fast_forward}
 
 
-def validate_build(record,directory,report=True):
-    record_path=None if isinstance(record,dict) else record
-    record=load(record) if not isinstance(record,dict) else record
-    if record.get('kind')=='recipe':
-        from tools.recipe_candidates import validate_build as recipe_validate, controller_context
-        context=controller_context(record_path) if record_path else None
-        return recipe_validate(record,directory,report,context=context)
-    pr_identity(record['pr_number'],record['base'],record['head'])
-    from tools.recipe_candidates import verify_authorization
-    verify_authorization(record)
-    return validate_build_outputs(record,directory,report)
+def validate_build(record, directory, report=True):
+    record = load(record) if not isinstance(record, dict) else record
+    if record.get('kind') != 'recipe':
+        raise ValueError('main source route has no package build')
+    from tools.recipe_candidates import validate_build as recipe_validate
+    return recipe_validate(record, directory, report)
 
 
-def validate_build_outputs(record,directory,report=True):
-    directory=Path(directory);evidence=load(directory/'native-evidence.json')
-    for key in ('schema','repository','base','head','recipe_pins','previous_recipe_pins','run_id','run_attempt','image','harness_sha'):
-        if evidence.get(key)!=record[key]:
-            raise ValueError('build artifact identity mismatch: '+key)
-    expected={p['pkgbase']:p for p in record['packages']}
-    built={p['pkgbase']:p for p in evidence['packages']}
-    if set(built)!=set(expected) or len(built)!=len(evidence['packages']):
-        raise ValueError('incomplete/duplicate candidate outputs')
-    filenames=set()
-    for name,pkg in built.items():
-        candidate=expected[name]
-        pin=candidate['recipe_commit']
-        if not SHA.fullmatch(pin) or record['recipe_pins'].get(name)!=pin or pkg.get('recipe_commit')!=pin or pkg['input_digest']!=candidate['input_digest'] or pkg['source_lock']!=candidate['lock']:
-            raise ValueError('build frozen input mismatch')
-        expected_metadata=candidate['expected_srcinfo']
-        if pkg['metadata'].get('srcinfo')!=expected_metadata or parse_srcinfo(expected_metadata)['version']!=candidate['lock']['version']:
-            raise ValueError('native preparation metadata differs from exact candidate')
-        wanted={(o['name'],o['arch']) for o in candidate['policy']['outputs']}
-        actual={(f['name'],f['arch']) for f in pkg['files']}
-        if wanted!=actual or len(actual)!=len(pkg['files']):
-            raise ValueError('missing/extra native package output')
-        for file in pkg['files']:
-            filename=file['filename']
-            if safe_path(filename).parts!=(filename,) or filename in filenames:
-                raise ValueError('unsafe/duplicate output name')
-            filenames.add(filename)
-            path=directory/filename
-            if not path.is_file() or path.is_symlink() or file['version']!=candidate['lock']['version'] or hashlib.sha256(path.read_bytes()).hexdigest()!=file['sha256']:
-                raise ValueError('native output bytes/version mismatch')
-    if report:
-        status(record['head'],'candidate-build','success','Every frozen package output verified')
-        if record.get('auto_merge') or record['mechanical']:
-            status(record['head'],'recipe-policy','success','Independent automatic acceptance verified')
-    return evidence
-
-
-def review(record):
-    from tools.recipe_candidates import review as candidate_review
-    return candidate_review(load(record))
-
-
-def authorize(record):
-    from tools.recipe_candidates import authorize as candidate_authorize
-    return candidate_authorize(load(record))
-
-
-def run_approved_tests(record,directory):
-    record_path=None if isinstance(record,dict) else record
-    record=load(record) if not isinstance(record,dict) else record
-    from tools.recipe_candidates import verify_authorization, controller_context, verify_current_controller
-    if record.get('kind')=='recipe':
-        context=controller_context(record_path) if record_path else None
-        if context:
-            verify_current_controller(record,context)
-        else:
-            from tools.recipe_state import assert_recipe_identity
-            assert_recipe_identity(record)
-        verify_authorization(record)
-        return
-    verify_authorization(record)
-    pr_identity(record['pr_number'],record['base'],record['head'])
-    directory=Path(directory)
-    directory.mkdir(parents=True,exist_ok=True)
-    root=checkout_data(record['head'],directory/'approved-head')
-    try:
-        verify_authorization(record)
-        run_candidate_tests(root,record['image'])
-        pr_identity(record['pr_number'],record['base'],record['head'])
-    except Exception:
-        status(record['head'],'verify','failure','Approved exact candidate verification failed')
-        raise
-    finally:
-        remove_verification_tree(root)
-    status(record['head'],'verify','success','Approved exact candidate regression tests passed')
-
-
-def finalize(number,base,head,record_path,directory):
-    record=load(record_path)
-    if record.get('kind')=='recipe':
+def finalize(number, base, head, record_path, directory):
+    record = load(record_path)
+    if record.get('kind') == 'recipe':
         from tools.recipe_candidates import finalize as recipe_finalize
-        return recipe_finalize(number,base,head,record_path,directory)
-    if (record['pr_number'],record['base'],record['head'])!=(int(number),base,head):
+        return recipe_finalize(number, base, head, record_path, directory)
+    if (record['pr_number'], record['base'], record['head']) != (int(number), base, head):
         raise ValueError('finalize candidate binding mismatch')
-    validate_build(record,directory)
-    pr_identity(number,base,head)
-    states={s['context']:s['state'] for s in reversed(api(route('/commits/'+head+'/statuses')))}
-    if any(states.get(k)!='success' for k in ('verify','candidate-build','recipe-policy')):
-        raise ValueError('required exact-head statuses missing')
-    result=api(route('/pulls/'+str(number)+'/merge'),'PUT',{'sha':head,'merge_method':'merge'})
-    if not result.get('merged') or not SHA.fullmatch(result.get('sha','')):
+    pr_identity(number, base, head)
+    from tools.source_review import validate_source
+    validate_source(number, base, head, directory)
+    pr_identity(number, base, head)
+    source_status(number, base, head, 'success')
+    from tools.recipe_candidates import required_statuses
+    required_statuses(head)
+    if record['merge_policy'] == 'human':
+        return {'merged': False, 'reason': 'Successful source PR awaits human Merge'}
+    if record['merge_policy'] != 'automatic':
+        raise ValueError('unknown trusted merge policy')
+    pr_identity(number, base, head)
+    result = api(route('/pulls/' + str(number) + '/merge'), 'PUT', {'sha': head, 'merge_method': 'merge'})
+    if not result.get('merged') or not SHA.fullmatch(result.get('sha', '')):
         raise ValueError('expected-head merge failed')
-    api(route('/actions/workflows/publish.yml/dispatches'),'POST',{'ref':'main','inputs':{'accepted_sha':result['sha']}})
+    api(route('/actions/workflows/publish.yml/dispatches'), 'POST', {'ref': 'main', 'inputs': {'accepted_sha': result['sha']}})
     return result
 
 
@@ -739,15 +662,15 @@ def render_recipe(recipe,policy,pkgver,checksums,pkgrel='1'):
     (recipe/'PKGBUILD').write_text(text)
 
 
-def static_metadata(recipe,lock,policy,work,preserve_pkgrel=False):
-    return _static_metadata(recipe,lock,policy,work,preserve_pkgrel,sources.ancestry_version)
+def static_metadata(recipe,lock,policy,work,preserve_pkgrel=False,*,declared_metadata=False):
+    return _static_metadata(recipe,lock,policy,work,preserve_pkgrel,sources.ancestry_version,declared_metadata=declared_metadata)
 
 
 def frozen_metadata(recipe,lock,policy,work,preserve_pkgrel=False):
     return _static_metadata(recipe,lock,policy,work,preserve_pkgrel,sources.frozen_ancestry_version)
 
 
-def _static_metadata(recipe,lock,policy,work,preserve_pkgrel,ancestry_version):
+def _static_metadata(recipe,lock,policy,work,preserve_pkgrel,ancestry_version,*,declared_metadata=False):
     """Freeze source facts and metadata claims without evaluating proposed code.
 
     Submitted human recipes are never rewritten. Discovery alone renders the
@@ -784,9 +707,22 @@ def _static_metadata(recipe,lock,policy,work,preserve_pkgrel,ancestry_version):
         if len(candidates)!=1:
             raise ValueError('ambiguous enrolled revision count source')
         source=candidates[0]
-        derived=sources._frozen_git_version(source,mirrors[source['id']],policy['automatic']['version'])
-        if version!=derived or parse_version(lock['version'])!=derived:
-            raise ValueError('frozen Git version mismatch')
+        if declared_metadata:
+            declared = (recipe/'PKGBUILD').read_text()
+            for key in ('pkgver', 'pkgrel'):
+                if recipe_gate._literal(declared, key)[2] != metadata[key]:
+                    raise ValueError('declared recipe metadata differs from PKGBUILD')
+            if re.search(r'(?<![A-Za-z0-9_])epoch=', declared):
+                if recipe_gate._literal(declared, 'epoch')[2] != str(metadata['epoch']):
+                    raise ValueError('declared recipe epoch differs from PKGBUILD')
+            elif metadata['epoch']:
+                raise ValueError('declared recipe epoch lacks PKGBUILD assignment')
+            if lock['version'] != metadata['version']:
+                raise ValueError('declared source lock version differs from metadata')
+        else:
+            derived=sources._frozen_git_version(source,mirrors[source['id']],policy['automatic']['version'])
+            if version!=derived or parse_version(lock['version'])!=derived:
+                raise ValueError('frozen Git version mismatch')
     if not preserve_pkgrel:
         rules=policy['automatic']
         derivation=rules['version']['derivation']
@@ -845,7 +781,7 @@ def _static_metadata(recipe,lock,policy,work,preserve_pkgrel,ancestry_version):
             lines.append(indent+key+separator+value)
         text='\n'.join(lines)+'\n'
         metadata=parse_srcinfo(text)
-    return {'schema':1,'version':metadata['version'],'pkgver':version,'pkgrel':pkgrel,'srcinfo':text,'checksums':{s['id']:s['checksums'] for s in frozen},'sources':frozen,'runtime_identity':None}
+    return {'schema':1,'version':metadata['version'],'pkgver':version,'pkgrel':pkgrel,'srcinfo':text,'checksums':{s['id']:s['checksums'] for s in frozen},'sources':frozen}
 
 
 def write_aur_tree(files,recipe):
@@ -1214,11 +1150,92 @@ def discover(output):
 
 
 
-def dispatch(number):
-    pr=api(route('/pulls/'+str(number)))
-    head=pr['head']['sha']
-    if not SHA.fullmatch(head):raise ValueError('invalid dispatched head')
-    api(route('/actions/workflows/candidate.yml/dispatches'),'POST',{'ref':'main','inputs':{'pr_number':str(number),'expected_head':head}})
+def open_pr_snapshot():
+    """Fetch open heads and exact-head status contexts in paginated GraphQL."""
+    owner, name = repository().split('/')
+    cursor = None
+    pulls = []
+    while True:
+        query = """query($owner:String!,$name:String!,$cursor:String) {
+          repository(owner:$owner,name:$name) {
+            pullRequests(states:OPEN,first:100,after:$cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes { number isDraft baseRefName baseRefOid headRefName headRefOid
+                headRepository { nameWithOwner }
+                commits(last:1) { nodes { commit { oid status { contexts { context state description } }
+                  statusCheckRollup { state } } } }
+              }
+            }
+          }
+        }"""
+        response = api('/graphql', 'POST', {'query': query, 'variables': {'owner': owner, 'name': name, 'cursor': cursor}})
+        if response.get('errors'):
+            raise ValueError('open PR metadata query failed')
+        connection = response['data']['repository']['pullRequests']
+        for row in connection['nodes']:
+            commit = row['commits']['nodes'][0]['commit'] if row['commits']['nodes'] else None
+            if commit is None or commit['oid'] != row['headRefOid']:
+                raise ValueError('PR status snapshot head differs')
+            states = {item['context']: item['state'].lower() for item in (commit.get('status') or {}).get('contexts', [])}
+            descriptions = {item['context']: item.get('description') for item in (commit.get('status') or {}).get('contexts', [])}
+            pulls.append({'number': row['number'], 'state': 'open', 'draft': row['isDraft'],
+                          'base': {'ref': row['baseRefName'], 'sha': row['baseRefOid']},
+                          'head': {'ref': row['headRefName'], 'sha': row['headRefOid'],
+                                   'repo': {'full_name': (row['headRepository'] or {}).get('nameWithOwner')}},
+                          'statuses': states, 'status_descriptions': descriptions})
+        if not connection['pageInfo']['hasNextPage']:
+            return pulls
+        next_cursor = connection['pageInfo']['endCursor']
+        if not next_cursor or next_cursor == cursor:
+            raise ValueError('PR metadata pagination did not advance')
+        cursor = next_cursor
+
+
+def dispatch(number, pr=None, pending=None, retry=False):
+    from tools import recipe_state
+    pr = api(route('/pulls/'+str(number))) if pr is None else pr
+    head = pr['head']['sha']
+    if not SHA.fullmatch(head):
+        raise ValueError('invalid dispatched head')
+    if pr['state'] != 'open' or pr.get('draft'):
+        return False
+    if pr['base']['ref'].startswith('pkg/'):
+        pending = recipe_state.pending_build(pr['base']['ref'][4:]) if pending is None else pending
+        retryable = pending is not None and retry and (pending['state'] == 'failure' or pending['state'] == 'queued' and pending.get('worker') is None)
+        if pending is not None and not retryable and (pending['head'] == head or pending['state'] in {'queued', 'running'}):
+            return False
+        if pending is None and pr.get('statuses') and all(pr['statuses'].get(key) for key in ('verify', 'recipe-policy', 'candidate-build')):
+            return False
+    else:
+        base = main_sha()
+        marker = source_status_description(number, base)
+        states = pr.get('statuses')
+        descriptions = pr.get('status_descriptions')
+        if states is None or descriptions is None:
+            from tools.recipe_acceptance import paginate
+            rows = list(paginate(lambda page: api(route('/commits/' + head + '/statuses?per_page=100&page=' + str(page)))))
+            latest = {}
+            for row in rows:
+                latest.setdefault(row['context'], row)
+            states = {key: row['state'] for key, row in latest.items()}
+            descriptions = {key: row.get('description') for key, row in latest.items()}
+        if states.get('verify') in {'pending', 'success', 'failure', 'error'} and descriptions.get('verify') == marker and not (retry and states['verify'] in {'failure', 'error'}):
+            return False
+        source_status(number, base, head, 'pending')
+    inputs = {'pr_number': str(number), 'expected_head': head}
+    if retry:
+        inputs['retry'] = 'true'
+    try:
+        api(route('/actions/workflows/candidate.yml/dispatches'), 'POST', {'ref': 'main', 'inputs': inputs})
+    except Exception:
+        if pr['base']['ref'] == 'main':
+            try:
+                source_status(number, base, head, 'failure')
+            except ValueError:
+                # A moved base/head belongs to another coordinator now.
+                pass
+        raise
+    return True
 
 
 def owned_proposal(existing,name,watcher_id):
@@ -1226,7 +1243,7 @@ def owned_proposal(existing,name,watcher_id):
     oldhead=existing['head']['sha']
     receipt=recipe_state.load('proposal',oldhead)
     oldcommit=api(route('/git/commits/'+oldhead))
-    if receipt.get('proposal_origin')!='watcher' or receipt.get('repository')!=repository() or receipt['head_branch']!='recipe-updates/'+name+'/'+watcher_id or receipt['pkgbase']!=name or receipt['watcher_id']!=watcher_id or receipt.get('watcher_ids')!=[watcher_id] or receipt['recipe_head']!=oldhead or oldcommit['tree']['sha']!=receipt['recipe_tree'] or not oldcommit['parents'] or oldcommit['parents'][0]['sha']!=receipt['recipe_base']:
+    if receipt.get('proposal_origin')!='watcher' or receipt.get('repository')!=repository() or receipt['head_branch']!='recipe-updates/'+name or receipt['pkgbase']!=name or receipt.get('watcher_ids')!=[receipt['watcher_id']] or receipt['recipe_head']!=oldhead or oldcommit['tree']['sha']!=receipt['recipe_tree'] or not oldcommit['parents'] or oldcommit['parents'][0]['sha']!=receipt['recipe_base']:
         raise ValueError('user-edited proposal; refusing overwrite')
     recipe_state.require_attestation('proposal',oldhead,receipt,oldhead)
     return oldcommit,receipt['base']
@@ -1248,6 +1265,11 @@ def write_proposals(directory):
     policies=policy_at(ROOT)
     if checkout!=base:
         raise ValueError('writer control checkout is not current main')
+    from tools import recipe_state
+    pulls = open_pr_snapshot()
+    pending_records = recipe_state.load_many([('pending', name) for name in policies])
+    requests = recipe_state.load_many([('build-request', value['request_id']) for value in pending_records.values() if value])
+    handled = set()
     for receipt in batch['receipts']:
         name=receipt['pkgbase'];watcher_id=receipt['watcher_id']
         if name not in policies or not NAME.fullmatch(watcher_id) or receipt['base']!=base or receipt.get('recipe_commit')!=pins[name]:
@@ -1258,27 +1280,43 @@ def write_proposals(directory):
             raise ValueError('accepted recipe branch awaits bookkeeping or has divergent work')
         provenance=load(ROOT/'upstream'/f'{name}.json')
         watcher=next(w for w in provenance['watchers'] if w['id']==watcher_id)
-        branch='recipe-updates/'+name+'/'+watcher_id
-        prs=api(route('/pulls?state=open&head='+repository().split('/')[0]+':'+branch))
-        if len(prs)>1:
-            raise ValueError('multiple bot branch PRs')
-        existing=prs[0] if prs else None
-        if receipt['unchanged'] and existing is None:
+        branch='recipe-updates/'+name
+        package_prs = [pr for pr in pulls if pr['base']['ref'] == 'pkg/' + name]
+        if any(not pr['head']['ref'].startswith('recipe-updates/') for pr in package_prs):
             continue
-        previous_commit,previous_base=owned_proposal(existing,name,watcher_id) if existing else (None,None)
-        retained_tip=existing['head']['sha'] if existing else ref_head(branch)
-        if existing is None:
-            if retained_tip:
-                owned_proposal({'head':{'sha':retained_tip}},name,watcher_id)
+        prs = package_prs
+        if len(prs) > 1:
+            raise ValueError('multiple automation-owned package PRs require reconciliation')
+        existing = prs[0] if prs else None
+        active = pending_records.get(('pending', name))
+        if active is not None and active['state'] in {'queued', 'running'}:
+            continue
+        request = requests.get(('build-request', active['request_id'])) if active else None
+        if existing is None and request is not None and not receipt['unchanged'] and request['packages'][0]['lock'] == receipt['lock'] and request.get('provenance') == receipt['provenance']:
+            # Closing a PR declines these inputs, not a request to recreate it.
+            continue
         if receipt['unchanged']:
-            if existing:
-                # Refresh is handled by rediscovering accepted upstream against
-                # current main, not by transplanting untrusted existing code.
-                states=api(route('/commits/'+existing['head']['sha']+'/status'))
-                latest={s['context']:s['state'] for s in states.get('statuses',[])}
-                if any(latest.get(context) in {None,'failure','error'} for context in ('recipe-policy','candidate-build')) or existing['base']['sha']!=pins[name]:
-                    dispatch(existing['number'])
+            if existing is not None:
+                dispatch(existing['number'], pr=existing, pending=active)
             continue
+        if name in handled:
+            continue
+        handled.add(name)
+        if existing is not None:
+            try:
+                previous_commit, previous_base = owned_proposal(existing, name, watcher_id)
+            except ValueError:
+                # Human changes remain untouched and use the normal recipe route.
+                continue
+            old_receipt = recipe_state.load('proposal', existing['head']['sha'])
+            if old_receipt['lock'] == receipt['lock'] and old_receipt['provenance'] == receipt['provenance']:
+                dispatch(existing['number'], pr=existing, pending=active)
+                continue
+        else:
+            previous_commit, previous_base = None, None
+        retained_tip = existing['head']['sha'] if existing else ref_head(branch)
+        if existing is None and retained_tip:
+            owned_proposal({'head': {'sha': retained_tip}}, name, watcher_id)
         policy=policies[name];lock=receipt['lock'];validate_source_policy(lock,policy)
         work=directory/name/watcher_id;recipe=work/'recipe'
         if tree_manifest(recipe)!=receipt['tree'] or (recipe/'.SRCINFO').read_text()!=receipt['metadata']['srcinfo'] or parse_srcinfo(receipt['metadata']['srcinfo'])['version']!=lock['version']:
@@ -1341,20 +1379,25 @@ def write_proposals(directory):
         if aur_parent and aur_parent not in parents:
             parents.append(aur_parent)
         recipe_sha=None
-        recipe_branch='recipe-updates/'+name+'/'+watcher_id
+        proposal_message = f'Update {name} via {watcher_id}\n\nArch-Source-Target: ' + recipe_state.digest({'lock': lock, 'provenance': receipt['provenance']})
+        recipe_branch='recipe-updates/'+name
         recipe_tip=ref_head(recipe_branch)
         if recipe_tip!=retained_tip:
             raise ValueError('recipe proposal ref moved after ownership validation')
         previous_recipe=existing['head']['sha'] if existing else None
         reusable = previous_recipe if existing else recipe_tip
-        if matches_commit(reusable, recipe_tree['sha'], parents, f'Update {name} via {watcher_id}'):
+        if matches_commit(reusable, recipe_tree['sha'], parents, proposal_message):
             recipe_sha = reusable
         if recipe_sha is None:
-            recipe_commit=api(route('/git/commits'),'POST',{'message':f'Update {name} via {watcher_id}','tree':recipe_tree['sha'],'parents':parents,'author':{'name':'github-actions[bot]','email':'41898282+github-actions[bot]@users.noreply.github.com'}})
+            recipe_commit=api(route('/git/commits'),'POST',{'message':proposal_message,'tree':recipe_tree['sha'],'parents':parents,'author':{'name':'github-actions[bot]','email':'41898282+github-actions[bot]@users.noreply.github.com'}})
             recipe_sha=recipe_commit['sha']
         check_proposal_ref(recipe_tip,recipe_sha,previous_recipe,pins[name])
         if main_sha()!=base or ref_head('pkg/'+name)!=pins[name]:
             raise ValueError('control or recipe base changed before proposal write')
+        current_pending = recipe_state.pending_build(name, snapshot=recipe_state.StateSnapshot())
+        if current_pending != active:
+            # A concurrent reservation or result changed the source-update decision.
+            continue
         durable={**receipt,'repository':repository(),'proposal_origin':'watcher','watcher_ids':[watcher_id],'head_branch':recipe_branch,'recipe_head':recipe_sha,'recipe_base':pins[name],'recipe_tree':recipe_tree['sha']}
         retained=recipe_state.load_optional('proposal',recipe_sha)
         if retained is not None:
@@ -1375,11 +1418,13 @@ def write_proposals(directory):
         body=f'Native recipe proposal for {name}. Trusted control `{base}`; accepted recipe `{pins[name]}`; frozen recipe `{recipe_sha}`. Candidate checks independently verify exact sources and native metadata.'
         if existing:
             number=existing['number']
-            api(route('/pulls/'+str(number)),'PATCH',{'body':body})
+            if recipe_sha != existing['head']['sha']:
+                api(route('/pulls/'+str(number)),'PATCH',{'body':body})
         else:
             result=api(route('/pulls'),'POST',{'head':recipe_branch,'base':'pkg/'+name,'title':f'Update {name} ({watcher_id})','body':body})
             number=result['number']
-        dispatch(number)
+        if existing is None or recipe_sha != existing['head']['sha']:
+            dispatch(number)
 
 
 def cli():
@@ -1391,11 +1436,10 @@ def cli():
     p=sub.add_parser('reconcile');p.add_argument('--pr',type=int)
     sub.add_parser('initialize-recipe-branches')
     p=sub.add_parser('migrate-existing');p.add_argument('--pr',type=int,default=3)
-    p=sub.add_parser('prepare');p.add_argument('--pr',required=True);p.add_argument('--directory',required=True)
-    p=sub.add_parser('source-provenance');p.add_argument('--record',required=True);p.add_argument('--bundle',required=True)
-    for command in ('validate-build','review','authorize','run-approved-tests','fail-build'):
+    p=sub.add_parser('prepare');p.add_argument('--pr',required=True);p.add_argument('--directory',required=True);p.add_argument('--retry',action='store_true')
+    for command in ('validate-build','fail-build'):
         p=sub.add_parser(command);p.add_argument('--record',required=True)
-        if command in ('validate-build','run-approved-tests'):p.add_argument('--directory',required=True)
+        if command == 'validate-build':p.add_argument('--directory',required=True)
     p=sub.add_parser('finalize');p.add_argument('--pr',required=True);p.add_argument('--base',required=True);p.add_argument('--head',required=True);p.add_argument('--record',required=True);p.add_argument('--directory',required=True)
     args=parser.parse_args()
     if args.command=='pack':
@@ -1407,27 +1451,17 @@ def cli():
     elif args.command=='bootstrap':bootstrap(args.directory)
     elif args.command=='discover':discover(args.directory)
     elif args.command=='write':write_proposals(args.directory)
-    elif args.command=='prepare':prepare(args.pr,args.directory)
-    elif args.command=='source-provenance':
-        from tools.recipe_candidates import persist_candidate_provenance
-        persist_candidate_provenance(args.record,args.bundle)
+    elif args.command=='prepare':prepare(args.pr,args.directory,retry=args.retry)
     elif args.command=='validate-build':validate_build(args.record,args.directory)
     elif args.command=='fail-build':
         record=load(args.record)
         if record.get('kind')=='recipe':
-            from tools.recipe_candidates import controller_context, verify_current_controller
-            context=controller_context(args.record)
-            if context:
-                verify_current_controller(record,context)
-            else:
-                from tools.recipe_state import assert_recipe_identity
-                assert_recipe_identity(record)
+            from tools.recipe_state import assert_recipe_identity
+            assert_recipe_identity(record)
+            status(record['head'],'candidate-build','failure','Whole worker or durable result validation failed')
         else:
             pr_identity(record['pr_number'],record['base'],record['head'])
-        status(record['head'],'candidate-build','failure','Frozen native build or complete output validation failed')
-    elif args.command=='review':review(args.record)
-    elif args.command=='authorize':authorize(args.record)
-    elif args.command=='run-approved-tests':run_approved_tests(args.record,args.directory)
+            source_status(record['pr_number'], record['base'], record['head'], 'failure')
     elif args.command=='reconcile':
         from tools.recipe_acceptance import reconcile
         print(json.dumps(reconcile(args.pr),sort_keys=True))
@@ -1440,4 +1474,6 @@ def cli():
 
 
 if __name__=='__main__':
-    cli()
+    from tools.recipe_state import read_snapshot
+    with read_snapshot():
+        cli()

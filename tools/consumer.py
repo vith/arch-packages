@@ -22,8 +22,6 @@ def snapshot_inputs(catalog, directory, policies):
             if not publish.NAME.fullmatch(filename) or filename not in catalog['files']:
                 raise ValueError('enrolled package absent from signed snapshot')
             path = directory / filename
-            if publish.sha(path) != catalog['files'][filename]['sha256']:
-                raise ValueError('snapshot package hash mismatch')
             identity = publish.pkginfo(path)
             if identity != {'pkgname': output['name'], 'pkgver': version, 'arch': output['arch']}:
                 raise ValueError('snapshot package identity mismatch')

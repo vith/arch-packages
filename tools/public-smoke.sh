@@ -2,6 +2,19 @@
 # Trusted harness, run only as the capability-free offline consumer.
 set -euo pipefail
 name=${1:?package proof required}
+# Dependencies do not enroll proofs. Only signed snapshot outputs do.
+python - "$name" <<'PY'
+import json, sys
+name = sys.argv[1]
+names = {i['name'] for p in json.load(open('/expected.json'))['packages'] for i in p['files']}
+groups = {
+    'looking-glass': {'looking-glass', 'looking-glass-module-dkms', 'obs-plugin-looking-glass'},
+    'sentencepiece': {'sentencepiece', 'python-sentencepiece'},
+    'surge-cli': {'surge'},
+}
+if not groups.get(name, {name}) <= names:
+    raise SystemExit('consumer proof is not enrolled in the selected signed snapshot')
+PY
 consumer_scratch=/fresh/data/public-proofs/$name
 mkdir -p "$consumer_scratch"
 cd "$consumer_scratch"
@@ -247,7 +260,8 @@ import sentencepiece as spm
 n = spm.SentencePieceNormalizer(norm_map=[('foo', 'bar'), ('apple', 'orange')])
 assert n.normalize('foo apple') == 'bar orange'
 assert n.decompile() == [('apple', 'orange'), ('foo', 'bar')]
-PYpython - <<'PY'
+PY
+python - <<'PY'
 from pathlib import Path
 import sentencepiece as spm
 corpus = Path('corpus.txt')
