@@ -283,7 +283,8 @@ def expectations(head, run_id, attempt, previous, pins):
     output_names = [output['name'] for package in packages for output in package['policy']['outputs']]
     if len({p['pkgbase'] for p in packages}) != len(packages) or not packages or len(set(output_names)) != len(output_names):
         raise ValueError('duplicate/empty package enrollment')
-    return {'schema':1,'repository':REPOSITORY,'base':head,'head':head,'run_id':str(run_id),'run_attempt':str(attempt),'image':image,'harness_sha':harness,'recipe_pins':pins,'packages':packages}
+    active_pins = {package['pkgbase']: pins[package['pkgbase']] for package in packages}
+    return {'schema':1,'repository':REPOSITORY,'base':head,'head':head,'run_id':str(run_id),'run_attempt':str(attempt),'image':image,'harness_sha':harness,'recipe_pins':active_pins,'packages':packages}
 
 
 def bind_approved_builds(plan):

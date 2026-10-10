@@ -63,7 +63,7 @@ def unchanged_packages(old,new,oldpins,newpins):
         a=old/directory;b=new/directory
         if a.exists()!=b.exists() or a.exists() and tree_manifest(a)!=tree_manifest(b):
             raise ValueError('source-only route cannot change package source or acceptance data')
-    for filename in ('.gitmodules',):
+    for filename in ('.gitmodules','packages.json'):
         a=old/filename;b=new/filename
         if a.exists()!=b.exists() or a.exists() and a.read_bytes()!=b.read_bytes():
             raise ValueError('source-only route cannot change recipe enrollment paths')

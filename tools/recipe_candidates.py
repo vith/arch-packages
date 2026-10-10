@@ -13,7 +13,7 @@ import tempfile
 import zipfile
 
 from tools import recipe_gate, recipe_state, recipes
-from tools.recipe_gate import classify_recipe_update, harness_digest, input_digest, tree_manifest
+from tools.recipe_gate import classify_recipe_update, harness_digest, input_digest, parse_srcinfo, tree_manifest
 
 
 def proposal_receipt(head, base, name):
@@ -195,14 +195,17 @@ def durable_approval(record):
 
 def _current_content(record, control, old, pins, recipe, work):
     """Compare accepted content, never the moving controller's build machinery."""
-    from tools import update as u
+    from tools import update as u, imports
     name = record['pkgbase']
     package = record['packages'][0]
     if (pins.get(name) != record['previous_control_pin']
-            or u.policy_at(old)[name] != package['policy']
+            or imports.policies(old)[name] != package['policy']
             or u.load(old/'inputs'/f'{name}.json') != record['predecessor_lock']
             or u.load(old/'upstream'/f'{name}.json') != record['predecessor_provenance']):
         raise ValueError('current controller recipe/source/policy baseline changed')
+    if record.get('import_predecessor') is not None:
+        from tools import imports
+        imports.verify_predecessor(old, name, pins, work.parent/'import-recovery', record['import_predecessor'])
     if recipe_state.digest(tree_manifest(recipe)) != package['tree_sha']:
         raise ValueError('current recipe payload differs from original completed candidate')
     native = u.static_metadata(recipe, package['lock'], package['policy'], work,
@@ -375,7 +378,11 @@ def prepare(number, output):
         raise ValueError('unknown durable proposal origin')
     pins = {}
     old = u.checkout_data(control, output/'base-tree', pins)
-    policy = u.policy_at(old)[name]
+    from tools import imports
+    policy = imports.policies(old)[name]
+    pending = imports.registry(old)[2].get(name)
+    if pending is not None:
+        imports.verify_predecessor(old, name, pins, output/'import-origin')
     oldlock = u.load(old/'inputs'/f'{name}.json')
     oldpro = u.load(old/'upstream'/f'{name}.json')
     predecessor_lock, predecessor_provenance = copy.deepcopy(oldlock), copy.deepcopy(oldpro)
@@ -432,7 +439,8 @@ def prepare(number, output):
             provenance = edited_provenance(receipt['lock'], lock, provenance, receipt['watcher_id'])
     if not manual:
         watcher_ids = [receipt['watcher_id']]
-    source_boundaries(oldlock, lock, policy)
+    if pending is None:
+        source_boundaries(oldlock, lock, policy)
     if receipt is not None:
         source_boundaries(receipt['lock'], lock, policy)
     u.validate_source_policy(lock, policy)
@@ -455,7 +463,8 @@ def prepare(number, output):
     lock['version'] = native['version']
     u.validate_source_policy(lock, policy)
     if (manual or head != receipt['recipe_head']) and recipe_manifest != tree_manifest(comparison/'recipes'/name):
-        if recipe_gate._compare(oldlock['version'], lock['version']) <= 0:
+        previous_version = parse_srcinfo((comparison/'recipes'/name/'.SRCINFO').read_text())['version'] if pending is not None else oldlock['version']
+        if recipe_gate._compare(previous_version, lock['version']) <= 0:
             raise ValueError('manual package changes require a version or pkgrel bump')
     # Synthetic control data exists only in the trusted validator workspace.
     new = output/'synthetic-tree'
@@ -467,7 +476,7 @@ def prepare(number, output):
     decision = classify_recipe_update(comparison/'recipes'/name, recipe, policy)
     if decision['decision'] == 'invalid':
         raise ValueError(decision['reason'])
-    transition = u.independent_transition(comparison, new, name, policy, output/'verify-source')
+    transition = None if pending is not None else u.independent_transition(comparison, new, name, policy, output/'verify-source')
     if transition:
         trusted = {**policy, '_verified_transition': transition}
         decision = classify_recipe_update(comparison/'recipes'/name, recipe, trusted)
@@ -502,12 +511,16 @@ def prepare(number, output):
     package = {'pkgbase': name, 'recipe_commit': head, 'previous_recipe_commit': base, 'recipe_dir': f'recipes/{name}', 'lock': lock, 'policy': policy, 'input_digest': input_digest(recipe, lock, policy, image, harness), 'tree_sha': recipe_state.digest(recipe_manifest), 'expected_srcinfo': native['srcinfo']}
     bundle = {'schema': 1, 'repository': u.repository(), 'base': control, 'head': head, 'recipe_pins': {name: head}, 'previous_recipe_pins': {name: base}, 'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'image': image, 'harness_sha': harness, 'packages': [package]}
     mechanical = decision['decision'] == 'mechanical'
-    needs_review = recipe_gate.needs_pkgbuild_review(comparison/'recipes'/name, recipe, policy)
+    # The imported predecessor is authentic data, not previously approved code.
+    # Even byte-identical imported code needs its first exact execution review.
+    needs_review = pending is not None or recipe_gate.needs_pkgbuild_review(comparison/'recipes'/name, recipe, policy)
     if needs_review:
         u.require_review_environment('recipe-review')
     else:
         recipe_gate.verify_automatic_recipe(comparison/'recipes'/name, recipe, policy, oldlock, lock, transition)
     record = {**bundle, **record_identity, 'control_digest': recipe_state.control_digest(old), 'mechanical': mechanical, 'review_environment': 'recipe-review' if needs_review else '', 'decisions': [{'pkgbase': name, **decision}], 'predecessor_lock': predecessor_lock, 'predecessor_provenance': predecessor_provenance, 'baseline_lock': oldlock, 'baseline_provenance': oldpro, 'provenance': provenance, 'proposal_head': receipt['recipe_head']}
+    if pending is not None:
+        record['import_predecessor'] = pending
     recipe_state.assert_recipe_identity(record)
     if manual:
         recipe_state.save('proposal', head, receipt)
@@ -812,7 +825,19 @@ def _verify_inputs(record, automatic, transition_verifier, metadata_verifier):
         for package in record['packages']:
             name = package['pkgbase']
             recipe = new/'recipes'/name
-            policy = u.policy_at(old if record.get('kind') == 'recipe' else new)[name]
+            from tools import imports
+            policy = imports.policies(old if record.get('kind') == 'recipe' else new)[name]
+            pending = imports.registry(old)[2].get(name) if record.get('kind') == 'recipe' else None
+            if pending is not None:
+                imports.verify_predecessor(old, name, pins, root/('import-'+name), record.get('import_predecessor'))
+                if record.get('import_predecessor') != pending or record['recipe_base'] != pending['origin']['commit']:
+                    raise ValueError('conversion original identity differs from registration')
+                if recipe_gate._compare(parse_srcinfo((old/'recipes'/name/'.SRCINFO').read_text())['version'], package['lock']['version']) <= 0:
+                    raise ValueError('conversion requires original version/pkgrel advance')
+                if not recipes.is_ancestor(u.repository(), record['recipe_base'], record['head']):
+                    raise ValueError('conversion lost original authenticated ancestry')
+            elif record.get('import_predecessor') is not None:
+                raise ValueError('conversion registration is no longer pending')
             if policy != package['policy'] or recipe_state.digest(tree_manifest(recipe)) != package['tree_sha']:
                 raise ValueError('approved recipe tree/policy mismatch')
             if (recipe/'.SRCINFO').read_text() != package['expected_srcinfo']:
@@ -826,16 +851,20 @@ def _verify_inputs(record, automatic, transition_verifier, metadata_verifier):
             if derived['version'] != package['lock']['version'] or derived['srcinfo'] != package['expected_srcinfo'] or derived['sources'] != package['lock']['sources']:
                 raise ValueError('authorization metadata differs from independent static derivation')
             if automatic:
-                oldpolicy = u.policy_at(old).get(name)
+                if pending is not None:
+                    raise ValueError('initial imported code execution requires exact recipe-review')
+                oldpolicy = imports.policies(old).get(name)
                 if oldpolicy is None:
                     raise ValueError('new recipe enrollment requires recipe-review')
                 oldlock = u.load(old/'inputs'/f'{name}.json')
-                source_boundaries(oldlock, package['lock'], policy)
-                transition = transition_verifier(old, new, name, policy, root/('transition-' + name))
+                if pending is None:
+                    source_boundaries(oldlock, package['lock'], policy)
+                transition = None if pending is not None else transition_verifier(old, new, name, policy, root/('transition-' + name))
                 recipe_gate.verify_automatic_recipe(old/'recipes'/name, recipe, oldpolicy, oldlock, package['lock'], transition)
         if record.get('kind') != 'recipe':
             oldpolicy, newpolicy = u.policy_at(old), u.policy_at(new)
-            if set(newpolicy) != set(newpins):
+            from tools import imports
+            if set(imports.policies(new)) != set(newpins):
                 raise ValueError('candidate package enrollment and recipe pins differ')
             names, _ = u.affected_packages(old, new, newpolicy)
             names = sorted((set(names) | {name for name in newpolicy if pins.get(name) != newpins.get(name)}) & set(newpolicy))
@@ -844,11 +873,12 @@ def _verify_inputs(record, automatic, transition_verifier, metadata_verifier):
             bookkeeping = validate_bookkeeping(pr, record['base'], record['head'], old, new)
             if automatic and bookkeeping is None and ((pr.get('head') or {}).get('repo') or {}).get('full_name') != u.repository():
                 raise ValueError('automatic main source requires same-repository head')
-            if bookkeeping is not None:
+            admission = None if bookkeeping is not None else imports.validate_admission(old, new, pins, newpins, root/'admission')
+            if bookkeeping is not None or admission is not None:
                 names = []
             if names != sorted(package['pkgbase'] for package in record['packages']):
                 raise ValueError('main candidate compilation selection differs from independent scope')
-            if not names and bookkeeping is None and oldpolicy == newpolicy:
+            if not names and bookkeeping is None and admission is None and oldpolicy == newpolicy:
                 from tools.source_review import unchanged_packages
                 unchanged_packages(old, new, pins, newpins)
             # Retirement/policy transitions execute no omitted recipe: selection
