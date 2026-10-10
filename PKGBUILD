@@ -2,9 +2,9 @@
 
 pkgname=pi
 pkgver=0.99.1
-pkgrel=2
+pkgrel=3
 pkgdesc="AI coding agent for the terminal — minimal, extensible and optimized for tool use"
-arch=('x86_64' 'aarch64')
+arch=('x86_64')
 url="https://github.com/earendil-works/pi"
 license=('MIT')
 depends=('nodejs>=22.19.0')
@@ -33,29 +33,20 @@ build() {
 
   export npm_config_cache="${npm_config_cache-"${srcdir}/npm-cache"}"
 
-  local _npm_cpu _other_cpu
-  case "$CARCH" in
-    x86_64) _npm_cpu=x64; _other_cpu=arm64 ;;
-    aarch64) _npm_cpu=arm64; _other_cpu=x64 ;;
-    *) echo "Unsupported architecture: $CARCH" >&2; return 1 ;;
-  esac
-
-  # Build with native tooling (notably the host-architecture tsgo binary).
+  # Build with native x86_64 tooling, including the tsgo binary.
   npm ci --ignore-scripts --no-audit --no-fund
   npm run build:offline
 
   # A clean, production-only install from the same lockfile selects target
   # optional binaries without retaining or reinstalling host build tools.
-  npm ci --omit=dev --cpu="$_npm_cpu" --os=linux --libc=glibc \
-    --ignore-scripts --no-audit --no-fund
-
+  npm ci --omit=dev --ignore-scripts --no-audit --no-fund
   # This dependency ships both architectures inside one npm tarball rather
   # than platform-specific optional packages. Its loader selects process.arch;
   # retain the target's helper/BPF files, not the other architecture's copy.
   local _vendor
   for _vendor in node_modules/@anthropic-ai/sandbox-runtime/{vendor,dist/vendor}/seccomp; do
-    [[ -x "$_vendor/$_npm_cpu/apply-seccomp" ]] || return 1
-    rm -rf "$_vendor/$_other_cpu"
+    [[ -x "$_vendor/x64/apply-seccomp" ]] || return 1
+    rm -rf "$_vendor/arm64"
   done
 }
 
@@ -77,14 +68,8 @@ package() {
       "$pkgdir/$mod_dir/packages/$_pkg/"
   done
 
-  local _npm_cpu
-  case "$CARCH" in
-    x86_64) _npm_cpu=x64 ;;
-    aarch64) _npm_cpu=arm64 ;;
-    *) echo "Unsupported architecture: $CARCH" >&2; return 1 ;;
-  esac
-  install -Dm755 "packages/tui/native/linux/prebuilds/linux-$_npm_cpu/linux-platform-x11.node" \
-    "$pkgdir/$mod_dir/packages/tui/native/linux/prebuilds/linux-$_npm_cpu/linux-platform-x11.node"
+  install -Dm755 "packages/tui/native/linux/prebuilds/linux-x64/linux-platform-x11.node" \
+    "$pkgdir/$mod_dir/packages/tui/native/linux/prebuilds/linux-x64/linux-platform-x11.node"
 
   # Copy the additional files for coding-agent
   cp -a packages/coding-agent/{docs,examples,CHANGELOG.md} \

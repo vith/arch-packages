@@ -1,10 +1,9 @@
 pkgbase = pi
 	pkgdesc = AI coding agent for the terminal — minimal, extensible and optimized for tool use
 	pkgver = 0.99.1
-	pkgrel = 2
+	pkgrel = 3
 	url = https://github.com/earendil-works/pi
 	arch = x86_64
-	arch = aarch64
 	license = MIT
 	makedepends = npm
 	depends = nodejs>=22.19.0
