@@ -1,7 +1,7 @@
 pkgbase = carapace-spec-man
 	pkgdesc = Generate completion specs from manpages
 	pkgver = 1.0.0
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/carapace-sh/carapace-spec-man
 	arch = x86_64
 	license = MIT
@@ -13,6 +13,6 @@ pkgbase = carapace-spec-man
 	options = !strip
 	options = !debug
 	source = carapace-spec-man::git+https://github.com/carapace-sh/carapace-spec-man.git#tag=v1.0.0
-	sha256sums = SKIP
+	sha256sums = bf3e7c0acf1bec11996bf4a43f3d3cd8fa7e4208027c59b396f82669a6d39535
 
 pkgname = carapace-spec-man
