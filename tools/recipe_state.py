@@ -8,7 +8,7 @@ from tools import sources
 BRANCH='controller-state'
 NAMESPACES={'proposal','candidate','candidate-provenance','built','approved','acceptance','built-by-input'}
 KEY=re.compile(r'^[a-zA-Z0-9_-]{1,200}$')
-CONTROLS=('tools/update.py','tools/recipes.py','tools/recipe_candidates.py',
+CONTROLS=('tools/update.py','tools/recipes.py','tools/imports.py','tools/recipe_candidates.py',
           'tools/recipe_acceptance.py','tools/recipe_state.py','tools/package_runs.py','tools/build_store.py','tools/attestations.py',
           '.github/workflows/update.yml','.github/workflows/candidate.yml',
           '.github/workflows/candidate-dispatch.yml','.github/workflows/build-package.yml',

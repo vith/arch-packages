@@ -14,7 +14,7 @@ from unittest.mock import patch
 from contextlib import ExitStack, contextmanager
 import shutil
 
-from tools import attestations, build_store, native, recipe_candidates as candidates, recipe_state, update
+from tools import attestations, build_store, imports, native, recipe_candidates as candidates, recipe_state, update
 
 
 class RecipeCandidateBoundaries(unittest.TestCase):
@@ -23,6 +23,20 @@ class RecipeCandidateBoundaries(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
+    def test_pending_native_conversion_preserves_original_baseline_and_requires_exact_review(self):
+        work = Path.home()/'.local/state/arch-packages/import-tests'
+        work.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='conversion-', dir=work) as directory:
+            record, stored = self.prepare_manual(directory, pending=True)
+            self.assertEqual(record['review_environment'], 'recipe-review')
+            self.assertEqual(record['recipe_base'], 'b'*40)
+            self.assertEqual(record['previous_control_pin'], 'b'*40)
+            self.assertEqual(record['import_predecessor']['origin']['commit'], 'b'*40)
+            self.assertEqual(record['packages'][0]['policy'], record['import_predecessor']['policy'])
+            self.assertEqual(record['packages'][0]['lock']['version'], '1-2')
+            self.assertEqual(record['predecessor_lock']['version'], '1-1')
+            self.assertEqual(stored['proposal', 'a'*40]['lock'], record['packages'][0]['lock'])
+
     def test_no_discovery_receipt_returns_none_but_lookup_remains_bounded(self):
         with patch.object(recipe_state, 'load_optional', return_value=None), patch.object(update, 'api', return_value={'parents': [{'sha': 'c'*40}]}):
             self.assertIsNone(candidates.proposal_receipt('a'*40, 'c'*40, 'example'))
@@ -30,7 +44,7 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'bounded'):
                 candidates.proposal_receipt('1', 'base', 'example')
 
-    def prepare_manual(self, work, invalid=False, adoption=False, control='c'*40, existing_receipt=None, pkgrel='2', completed=None, drift=None, current_run=None, recover_transport=False):
+    def prepare_manual(self, work, invalid=False, adoption=False, control='c'*40, existing_receipt=None, pkgrel='2', completed=None, drift=None, current_run=None, recover_transport=False, pending=False):
         root = Path(work)
         old = root/'accepted'
         recipe = root/'human'
@@ -55,6 +69,17 @@ class RecipeCandidateBoundaries(unittest.TestCase):
         provenance = {'aur': None, 'watchers': [{'id': 'release', 'kind': 'tag', 'source_id': 'patch', 'url': 'https://example.test/project.git', 'tag_pattern': r'^v(.+)$', 'accepted_tag': 'v1', 'accepted_tag_object': 'e'*40, 'accepted_peeled_commit': 'e'*40}]}
         policy = {'pkgbase': 'example', 'sources': [{'id': 'patch', 'kind': 'local', 'mutable': False, 'source_template': 'fix.patch', 'checksum_algorithm': 'sha256', 'checksum_index': 0}], 'outputs': [{'name': 'example', 'arch': 'x86_64'}]}
         update.dump(old/'packages.json', {'schema': 1, 'packages': [policy]})
+        if pending:
+            policy['native_verification'] = 'pending-github-native-probe'
+            original = old/'recipes'/'example'
+            for filename in ('PKGBUILD', '.SRCINFO'):
+                path = original/filename
+                path.write_text(path.read_text().replace('fix.patch', 'original.bin').replace('x86_64', 'aarch64'))
+            registration = {'pkgbase': 'example', 'policy': policy, 'origin': {
+                'url': 'https://git.n3t.work/vith/arch-pkg-example.git',
+                'commit': 'b'*40, 'tree': 'e'*40, 'pkgbase': 'example',
+                'manifest': candidates.tree_manifest(original)}}
+            update.dump(old/'packages.json', {'schema': 1, 'packages': [], 'imports': [registration]})
         update.dump(old/'inputs'/'example.json', lock)
         update.dump(old/'upstream'/'example.json', provenance)
         (old/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:'+'f'*64)
@@ -153,6 +178,10 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             return destination
         with ExitStack() as stack:
             stack.enter_context(patch.dict(os.environ, {'GITHUB_RUN_ID': '20' if completed is not None else '10', 'GITHUB_RUN_ATTEMPT': '1'}))
+            if pending:
+                # Direct origin-object authentication is exercised with real Git
+                # in test_imports; this fixture isolates native candidate state.
+                stack.enter_context(patch.object(imports, 'authenticate', return_value=old/'recipes'/'example'))
             for target, attribute, kwargs in (
                 (update, 'api', {'side_effect': api}), (update, 'status', {}),
                 (update, 'main_sha', {'return_value': control}),

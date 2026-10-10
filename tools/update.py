@@ -194,13 +194,8 @@ def remove_verification_tree(root):
 
 
 def policy_at(root):
-    obj=load(root/'packages.json')
-    if obj.get('schema')!=1 or not obj['packages']:
-        raise ValueError('expected nonempty enrolled package policy')
-    result={p['pkgbase']:p for p in obj['packages']}
-    if len(result)!=len(obj['packages']) or any(not NAME.fullmatch(n) for n in result):
-        raise ValueError('invalid package enrollment')
-    return result
+    from tools.imports import registry
+    return registry(root)[1]
 
 
 def affected_packages(base,head,policies):
@@ -275,14 +270,16 @@ def prepare(number,output):
     old=checkout_data(base,output/'base-tree',oldpins);new=checkout_data(head,output/'head-tree',newpins)
     policies=policy_at(old)
     proposed=policy_at(new)
-    if set(proposed)!=set(newpins):
-        raise ValueError('candidate package enrollment and recipe pins differ')
+    from tools import imports
+    if set(imports.policies(new))!=set(newpins):
+        raise ValueError('candidate registration and recipe pins differ')
     retired=set(policies)-set(proposed)
     names,shared=affected_packages(old,new,proposed)
     names=sorted((set(names)|{name for name in proposed if oldpins.get(name)!=newpins.get(name)})-retired)
     from tools.recipe_acceptance import validate_bookkeeping
     acceptance=validate_bookkeeping(pr,base,head,old,new)
-    if acceptance is not None:
+    admission=None if acceptance is not None else imports.validate_admission(old,new,oldpins,newpins,output/'import-admission')
+    if acceptance is not None or admission is not None:
         names=[]
     shared |= oldpins.keys()!=newpins.keys()
     image=(old/'build-image.txt').read_text().strip()

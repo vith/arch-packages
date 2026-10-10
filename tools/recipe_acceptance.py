@@ -79,6 +79,8 @@ def expected_leaves(previous, receipt):
                         ('upstream/' + name + '.json', receipt['provenance']),
                         ('acceptance/' + name + '.json', receipt)]:
         result[path] = ('100644', 'blob', blob_sha(value))
+    if receipt.get('activated_registry') is not None:
+        result['packages.json'] = ('100644', 'blob', blob_sha(receipt['activated_registry']))
     return result
 
 
@@ -167,7 +169,11 @@ def accepted_receipt(number, control=None):
         work = Path(directory)
         pins = {}
         old = u.checkout_data(C, work/'control', pins)
-        policies = u.policy_at(old)
+        from tools import imports
+        policies = imports.policies(old)
+        pending = imports.registry(old)[2].get(name)
+        if pending is not None:
+            imports.verify_predecessor(old, name, pins, work/'import-origin')
         if name not in policies:
             raise ValueError('claimed bookkeeping package is not currently enrolled')
         policy = policies[name]
@@ -179,6 +185,9 @@ def accepted_receipt(number, control=None):
         candidate, built, approved, native_runs, descriptor = acceptance_candidate(
             pr, C, proposal, policy)
         package = next(p for p in candidate['packages'] if p['pkgbase'] == name)
+        if candidate.get('import_predecessor') != pending:
+            raise ValueError('accepted import predecessor differs from authentic registration')
+        activated = imports.activate(imports.registry(old)[0], pending) if pending is not None else None
         if adoption and (candidate.get('proposal_origin') != 'legacy-accepted'
                 or candidate.get('previous_control_pin') != adoption['expected_previous_control_pin']
                 or candidate.get('baseline_lock') != adoption['baseline_lock']
@@ -201,7 +210,7 @@ def accepted_receipt(number, control=None):
                             candidate['provenance'], lock, policy, candidate['watcher_id'])
         if u.main_sha() != C:
             raise ValueError('main advanced during acceptance; revalidate')
-    return {'schema': 1, 'kind': 'recipe-acceptance', 'repository': u.repository(),
+    result = {'schema': 1, 'kind': 'recipe-acceptance', 'repository': u.repository(),
             'base': C, 'candidate_base': candidate['base'], 'proposal_base': proposal['base'], 'recipe_base': B, 'head': H, 'recipe_tree': candidate['recipe_tree'],
             'accepted': A, 'pkgbase': name, 'watcher_id': candidate.get('watcher_id'),
             'watcher_ids': candidate['watcher_ids'],
@@ -214,6 +223,10 @@ def accepted_receipt(number, control=None):
             'predecessor_lock': candidate['predecessor_lock'],
             'predecessor_provenance': candidate['predecessor_provenance'],
             'policy': policy, 'lock': package['lock'], 'provenance': candidate['provenance']}
+    if pending is not None:
+        result['import_predecessor'] = pending
+        result['activated_registry'] = activated
+    return result
 
 
 def verify_accepted_build(record, package, accepted_main):
@@ -303,9 +316,12 @@ def write_bookkeeping(receipt):
         raise ValueError('main advanced before bookkeeping; revalidate')
     recipe_state.save('acceptance', C + '-' + A, receipt)
     changes = [{'path': 'recipes/' + name, 'mode': '160000', 'type': 'commit', 'sha': A}]
-    for path, value in [('inputs/' + name + '.json', receipt['lock']),
-                        ('upstream/' + name + '.json', receipt['provenance']),
-                        ('acceptance/' + name + '.json', receipt)]:
+    data = [('inputs/' + name + '.json', receipt['lock']),
+            ('upstream/' + name + '.json', receipt['provenance']),
+            ('acceptance/' + name + '.json', receipt)]
+    if receipt.get('activated_registry') is not None:
+        data.append(('packages.json', receipt['activated_registry']))
+    for path, value in data:
         blob = u.api(u.route('/git/blobs'), 'POST', {'content': base64.b64encode(sources.canonical(value)).decode(), 'encoding': 'base64'})
         changes.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
     base = u.api(u.route('/git/commits/' + C))
@@ -393,7 +409,8 @@ def reconcile(number=None):
     C = u.main_sha()
     if u.control_checkout()[0] != C:
         raise ValueError('reconciliation control checkout is not current trusted main')
-    enrolled = set(u.policy_at(u.ROOT))
+    from tools.imports import policies
+    enrolled = set(policies(u.ROOT))
     if u.main_sha() != C:
         raise ValueError('main advanced during reconciliation enrollment lookup')
     results, errors = [], []
