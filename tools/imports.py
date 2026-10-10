@@ -183,6 +183,7 @@ def validate_admission(old, new, oldpins, newpins, work):
                 if not match or not match.groups():
                     raise ValueError('intended watcher lacks an enrolled accepted tag')
                 version = sources._version_prefix(watcher) + '.'.join(match.groups())
+                asset_ids, asset_names = set(), set()
                 for identity in [watcher['source_id'], *watcher.get('related_source_ids', [])]:
                     source = next((s for s in lock['sources'] if s['id'] == identity), None)
                     definition = next((s for s in policy['sources'] if s['id'] == identity), None)
@@ -190,7 +191,18 @@ def validate_admission(old, new, oldpins, newpins, work):
                         raise ValueError('intended watcher tag differs from source policy')
                     if source['kind'] == 'git' and (source['ref'] != 'refs/tags/'+tag or source['commit'] != watcher.get('accepted_peeled_commit') or (source['tag_object'] or source['commit']) != watcher.get('accepted_tag_object')):
                         raise ValueError('intended watcher tag differs from Git lock')
-                    u._live_tag_provenance(watcher, watcher, source)
+                    if watcher['kind'] == 'release' and source['kind'] == 'release':
+                        asset_name = sources.release_asset_name(watcher, version, identity)
+                        if source['asset_id'] in asset_ids or asset_name in asset_names:
+                            raise ValueError('release sources share an enrolled asset')
+                        asset_ids.add(source['asset_id'])
+                        asset_names.add(asset_name)
+                    # A release watcher authenticates its primary release and
+                    # related release assets, not tag-bound plain archives.
+                    # Every related source still binds the intended version
+                    # above and authenticates its own frozen bytes below.
+                    if identity == watcher['source_id'] or watcher['kind'] == 'release' and source['kind'] == 'release':
+                        u._live_tag_provenance(watcher, watcher, source)
             elif watcher['kind'] == 'git':
                 source = next((s for s in lock['sources'] if s['id'] == watcher.get('source_id')), None)
                 if source is None or source['kind'] != 'git' or watcher.get('ref') != source['ref'] or watcher['url'] != source['url']:
