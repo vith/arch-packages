@@ -2,9 +2,9 @@
 
 pkgname=computer-use-linux
 pkgver=0.7.7
-pkgrel=2
+pkgrel=3
 pkgdesc="Control a real Linux desktop from any MCP host (AT-SPI, portals, multi-compositor window targeting)"
-arch=('x86_64' 'aarch64')
+arch=('x86_64')
 url="https://github.com/agent-sh/computer-use-linux"
 license=('MIT')
 depends=('at-spi2-core' 'gcc-libs' 'glibc')
@@ -26,18 +26,10 @@ conflicts=('computer-use-linux-bin')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('a34c0f03d14cc1f27d91081dfc8bbe6a721097411c7831f20de6a9c6829ff58c')
 
-# CARCH is the package architecture, not the native ARM builder's host triple.
+# Explicit native target keeps the installed artifact paths stable.
 _target="${CARCH}-unknown-linux-gnu"
 
 _build_env() {
-    # Use the builder's installed toolchain; shared RUSTUP_HOME is read-only.
-    if [[ $(uname -m) != "$CARCH" ]]; then
-        [[ $CARCH == x86_64 ]] || { error "Unsupported cross target: $CARCH"; return 1; }
-        export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
-        export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc
-        export CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++
-        export AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar
-    fi
     # GCC LTO hides mimalloc's C symbols from Rust's linker. Apply this to
     # tests too: they compile mimalloc independently.
     export CFLAGS="${CFLAGS//-flto=auto/}"
@@ -59,10 +51,6 @@ build() {
 }
 
 check() {
-    if [[ $(uname -m) != "$CARCH" ]]; then
-        msg2 "Target execution tests require $CARCH; not emulating them on $(uname -m)"
-        return 0
-    fi
     cd "${pkgname}-${pkgver}"
     _build_env
     # The KWin backend tests spawn a private dbus-daemon (see checkdepends).
