@@ -72,6 +72,16 @@ def parse_srcinfo(text):
     return {"pkgbase": pkgbase, "names": names, "arch": base["arch"], "pkgver": pkgver, "pkgrel": pkgrel, "epoch": int(epoch), "version": version, "fields": fields, "scopes": scopes, "dependencies": dependencies}
 
 
+def metadata_equivalent(expected_srcinfo, actual_srcinfo, dynamic=False) -> bool:
+    """Compare declarations, allowing pkgver changes only for dynamic recipes."""
+    expected = parse_srcinfo(expected_srcinfo)
+    actual = parse_srcinfo(actual_srcinfo)
+    if dynamic is not True and expected["pkgver"] != actual["pkgver"]:
+        return False
+    return ([field for field in expected["fields"] if field[:2] != ["base", "pkgver"]]
+            == [field for field in actual["fields"] if field[:2] != ["base", "pkgver"]])
+
+
 def tree_manifest(directory):
     root = Path(directory)
     if not root.is_dir() or root.is_symlink():
