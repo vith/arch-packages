@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from tools import sources
+from tools.recipe_gate import manifest_digest
 
 BRANCH='controller-state'
 NAMESPACES={'proposal','candidate','candidate-provenance','built','approved','acceptance','built-by-input'}
@@ -20,17 +21,7 @@ def digest(value):
 
 
 def control_digest(root):
-    from pathlib import Path
-    import stat
-    root=Path(root)
-    manifest=[]
-    for name in CONTROLS:
-        path=root/name
-        if not path.is_file() or path.is_symlink():
-            raise ValueError('trusted controller file missing')
-        manifest.append({'path':name,'mode':stat.S_IMODE(path.stat().st_mode),
-                         'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
-    return digest(manifest)
+    return manifest_digest(root,'tools/recipe_state.py','CONTROLS')
 
 
 def record_path(namespace,key):

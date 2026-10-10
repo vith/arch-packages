@@ -105,84 +105,89 @@ def tree_manifest(directory):
     return result
 
 
-def _harness_path(root, name):
+def _manifest_path(root, name):
     path = root / name
     if any(parent.is_symlink() for parent in (path, *path.parents) if parent != root and parent.is_relative_to(root)):
-        raise ValueError("trusted build-harness file missing")
+        raise ValueError("trusted manifest file missing")
     if not path.is_file():
-        raise ValueError("trusted build-harness file missing")
+        raise ValueError("trusted manifest file missing")
     return path
 
 
-def _harness_files(root):
+def _manifest_files(root, source_name, constant_name, legacy_function, legacy_name):
     # Historical source is data, not executable policy. Its declaration is
-    # authenticated along with the other entries by including recipe_gate.py.
-    source = _harness_path(root, "tools/recipe_gate.py")
+    # authenticated along with the other entries by including the source file.
+    source = _manifest_path(root, source_name)
     try:
         tree = ast.parse(source.read_bytes(), filename=str(source))
     except (SyntaxError, ValueError) as error:
-        raise ValueError("invalid build-harness declaration") from error
+        raise ValueError("invalid manifest declaration") from error
     current = [node for node in ast.walk(tree)
-               if isinstance(node, ast.Name) and node.id == "HARNESS_FILES"
+               if isinstance(node, ast.Name) and node.id == constant_name
                and isinstance(node.ctx, (ast.Store, ast.Del))]
     functions = [node for node in tree.body
                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                 and node.name == "harness_digest"]
+                 and node.name == legacy_function]
     legacy = [node for function in functions for node in ast.walk(function)
-              if isinstance(node, ast.Name) and node.id == "files"
+              if isinstance(node, ast.Name) and node.id == legacy_name
               and isinstance(node.ctx, (ast.Store, ast.Del))]
     if current and not legacy:
-        statements, name, writes = tree.body, "HARNESS_FILES", current
+        statements, name, writes = tree.body, constant_name, current
     elif legacy and not current and len(functions) == 1:
-        statements, name, writes = functions[0].body, "files", legacy
+        statements, name, writes = functions[0].body, legacy_name, legacy
     else:
-        raise ValueError("ambiguous or missing build-harness declaration")
+        raise ValueError("ambiguous or missing manifest declaration")
     declarations = [node for node in statements
                     if isinstance(node, ast.Assign) and len(node.targets) == 1
                     and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name]
     if len(writes) != 1 or len(declarations) != 1:
-        raise ValueError("ambiguous build-harness declaration")
-    scope = tree if name == "HARNESS_FILES" else functions[0]
+        raise ValueError("ambiguous manifest declaration")
+    scope = tree if name == constant_name else functions[0]
     for node in ast.walk(scope):
         if ((isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
              and node.name == name)
                 or (isinstance(node, ast.alias) and (node.asname or node.name.split(".")[0]) == name)
                 or (isinstance(node, ast.ExceptHandler) and node.name == name)):
-            raise ValueError("ambiguous build-harness declaration")
+            raise ValueError("ambiguous manifest declaration")
         if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign, ast.AugAssign)):
             expression = node if isinstance(node, ast.Call) else node.value
             if expression is not None and any(
                     isinstance(reference, ast.Name) and reference.id == name
                     for reference in ast.walk(expression)):
-                raise ValueError("dynamic build-harness declaration")
+                raise ValueError("dynamic manifest declaration")
         if isinstance(node, (ast.Attribute, ast.Subscript)) and any(
                 isinstance(reference, ast.Name) and reference.id == name
                 for reference in ast.walk(node.value)):
-            raise ValueError("dynamic build-harness declaration")
+            raise ValueError("dynamic manifest declaration")
     value = declarations[0].value
     if not isinstance(value, (ast.List, ast.Tuple)) or any(
             not isinstance(item, ast.Constant) or not isinstance(item.value, str)
             for item in value.elts):
-        raise ValueError("nonliteral build-harness declaration")
+        raise ValueError("nonliteral manifest declaration")
     files = [item.value for item in value.elts]
-    if not files or len(set(files)) != len(files) or "tools/recipe_gate.py" not in files:
-        raise ValueError("invalid build-harness manifest")
+    if not files or len(set(files)) != len(files) or source_name not in files:
+        raise ValueError("invalid manifest")
     for name in files:
         if (not name or "\\" in name or any(ord(char) < 32 for char in name)
                 or any(part in ("", ".", "..") for part in name.split("/"))
                 or Path(name).is_absolute()):
-            raise ValueError("unsafe build-harness path")
+            raise ValueError("unsafe manifest path")
     return files
 
 
-def harness_digest(root):
+def manifest_digest(root, source_name, constant_name, *, legacy_function=None, legacy_name=None):
     root = Path(root)
     manifest = []
-    for name in _harness_files(root):
-        path = _harness_path(root, name)
+    for name in _manifest_files(root, source_name, constant_name, legacy_function, legacy_name):
+        path = _manifest_path(root, name)
         manifest.append({"path": name, "mode": stat.S_IMODE(path.stat().st_mode),
                          "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
     return hashlib.sha256(canonical(manifest)).hexdigest()
+
+
+def harness_digest(root):
+    return manifest_digest(root, "tools/recipe_gate.py", "HARNESS_FILES",
+                           legacy_function="harness_digest", legacy_name="files")
 
 
 def input_digest(recipe_dir, lock, policy, image, harness_sha):
