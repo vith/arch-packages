@@ -1,6 +1,6 @@
 pkgname=carapace-bridge
 pkgver=1.7.0
-pkgrel=1
+pkgrel=2
 pkgdesc='A multi-shell completion bridge'
 arch=('x86_64')
 url='https://github.com/carapace-sh/carapace-bridge'
@@ -13,7 +13,7 @@ optdepends=('bash-completion: bridge Bash completions'
 conflicts=('carapace-bridge-bin')
 options=('!strip' '!debug')
 source=("$pkgname::git+${url}.git#tag=v${pkgver}")
-sha256sums=('SKIP')
+sha256sums=('f2b25bb895ccd193fcb564370f746b026fdbaf051f780e61ce7b853ee0b55892')
 
 build() {
   cd "$srcdir/$pkgname"

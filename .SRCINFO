@@ -1,7 +1,7 @@
 pkgbase = carapace-bridge
 	pkgdesc = A multi-shell completion bridge
 	pkgver = 1.7.0
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/carapace-sh/carapace-bridge
 	arch = x86_64
 	license = MIT
@@ -15,6 +15,6 @@ pkgbase = carapace-bridge
 	options = !strip
 	options = !debug
 	source = carapace-bridge::git+https://github.com/carapace-sh/carapace-bridge.git#tag=v1.7.0
-	sha256sums = SKIP
+	sha256sums = f2b25bb895ccd193fcb564370f746b026fdbaf051f780e61ce7b853ee0b55892
 
 pkgname = carapace-bridge
