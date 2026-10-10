@@ -128,6 +128,11 @@ Metadata-only events and explicit dispatches start the pipeline; scheduled
 reconciliation recovers missed events. A changed review head needs new
 authorization, but bookkeeping or controller movement must not cancel or repeat
 an already authorized compilation.
+For targeted recovery, dispatch `update.yml` on `main` with `reconcile_pr` set to
+one existing recipe or bookkeeping PR number. This uses `reconcile --pr`, skips
+discovery and proposal writing, and does not redispatch other open recipe PRs.
+Without that input, normal full reconciliation is unchanged. Explicit migration,
+targeted recovery and read-only bootstrap are mutually exclusive modes.
 
 After a recipe merge, automation verifies the exact correspondence between the
 reviewed head and accepted merge, then records its gitlink, source lock and

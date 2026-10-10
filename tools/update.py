@@ -1388,7 +1388,7 @@ def cli():
     p=sub.add_parser('pack');p.add_argument('--archive',required=True);p.add_argument('--directory',required=True)
     for command in ('discover','write','bootstrap'):
         p=sub.add_parser(command);p.add_argument('--directory',required=True)
-    sub.add_parser('reconcile')
+    p=sub.add_parser('reconcile');p.add_argument('--pr',type=int)
     sub.add_parser('initialize-recipe-branches')
     p=sub.add_parser('migrate-existing');p.add_argument('--pr',type=int,default=3)
     p=sub.add_parser('prepare');p.add_argument('--pr',required=True);p.add_argument('--directory',required=True)
@@ -1430,7 +1430,7 @@ def cli():
     elif args.command=='run-approved-tests':run_approved_tests(args.record,args.directory)
     elif args.command=='reconcile':
         from tools.recipe_acceptance import reconcile
-        print(json.dumps(reconcile(),sort_keys=True))
+        print(json.dumps(reconcile(args.pr),sort_keys=True))
     elif args.command=='initialize-recipe-branches':
         print(json.dumps(initialize_recipe_branches(),sort_keys=True))
     elif args.command=='migrate-existing':
