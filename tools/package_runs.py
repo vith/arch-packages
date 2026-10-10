@@ -75,7 +75,7 @@ def download_artifact(run, attempt, name, directory, legacy=False, expected=None
     directory.parent.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix=directory.name + '-', dir=directory.parent))
     archive = directory / 'artifact.zip'
-    build_store.download_api(f'repos/{REPOSITORY}/actions/artifacts/{artifact["id"]}/zip', archive, build_store.MAXIMUM + github_api.MAX_JSON)
+    build_store.download_api(f'repos/{REPOSITORY}/actions/artifacts/{artifact["id"]}/zip', archive, build_store.MAXIMUM + github_api.MAX_JSON, accept='application/vnd.github+json')
     if build_store.sha(archive) != digest[7:] or archive.stat().st_size != artifact['size_in_bytes']:
         raise ValueError('original artifact ZIP digest or size differs')
     allowed = {'unsigned.tar', 'candidate.json', 'attestation.jsonl', 'compilation.json', 'attestation-context.json'}

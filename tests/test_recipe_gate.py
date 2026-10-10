@@ -1,9 +1,149 @@
 import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
 
-from tools.recipe_gate import classify_recipe_update, parse_srcinfo, tree_manifest, input_digest, needs_pkgbuild_review, verify_automatic_recipe
+from tools.recipe_gate import classify_recipe_update, parse_srcinfo, tree_manifest, input_digest, needs_pkgbuild_review, verify_automatic_recipe, harness_digest
+
+
+class HarnessDigestTests(unittest.TestCase):
+    def setUp(self):
+        root = Path.home() / '.local/state/arch-packages/work/arch-gate-tests'
+        root.mkdir(parents=True, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=root)
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.old_files = ["tools/build.sh", "tools/native.py", "tools/sources.py",
+                          "tools/recipe_gate.py", "tools/github_api.py"]
+
+    def fixture(self, files, declaration):
+        for index, name in enumerate(files):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(("payload " + str(index)).encode())
+            path.chmod(0o755 if name == "tools/build.sh" else 0o644)
+        source = self.root / "tools/recipe_gate.py"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(declaration)
+        source.chmod(0o644)
+
+    def expected(self, files):
+        # Independently reconstruct the original ordered canonical manifest.
+        records = [{"path": name, "mode": (self.root / name).stat().st_mode & 0o7777,
+                    "sha256": hashlib.sha256((self.root / name).read_bytes()).hexdigest()}
+                   for name in files]
+        encoded = (json.dumps(records, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def test_original_five_file_manifest_without_new_dependencies(self):
+        declaration = "def harness_digest(root):\n    files = " + repr(self.old_files) + "\n"
+        self.fixture(self.old_files, declaration)
+        self.assertEqual(harness_digest(self.root), self.expected(self.old_files))
+
+    def test_new_manifest_binds_order_content_modes_and_declaring_source(self):
+        files = self.old_files + ["tools/dependency_repo.py", "keys/arch-packages.asc", "keys/n3t.asc"]
+        declaration = "HARNESS_FILES = " + repr(tuple(files)) + "\n"
+        self.fixture(files, declaration)
+        original = harness_digest(self.root)
+        self.assertEqual(original, self.expected(files))
+        for name in ("tools/dependency_repo.py", "tools/recipe_gate.py"):
+            with self.subTest(name=name):
+                path = self.root / name
+                payload = path.read_bytes()
+                path.write_bytes(payload + b"\n# changed bytes\n")
+                self.assertEqual(harness_digest(self.root), self.expected(files))
+                self.assertNotEqual(harness_digest(self.root), original)
+                path.write_bytes(payload)
+        path = self.root / "tools/build.sh"
+        mode = path.stat().st_mode & 0o7777
+        path.chmod(mode ^ 0o100)
+        self.assertEqual(harness_digest(self.root), self.expected(files))
+        self.assertNotEqual(harness_digest(self.root), original)
+        path.chmod(mode)
+        reversed_files = list(reversed(files))
+        (self.root / "tools/recipe_gate.py").write_text("HARNESS_FILES = " + repr(reversed_files) + "\n")
+        self.assertEqual(harness_digest(self.root), self.expected(reversed_files))
+        self.assertNotEqual(harness_digest(self.root), self.expected(files))
+
+    def test_source_is_parsed_without_execution(self):
+        declaration = ("raise RuntimeError('must not execute retained source')\n"
+                       "HARNESS_FILES = " + repr(self.old_files) + "\n")
+        self.fixture(self.old_files, declaration)
+        self.assertEqual(harness_digest(self.root), self.expected(self.old_files))
+
+    def test_missing_regular_and_symlinked_files_are_refused(self):
+        self.fixture(self.old_files, "HARNESS_FILES = " + repr(self.old_files) + "\n")
+        path = self.root / "tools/native.py"
+        path.unlink()
+        with self.assertRaisesRegex(ValueError, "file missing"):
+            harness_digest(self.root)
+        path.mkdir()
+        with self.assertRaisesRegex(ValueError, "file missing"):
+            harness_digest(self.root)
+        path.rmdir()
+        target = self.root / "payload"
+        target.write_bytes(b"outside harness")
+        path.symlink_to(target)
+        with self.assertRaisesRegex(ValueError, "file missing"):
+            harness_digest(self.root)
+        path.unlink()
+        path.write_bytes(b"restored")
+        source = self.root / "tools/recipe_gate.py"
+        payload = source.read_bytes()
+        source.unlink()
+        target.write_bytes(payload)
+        source.symlink_to(target)
+        with self.assertRaisesRegex(ValueError, "file missing"):
+            harness_digest(self.root)
+
+    def test_symlinked_parent_directory_is_refused(self):
+        self.fixture(self.old_files, "HARNESS_FILES = " + repr(self.old_files) + "\n")
+        (self.root / "tools").rename(self.root / "real-tools")
+        (self.root / "tools").symlink_to(self.root / "real-tools", target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "file missing"):
+            harness_digest(self.root)
+
+    def test_malformed_ambiguous_and_dynamic_declarations_fail_closed(self):
+        literal = repr(self.old_files)
+        declarations = [
+            "", "HARNESS_FILES = [\n",
+            "HARNESS_FILES = get_files()\n",
+            "HARNESS_FILES = " + literal + "\nHARNESS_FILES = " + literal + "\n",
+            "HARNESS_FILES = " + literal + "\nHARNESS_FILES.append('extra')\n",
+            "HARNESS_FILES = " + literal + "\nHARNESS_FILES[0] = 'extra'\n",
+            "HARNESS_FILES = " + literal + "\nalias = HARNESS_FILES\n",
+            "HARNESS_FILES = " + literal + "\nimport other as HARNESS_FILES\n",
+            "HARNESS_FILES = " + literal + "\ndef HARNESS_FILES():\n    pass\n",
+            "if True:\n    HARNESS_FILES = " + literal + "\n",
+            "HARNESS_FILES: list = " + literal + "\n",
+            "def harness_digest(root):\n    files = get_files()\n",
+            "def harness_digest(root):\n    files = " + literal + "\n    files += ['extra']\n",
+            "def harness_digest(root):\n    if True:\n        files = " + literal + "\n",
+            "def harness_digest(root):\n    files = " + literal + "\n    files.append('extra')\n",
+            "def harness_digest(root):\n    files = " + literal + "\n"
+            "def harness_digest(root):\n    files = " + literal + "\n",
+            "HARNESS_FILES = " + literal + "\ndef harness_digest(root):\n    files = " + literal + "\n",
+        ]
+        self.fixture(self.old_files, "")
+        for declaration in declarations:
+            with self.subTest(declaration=declaration):
+                (self.root / "tools/recipe_gate.py").write_text(declaration)
+                with self.assertRaises(ValueError):
+                    harness_digest(self.root)
+
+    def test_invalid_entries_and_unauthenticated_declaration_fail_closed(self):
+        self.fixture(self.old_files, "")
+        manifests = [[], ["tools/native.py"], self.old_files + ["tools/native.py"],
+                     self.old_files + [1], self.old_files + [""],
+                     self.old_files + ["/absolute"], self.old_files + ["../escape"],
+                     self.old_files + ["tools/./native.py"], self.old_files + ["tools\\native.py"],
+                     self.old_files + ["tools/\x00file"]]
+        for files in manifests:
+            with self.subTest(files=files):
+                (self.root / "tools/recipe_gate.py").write_text("HARNESS_FILES = " + repr(files) + "\n")
+                with self.assertRaises(ValueError):
+                    harness_digest(self.root)
 
 
 class GateTests(unittest.TestCase):

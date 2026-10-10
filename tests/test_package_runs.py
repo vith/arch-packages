@@ -1,8 +1,11 @@
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import shutil
+import threading
 import zipfile
 import unittest
 from unittest.mock import patch
@@ -146,7 +149,7 @@ class IndependentPackageRuns(unittest.TestCase):
                             'workflow_run': {'id': 77, 'head_sha': self.plan['base']}}
                 producer = {'head_sha': self.plan['base'], 'head_branch': 'main',
                             'path': '.github/workflows/build-package.yml'}
-                def download(endpoint, destination, maximum):
+                def download(endpoint, destination, maximum, *, accept):
                     shutil.copyfile(archive, destination)
                 with patch('tools.package_runs.rows', return_value=iter([artifact])), patch(
                         'tools.package_runs.github_api.api', return_value=producer), patch(
@@ -159,6 +162,77 @@ class IndependentPackageRuns(unittest.TestCase):
                         self.assertEqual((recovered / 'unsigned.tar').read_bytes(), b'original archive')
                         self.assertEqual(json.loads((recovered / 'original-artifact.json').read_text())['digest'], artifact['digest'])
                 self.assertFalse((work / 'escape').exists())
+
+    def test_original_zip_transport_negotiates_media_and_preserves_verified_bytes(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            work = Path(temporary)
+            payload = io.BytesIO()
+            with zipfile.ZipFile(payload, 'w') as archive:
+                archive.writestr('unsigned.tar', b'original successful build')
+                archive.writestr('candidate.json', json.dumps(self.plan))
+            zip_bytes = payload.getvalue()
+            source = work / 'original.zip'
+            source.write_bytes(zip_bytes)
+            artifact = {'id': 99, 'name': 'package-first-77-2', 'expired': False,
+                        'size_in_bytes': len(zip_bytes),
+                        'digest': 'sha256:' + package_runs.build_store.sha(source),
+                        'workflow_run': {'id': 77, 'head_sha': self.plan['base']}}
+            producer = {'head_sha': self.plan['base'], 'head_branch': 'main',
+                        'path': '.github/workflows/build-package.yml'}
+            zip_endpoint = f'repos/{package_runs.REPOSITORY}/actions/artifacts/99/zip'
+            release_endpoint = f'repos/{package_runs.REPOSITORY}/releases/assets/22'
+            representations = {
+                '/' + zip_endpoint: ('application/vnd.github+json', zip_bytes),
+                '/' + release_endpoint: ('application/octet-stream', b'original release bytes')}
+            class Transport(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path not in representations:
+                        self.send_error(404)
+                        return
+                    media, content = representations[self.path]
+                    if self.headers.get('Authorization') != 'Bearer fixture-token':
+                        self.send_error(401)
+                        return
+                    if self.headers.get('Accept') != media:
+                        self.send_error(415)
+                        return
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(content)))
+                    self.end_headers()
+                    self.wfile.write(content)
+
+                def log_message(self, *args):
+                    pass
+
+            server = HTTPServer(('127.0.0.1', 0), Transport)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                api = f'http://127.0.0.1:{server.server_port}'
+                with patch('tools.package_runs.github_api.API', api), patch.dict(
+                        os.environ, {'GITHUB_TOKEN': 'fixture-token'}), patch(
+                        'tools.package_runs.rows', return_value=iter([artifact])), patch(
+                        'tools.package_runs.github_api.api', return_value=producer):
+                    with self.assertRaises(package_runs.github_api.GitHubError) as failure:
+                        package_runs.build_store.download_api(
+                            zip_endpoint, work / 'wrong-media.zip', len(zip_bytes),
+                            accept='application/octet-stream')
+                    self.assertEqual(failure.exception.status, 415)
+                    self.assertFalse((work / 'wrong-media.zip').exists())
+                    recovered = package_runs.download_artifact(77, 2, 'first', work / 'recovered')
+                    release = package_runs.build_store.download_asset(
+                        package_runs.REPOSITORY, 22, work / 'release.tar', 100)
+                self.assertEqual((recovered / 'artifact.zip').read_bytes(), zip_bytes)
+                self.assertEqual((recovered / 'unsigned.tar').read_bytes(), b'original successful build')
+                self.assertEqual(json.loads((recovered / 'candidate.json').read_text()), self.plan)
+                proof = json.loads((recovered / 'original-artifact.json').read_text())
+                self.assertEqual((proof['id'], proof['digest'], proof['size']),
+                                 (artifact['id'], artifact['digest'], artifact['size_in_bytes']))
+                self.assertEqual(release.read_bytes(), b'original release bytes')
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
 
     def test_transport_dispatch_preserves_original_digest_and_producer_after_control_advance(self):
         original = {**self.plan, 'packages': [self.plan['packages'][0]]}

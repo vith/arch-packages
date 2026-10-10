@@ -154,6 +154,16 @@ refuses with a missing-byte error rather than recompiling. An actual failed
 compilation may retry using its trusted cache; a cache is not a substitute for
 original package output.
 
+Retained builds authenticate the ordered build-harness manifest declared in their
+own immutable controller source, including that declaring source's bytes and
+mode. Recovery parses the literal declaration without executing historical
+Python, so later harness additions do not invalidate the original build proof.
+
+Workers provision `libarchive-tools` before approval or recovery preparation so
+`bsdtar` is available for both normal persistence and original-output recovery.
+Downloads negotiate the GitHub Actions ZIP media type separately from release
+asset bytes; storage redirects never receive the API authorization token.
+
 Documentation, tooling, image and controller-only changes, and acceptance
 bookkeeping, select no package compilations. Unchanged approved inputs reuse
 their original output and provenance across compatible controller changes and
