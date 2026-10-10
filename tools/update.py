@@ -149,13 +149,23 @@ def extract_tree(archive,destination,allowed=None,source_assets=False):
     return destination
 
 
-def checkout_data(sha,destination,pins=None):
+def checkout_data(sha,destination,pins=None,selected=None):
     if not SHA.fullmatch(sha):
         raise ValueError('invalid immutable tree SHA')
     archive=Path(str(destination)+'.tar.gz')
     download('https://api.github.com/repos/'+repository()+'/tarball/'+sha,archive,maximum=MAX_TREE)
     root=extract_tree(archive,destination)
-    exact=recipes.materialize(root,sha,repository(),extract_tree)
+    if selected is not None:
+        selected=set(selected)
+        if not selected <= set(recipes._modules(root,repository())):
+            raise ValueError('unregistered recipe export selection')
+        # Parse authenticated historical declarations as data, never source code.
+        # Cross-root harness inputs require the complete historical payload set.
+        if any(path.startswith('recipes/') and path.split('/')[1] not in selected
+               for path in recipe_gate._manifest_files(
+                   root, 'tools/recipe_gate.py', 'HARNESS_FILES', 'harness_digest', 'files')):
+            selected=None
+    exact=recipes.materialize(root,sha,repository(),extract_tree,selected=selected)
     if pins is not None:
         pins.update(exact)
     return root

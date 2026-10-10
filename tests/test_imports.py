@@ -80,7 +80,7 @@ class PendingImports(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(repo/filename, target)
             (root/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:'+'f'*64)
-        def checkout(sha, destination, pins):
+        def checkout(sha, destination, pins, selected=None):
             origin = self.old if sha == 'a'*40 else self.new
             shutil.copytree(origin, destination)
             pins.update({} if sha == 'a'*40 else {'example': self.commit})

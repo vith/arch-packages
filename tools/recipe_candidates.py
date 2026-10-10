@@ -219,6 +219,8 @@ def _current_content(record, control, old, pins, recipe, work):
 
 def verify_current_controller(record, context):
     """Authenticate C2 separately without modifying the original signed C tuple."""
+    if [package['pkgbase'] for package in record['packages']] != [record['pkgbase']]:
+        raise ValueError('recipe candidate must contain exactly its owned package root')
     from tools import update as u
     import tempfile
     if not isinstance(context, dict):
@@ -288,7 +290,7 @@ def verify_current_controller(record, context):
     with tempfile.TemporaryDirectory(dir=scratch) as work:
         root = Path(work)
         pins = {}
-        old = u.checkout_data(control, root/'control', pins)
+        old = u.checkout_data(control, root/'control', pins, selected={record['pkgbase']})
         recipe = export_recipe(head, root/'recipe')
         _current_content(record, control, old, pins, recipe, root/'metadata')
     verify_authorization(record)
@@ -377,7 +379,7 @@ def prepare(number, output):
     if origin not in {'manual', 'watcher', 'legacy-accepted'}:
         raise ValueError('unknown durable proposal origin')
     pins = {}
-    old = u.checkout_data(control, output/'base-tree', pins)
+    old = u.checkout_data(control, output/'base-tree', pins, selected={name})
     from tools import imports
     policy = imports.policies(old)[name]
     pending = imports.registry(old)[2].get(name)
@@ -790,12 +792,18 @@ def _verify_inputs(record, automatic, transition_verifier, metadata_verifier):
     """Reconstruct C/H from immutable remote objects without evaluating recipes."""
     from tools import update as u
     import tempfile
+    selected = None
+    if record.get('kind') == 'recipe':
+        name = record['pkgbase']
+        if [package['pkgbase'] for package in record['packages']] != [name]:
+            raise ValueError('recipe candidate must contain exactly its owned package root')
+        selected = {name}
     work = Path(os.environ.get('ARCH_WORK', str(Path.home()/'.local/state/omp/work')))
     work.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='authorization-', dir=work) as temporary:
         root = Path(temporary)
         pins = {}
-        old = u.checkout_data(record['base'], root/'control', pins)
+        old = u.checkout_data(record['base'], root/'control', pins, selected=selected)
         if record.get('control_digest') != recipe_state.control_digest(old):
             raise ValueError('approved controller source proof mismatch')
         if record['image'] != (old/'build-image.txt').read_text().strip() or record['harness_sha'] != harness_digest(old):

@@ -3,6 +3,7 @@ from contextlib import ExitStack
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -55,6 +56,121 @@ class ControlDigestTests(unittest.TestCase):
         self.fixture(self.original_files)
         self.assertFalse((self.root / 'tools/imports.py').exists())
         self.assertEqual(state.control_digest(self.root), self.expected(self.original_files))
+class ReceiptStore:
+    """Git object/ref model retaining complete trees across competing writes."""
+    def __init__(self):
+        self.tip=None
+        self.blobs={}
+        self.trees={}
+        self.commits={}
+        self.before_push=None
+        self.pushes=0
+        self.failure=subprocess.CalledProcessError(1, ['git', 'push'], stderr=b'rejected')
+
+    def object(self, objects, value):
+        sha=hashlib.sha1(state.sources.canonical(value)).hexdigest()
+        objects[sha]=value
+        return sha
+
+    def api(self, route, method='GET', data=None):
+        endpoint=route.split('/git/',1)[1]
+        kind, _, suffix=endpoint.partition('/')
+        if method=='POST':
+            if kind=='blobs':
+                return {'sha':self.object(self.blobs, data)}
+            if kind=='trees':
+                rows=dict(self.trees.get(data.get('base_tree'), {}))
+                rows.update({row['path']:row for row in data['tree']})
+                return {'sha':self.object(self.trees, rows)}
+            if kind=='commits':
+                return {'sha':self.object(self.commits, data)}
+        if kind=='commits':
+            return {'tree':{'sha':self.commits[suffix]['tree']}}
+        if kind=='trees':
+            return {'tree':list(self.trees[suffix.split('?')[0]].values()), 'truncated':False}
+        if kind=='blobs':
+            raw=base64.b64decode(self.blobs[suffix]['content'])
+            return {**self.blobs[suffix], 'size':len(raw)}
+        raise AssertionError((route, method, data))
+
+    def retain(self, namespace, key, value):
+        path=state.record_path(namespace,key)
+        raw=state.sources.canonical({'schema':1,'digest':state.digest(value),'value':value})
+        blob=self.api('/git/blobs','POST',{'content':base64.b64encode(raw).decode(),'encoding':'base64'})['sha']
+        body={'tree':[{'path':path,'mode':'100644','type':'blob','sha':blob}]}
+        if self.tip:body['base_tree']=self.commits[self.tip]['tree']
+        tree=self.api('/git/trees','POST',body)['sha']
+        self.tip=self.api('/git/commits','POST',{'tree':tree,'parents':[self.tip] if self.tip else [],'message':'competing write'})['sha']
+
+    def push(self, cwd, sha, branch, previous):
+        self.pushes+=1
+        if self.before_push:
+            action=self.before_push
+            self.before_push=None
+            action()
+        if self.tip!=previous:
+            raise self.failure
+        self.tip=sha
+
+    def value(self, namespace, key):
+        row=self.trees[self.commits[self.tip]['tree']][state.record_path(namespace,key)]
+        return state.decode(json.loads(base64.b64decode(self.blobs[row['sha']]['content'])))
+
+
+class ReceiptConcurrency(unittest.TestCase):
+    def setUp(self):
+        self.store=ReceiptStore()
+        stack=ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch.object(u,'ref_head',side_effect=lambda branch:self.store.tip))
+        stack.enter_context(patch.object(u,'api',side_effect=self.store.api))
+        stack.enter_context(patch.object(u,'repository',return_value='owner/repo'))
+        stack.enter_context(patch.object(state.sources,'git'))
+        stack.enter_context(patch.object(u,'push_ref',side_effect=self.store.push))
+
+    def test_competing_receipt_preserves_both_writes_and_other_namespaces(self):
+        self.store.retain('approved','original',{'approved':True})
+        self.store.before_push=lambda:self.store.retain('proposal','other',{'source':'other'})
+        state.save('candidate','ours',{'source':'ours'})
+        self.assertEqual(self.store.value('candidate','ours'),{'source':'ours'})
+        self.assertEqual(self.store.value('proposal','other'),{'source':'other'})
+        self.assertEqual(self.store.value('approved','original'),{'approved':True})
+
+    def test_competing_identical_identity_is_reused_without_another_push(self):
+        value={'source':'ours'}
+        self.store.before_push=lambda:self.store.retain('candidate','ours',value)
+        self.assertEqual(state.save('candidate','ours',value),state.digest(value))
+        self.assertEqual(self.store.value('candidate','ours'),value)
+        self.assertEqual(self.store.pushes,1)
+
+    def test_competing_divergent_identity_remains_immutable(self):
+        self.store.before_push=lambda:self.store.retain('candidate','ours',{'source':'theirs'})
+        with self.assertRaisesRegex(ValueError,'immutable'):
+            state.save('candidate','ours',{'source':'ours'})
+        self.assertEqual(self.store.value('candidate','ours'),{'source':'theirs'})
+        self.assertEqual(self.store.pushes,1)
+
+    def test_unchanged_tip_push_failure_propagates_original_error(self):
+        def fail():
+            raise self.store.failure
+        self.store.before_push=fail
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            state.save('candidate','ours',{'source':'ours'})
+        self.assertIs(caught.exception,self.store.failure)
+        self.assertIsNone(self.store.tip)
+        self.assertEqual(self.store.pushes,1)
+
+    def test_continuing_contention_fails_closed_at_bound(self):
+        def compete():
+            self.store.retain('proposal','other',{'revision':self.store.pushes})
+            self.store.before_push=compete
+        self.store.before_push=compete
+        with self.assertRaisesRegex(ValueError,'retry bound'):
+            state.save('candidate','ours',{'source':'ours'})
+        self.assertEqual(self.store.pushes,32)
+        self.assertEqual(self.store.value('proposal','other'),{'revision':32})
+        rows=self.store.trees[self.store.commits[self.store.tip]['tree']]
+        self.assertNotIn(state.record_path('candidate','ours'),rows)
 
 class RecipeIdentity(unittest.TestCase):
     def setUp(self):
