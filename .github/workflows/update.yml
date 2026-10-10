@@ -16,6 +16,11 @@ on:
         required: false
         type: string
         default: ''
+      reconcile_pr:
+        description: Recover only this existing recipe or bookkeeping pull request using trusted main
+        required: false
+        type: string
+        default: ''
 env:
   ARCH_WORK: /home/runner/.local/state/arch-packages/work/arch-packages/${{ github.run_id }}/${{ github.run_attempt }}
   TMPDIR: /home/runner/.local/state/arch-packages/work/arch-packages/${{ github.run_id }}/${{ github.run_attempt }}/tmp
@@ -26,7 +31,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   reconcile:
-    if: github.ref == 'refs/heads/main' && (inputs.bootstrap != true || inputs.migrate_pr != '')
+    if: github.ref == 'refs/heads/main' && (inputs.bootstrap != true || inputs.migrate_pr != '' || inputs.reconcile_pr != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -34,18 +39,24 @@ jobs:
       actions: write
       statuses: write
     steps:
-      - name: Validate explicit migration mode
+      - name: Validate explicit recovery mode
         env:
           BOOTSTRAP: ${{ inputs.bootstrap }}
           MIGRATE_PR: ${{ inputs.migrate_pr }}
+          RECONCILE_PR: ${{ inputs.reconcile_pr }}
         run: |
-          if [ -n "$MIGRATE_PR" ]; then
+          if [ -n "$MIGRATE_PR" ] && [ -n "$RECONCILE_PR" ]; then
+            echo "::error::migrate_pr and reconcile_pr cannot be requested together"
+            exit 1
+          fi
+          target="$MIGRATE_PR$RECONCILE_PR"
+          if [ -n "$target" ]; then
             if [ "$BOOTSTRAP" = true ]; then
-              echo "::error::bootstrap and migrate_pr cannot be requested together"
+              echo "::error::bootstrap and explicit recovery cannot be requested together"
               exit 1
             fi
-            if [[ ! "$MIGRATE_PR" =~ ^[0-9]+$ || ! "$MIGRATE_PR" =~ [1-9] ]]; then
-              echo "::error::migrate_pr must be a positive decimal pull request number"
+            if [[ ! "$target" =~ ^[0-9]+$ || ! "$target" =~ [1-9] ]]; then
+              echo "::error::recovery target must be a positive decimal pull request number"
               exit 1
             fi
           fi
@@ -68,10 +79,14 @@ jobs:
         if: inputs.migrate_pr == ''
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 -m tools.update reconcile
+          RECONCILE_PR: ${{ inputs.reconcile_pr }}
+        run: |
+          args=()
+          if [ -n "$RECONCILE_PR" ]; then args+=(--pr "$RECONCILE_PR"); fi
+          python3 -m tools.update reconcile "${args[@]}"
   discover:
     needs: reconcile
-    if: always() && github.ref == 'refs/heads/main' && github.event_name != 'push' && inputs.migrate_pr == '' && (needs.reconcile.result == 'success' || needs.reconcile.result == 'skipped')
+    if: always() && github.ref == 'refs/heads/main' && github.event_name != 'push' && inputs.migrate_pr == '' && inputs.reconcile_pr == '' && (needs.reconcile.result == 'success' || needs.reconcile.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -104,7 +119,7 @@ jobs:
           if-no-files-found: error
   write-proposals:
     needs: discover
-    if: inputs.bootstrap != true && inputs.migrate_pr == ''
+    if: inputs.bootstrap != true && inputs.migrate_pr == '' && inputs.reconcile_pr == ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
