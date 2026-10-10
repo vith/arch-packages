@@ -93,7 +93,7 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.base }}
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prepared-candidate-${{ github.run_attempt }}
           path: ${{ env.ARCH_WORK }}/prepared
@@ -131,11 +131,11 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.base }}
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prepared-candidate-${{ github.run_attempt }}
           path: ${{ env.ARCH_WORK }}/prepared
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: native-candidate-${{ github.run_attempt }}
           path: ${{ env.ARCH_WORK }}/outputs
@@ -160,7 +160,7 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.base }}
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prepared-candidate-${{ github.run_attempt }}
           path: ${{ env.ARCH_WORK }}/prepared
@@ -188,7 +188,7 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.base }}
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prepared-candidate-${{ github.run_attempt }}
           path: ${{ env.ARCH_WORK }}/prepared
@@ -216,7 +216,7 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.base }}
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prepared-candidate-${{ github.run_attempt }}
           path: ${{ env.ARCH_WORK }}/prepared
@@ -242,11 +242,11 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.base }}
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prepared-candidate-${{ github.run_attempt }}
           path: ${{ env.ARCH_WORK }}/prepared
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: native-candidate-${{ github.run_attempt }}
           path: ${{ env.ARCH_WORK }}/outputs
