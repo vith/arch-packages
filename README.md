@@ -74,6 +74,9 @@ one explicitly, use `[arch-packages]` if it contains `arch-packages.db`, or
 
 ## Development
 
+See [System flow](docs/system-flow.md) for the complete lifecycle, workflow contracts,
+trust boundaries, recovery behavior and operator reading guide.
+
 - `recipes/`: exact recipe commits, stored as submodules of this repository.
 - `pkg/*`: maintained recipe branches; `aur/*`: imported AUR history.
 - `packages.json`, `inputs/`, `upstream/`: package policy, source pins and update tracking.
@@ -116,8 +119,15 @@ Post-build validation runs after either authorization route; a skipped inactive
 review or automatic-authorization job does not skip validation.
 
 Only after authorization does each affected package execute its recipe and build
-in a disposable container without credentials or host mounts. Validation checks
-the resulting metadata and runtime behavior against the frozen inputs.
+as an unprivileged user in a disposable container. API credentials stay in trusted
+host tools outside the recipe container. The worker may bind an authenticated,
+job-owned per-package cache; recipe inputs and the trusted harness are copied in.
+It never mounts host root, home, checkout or credential directories, or the Docker
+socket. Automated validation checks `.SRCINFO` consistency, output identity,
+version, architecture, hashes and source-lock receipts, plus OMP-specific runtime
+checks. Full signed consumer installation and package consumer checks run only in
+the separate manual `consumer-proof.yml` workflow; publication readback checks
+snapshot integrity, not runtime behavior.
 Build dependencies resolve from the official Arch repositories first, then the
 signed `vith-gh` repository and the signed `vith-arch` repository at n3t. Both
 custom repositories require trusted database and package signatures. Workers
