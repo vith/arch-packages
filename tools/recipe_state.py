@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import re
+import subprocess
 from tools import sources
 
 BRANCH='controller-state'
@@ -112,21 +113,28 @@ def save(namespace,key,value):
         return digest(value)
     raw=sources.canonical({'schema':1,'digest':digest(value),'value':value})
     if len(raw)>u.MAX_TREE:raise ValueError('controller receipt exceeds bound')
-    previous=u.ref_head(BRANCH)
-    # A competing writer may have retained this identity since the first read.
-    # A later branch advance is rejected by the exact push lease below.
-    existing=load_optional(namespace,key)
-    if existing is not None:
-        if existing!=value:raise ValueError('immutable controller receipt differs')
-        return digest(value)
     entries=[{'path':path,'mode':'100644','type':'blob','sha':u.api(u.route('/git/blobs'),'POST',{'content':base64.b64encode(raw).decode(),'encoding':'base64'})['sha']}]
-    body={'tree':entries}
-    if previous:body['base_tree']=u.api(u.route('/git/commits/'+previous))['tree']['sha']
-    tree=u.api(u.route('/git/trees'),'POST',body)['sha']
-    commit=u.api(u.route('/git/commits'),'POST',{'tree':tree,'parents':[previous] if previous else [],'message':'Retain '+path})['sha']
-    sources.git('fetch','https://github.com/'+u.repository()+'.git',commit,cwd=u.ROOT)
-    u.push_ref(u.ROOT,commit,BRANCH,previous)
-    return digest(value)
+    for attempt in range(32):
+        previous=u.ref_head(BRANCH)
+        # Recheck immutable identity before rebuilding on the latest retained tree.
+        existing=load_optional(namespace,key)
+        if existing is not None:
+            if existing!=value:raise ValueError('immutable controller receipt differs')
+            return digest(value)
+        body={'tree':entries}
+        if previous:body['base_tree']=u.api(u.route('/git/commits/'+previous))['tree']['sha']
+        tree=u.api(u.route('/git/trees'),'POST',body)['sha']
+        commit=u.api(u.route('/git/commits'),'POST',{'tree':tree,'parents':[previous] if previous else [],'message':'Retain '+path})['sha']
+        sources.git('fetch','--no-recurse-submodules','--no-write-fetch-head','https://github.com/'+u.repository()+'.git',commit,cwd=u.ROOT)
+        try:
+            u.push_ref(u.ROOT,commit,BRANCH,previous)
+        except subprocess.CalledProcessError:
+            if u.ref_head(BRANCH)==previous:
+                raise
+            # Only an observed competing ref update permits another exact lease.
+            continue
+        return digest(value)
+    raise ValueError('controller receipt contention exceeds retry bound')
 
 
 def is_attested(namespace,key,value,head):
