@@ -121,7 +121,7 @@ jobs:
           args=()
           if [ "$BOOTSTRAP" = true ]; then args+=(--bootstrap); fi
           python3 -m tools.source_review --pr "$PR_NUMBER" --base "$EXPECTED_BASE" --head "$EXPECTED_HEAD" --directory "$ARCH_WORK/evidence" "${args[@]}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: source-review-evidence-${{ github.run_attempt }}
           path: ${{ env.ARCH_WORK }}/evidence/source-review-evidence.json
