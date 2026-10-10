@@ -78,7 +78,7 @@ def copy_recipe(source, destination):
 
 
 def materialize(root, control_sha, repository, extract_tree, selected=None):
-    """Export every enrolled immutable gitlink; fail instead of overwriting changes."""
+    """Validate every enrolled pin and export selected immutable recipe payloads."""
     root = Path(root)
     _identity(repository, control_sha)
     names = _modules(root, repository)
@@ -94,15 +94,20 @@ def materialize(root, control_sha, repository, extract_tree, selected=None):
         raise ValueError("unsafe recipe container")
     recipes.mkdir(exist_ok=True)
     pins = {}
+    for name in names:
+        entry = links["recipes/" + name]
+        sha = entry.get("sha")
+        if entry.get("mode") != "160000" or entry.get("type") != "commit":
+            raise ValueError("recipe pin is not a Git commit gitlink")
+        _identity(repository, sha)
+        pins[name] = sha
     with tempfile.TemporaryDirectory(prefix="gitlink-export-", dir=root.parent) as session:
         work = Path(session)
-        # Verify all payloads before installing any of them into the control checkout.
+        # Verify all selected payloads before installing any of them.
         for name in names:
-            entry = links["recipes/" + name]
-            sha = entry.get("sha")
-            if entry.get("mode") != "160000" or entry.get("type") != "commit":
-                raise ValueError("recipe pin is not a Git commit gitlink")
-            _identity(repository, sha)
+            if name not in selected:
+                continue
+            sha = pins[name]
             recipe_tree = _tree(repository, sha)
             if any(item.get("mode") == "160000" or item.get("type") == "commit" for item in recipe_tree.values()):
                 raise ValueError("nested recipe submodules are not enrolled")
@@ -119,7 +124,6 @@ def materialize(root, control_sha, repository, extract_tree, selected=None):
                 raise ValueError("unsafe materialized recipe path")
             if destination.exists() and any(destination.iterdir()) and tree_manifest(destination) != manifest:
                 raise ValueError("materialized recipe differs from its immutable gitlink")
-            pins[name] = sha
         for name in names:
             if name not in selected:
                 continue

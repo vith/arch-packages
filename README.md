@@ -108,6 +108,10 @@ An unchanged source receipt with no open proposal PR is a no-op: automation leav
 any retained proposal branch untouched and continues with other source updates.
 Changed proposals and refreshes of open PRs still require authenticated watcher
 ownership before automation can update or dispatch them.
+
+Concurrent controller receipt writes preserve other retained receipts through
+bounded exact-lease retries; an existing receipt identity remains immutable.
+
 Post-build validation runs after either authorization route; a skipped inactive
 review or automatic-authorization job does not skip validation.
 
@@ -143,6 +147,11 @@ gh workflow run candidate.yml --repo vith/arch-packages -f pr_number=NUMBER -f e
 gh workflow run update.yml --repo vith/arch-packages
 python -m unittest discover -s tests -p 'test_*.py'
 ```
+
+Independent one-root recipe candidates export only their owned recipe body while
+authenticating the entire enrolled recipe roster and every immutable pin. Historical
+build harnesses that require another recipe's files retain full payload exports;
+controller, source-only and publication checks continue to validate all bodies.
 
 Each authorized package input builds once in its own independent hosted x86_64
 workflow run, using accepted-main worker tools without a per-worker environment

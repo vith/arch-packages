@@ -537,7 +537,7 @@ class CandidateBoundaries(unittest.TestCase):
                     (recipe/'PKGBUILD').chmod(0o755)
                 elif mutation=='modules':
                     (fixture/'new/.gitmodules').write_text('changed candidate URL')
-                def checkout(sha,destination,pins):
+                def checkout(sha,destination,pins,selected=None):
                     pins.update(example=('1' if sha=='a'*40 else '2')*40)
                     return Path(shutil.copytree(fixture/('old' if sha=='a'*40 else 'new'),destination))
                 evidence={'srcinfo':(recipe/'.SRCINFO').read_text(),'checksums':{},'source_templates_verified':True,'lock_verified':True,'auxiliary_inputs_verified':True,'authentic':True,'fast_forward':True}
@@ -558,7 +558,7 @@ class CandidateBoundaries(unittest.TestCase):
     def test_source_only_main_automatic_authority_rejects_external_or_missing_head_repository(self):
         from tools import recipe_candidates
         policy = {'pkgbase': 'example', 'sources': [], 'automatic': {}}
-        def checkout(sha, destination, pins):
+        def checkout(sha, destination, pins, selected=None):
             self.copy_trusted_controller(destination)
             pins['example'] = '1'*40
             update.dump(destination/'packages.json', {'schema': 1, 'packages': [policy]})
@@ -589,7 +589,7 @@ class CandidateBoundaries(unittest.TestCase):
     def test_retired_enrollment_is_not_built_and_requires_no_review(self):
         kept = {'pkgbase': 'kept', 'sources': [], 'automatic': {}}
         retired = {'pkgbase': 'retired', 'sources': [], 'automatic': {}}
-        def checkout(sha, destination, pins):
+        def checkout(sha, destination, pins, selected=None):
             destination.mkdir()
             self.copy_trusted_controller(destination)
             is_old = sha == 'a'*40
@@ -614,7 +614,7 @@ class CandidateBoundaries(unittest.TestCase):
     def test_new_enrollment_is_frozen_for_one_authorized_build(self):
         kept={'pkgbase':'kept','sources':[],'automatic':{}}
         added={'pkgbase':'added','sources':[],'automatic':{}}
-        def checkout(sha,destination,pins):
+        def checkout(sha,destination,pins,selected=None):
             is_old=sha=='a'*40
             policies=[kept] if is_old else [kept,added]
             self.copy_trusted_controller(destination)

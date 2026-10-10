@@ -1,3 +1,4 @@
+import copy
 import json
 from pathlib import Path
 import subprocess
@@ -6,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from tools import recipes, update
-from tools.recipe_gate import tree_manifest
+from tools.recipe_gate import harness_digest, tree_manifest
 
 
 class ImmutableRecipeTests(unittest.TestCase):
@@ -81,6 +82,116 @@ class ImmutableRecipeTests(unittest.TestCase):
             raise ValueError('fixture exceeds bounded transport')
         Path(destination).write_bytes(data)
         return Path(destination)
+
+    def roster(self, count=33, harness_recipe=None, nested=False):
+        """Build a real Git control tree with independently named recipe roots."""
+        names = ['example'] + ['fixture-' + str(index) for index in range(1, count)]
+        pins = {'example': self.old}
+        for name in names[1:]:
+            entries = []
+            for path in ('PKGBUILD', '.SRCINFO'):
+                content = (self.payload / path).read_text().replace('example', name).encode()
+                sha = self.git('hash-object', '-w', '--stdin', data=content)
+                entries.append('100644 blob ' + sha + '\t' + path + '\n')
+            if nested and name == names[-1]:
+                entries.append('160000 commit ' + self.old + '\tnested\n')
+            tree = self.git('mktree', data=''.join(sorted(entries)).encode())
+            pins[name] = self.git('commit-tree', tree, '-m', name)
+        (self.control / 'packages.json').write_text(json.dumps(
+            {'schema': 1, 'packages': [{'pkgbase': name} for name in names]}))
+        (self.control / '.gitmodules').write_text(''.join(
+            '[submodule "recipes/' + name + '"]\n\tpath = recipes/' + name
+            + '\n\turl = https://github.com/owner/repo.git\n\tbranch = pkg/' + name + '\n'
+            for name in names))
+        tools = self.control / 'tools'
+        tools.mkdir(exist_ok=True)
+        files = ['tools/recipe_gate.py']
+        if harness_recipe is not None:
+            files.append('recipes/' + harness_recipe + '/PKGBUILD')
+        # Legacy literal declaration must be parsed, never executed.
+        (tools / 'recipe_gate.py').write_text(
+            'raise RuntimeError("historical source must not execute")\n'
+            'def harness_digest(root):\n    files = ' + repr(files) + '\n')
+        recipe_tree = self.git('mktree', data=''.join(
+            '160000 commit ' + pins[name] + '\t' + name + '\n'
+            for name in sorted(names)).encode())
+        tool_blob = self.git('hash-object', '-w', '--stdin', data=(tools / 'recipe_gate.py').read_bytes())
+        tool_tree = self.git('mktree', data=('100644 blob ' + tool_blob + '\trecipe_gate.py\n').encode())
+        entries = ['040000 tree ' + recipe_tree + '\trecipes\n',
+                   '040000 tree ' + tool_tree + '\ttools\n']
+        for name in ('packages.json', '.gitmodules'):
+            sha = self.git('hash-object', '-w', '--stdin', data=(self.control / name).read_bytes())
+            entries.append('100644 blob ' + sha + '\t' + name + '\n')
+        tree = self.git('mktree', data=''.join(sorted(entries)).encode())
+        self.head = self.git('commit-tree', tree, '-m', 'Complete roster')
+        return pins
+
+    def test_selected_body_preserves_complete_pin_roster(self):
+        pins = self.roster()
+        actual = recipes.materialize(self.control, self.head, 'owner/repo',
+                                     update.extract_tree, selected={'example'})
+        self.assertEqual(actual, pins)
+        self.assertEqual({path.name for path in (self.control / 'recipes').iterdir()}, {'example'})
+        self.assertEqual(tree_manifest(self.control / 'recipes/example'), tree_manifest(self.payload))
+
+    def test_invalid_unselected_pins_fail_before_selected_body_installation(self):
+        self.roster()
+        original = self.local_api
+        control_tree = self.git('rev-parse', self.head + '^{tree}')
+        endpoint = '/repos/owner/repo/git/trees/' + control_tree + '?recursive=1'
+        for field, value in (('sha', 'not-a-sha'), ('mode', '100644'), ('type', 'blob')):
+            def altered(path):
+                result = copy.deepcopy(original(path))
+                if path == endpoint:
+                    for entry in result['tree']:
+                        if entry['path'] == 'recipes/fixture-1':
+                            entry[field] = value
+                return result
+            with self.subTest(field=field), patch.object(recipes, 'api', side_effect=altered):
+                with self.assertRaises(ValueError):
+                    recipes.materialize(self.control, self.head, 'owner/repo',
+                                        update.extract_tree, selected={'example'})
+                self.assertFalse((self.control / 'recipes/example').exists())
+
+    def test_unregistered_selection_is_rejected(self):
+        self.roster()
+        with self.assertRaisesRegex(ValueError, 'unregistered'):
+            recipes.materialize(self.control, self.head, 'owner/repo',
+                                update.extract_tree, selected={'missing'})
+
+    def test_full_default_retains_unselected_nested_payload_guard(self):
+        pins = self.roster(count=2, nested=True)
+        with self.assertRaisesRegex(ValueError, 'nested'):
+            recipes.materialize(self.control, self.head, 'owner/repo', update.extract_tree)
+        self.assertFalse((self.control / 'recipes/example').exists())
+        self.assertEqual(recipes.materialize(self.control, self.head, 'owner/repo',
+                                            update.extract_tree, selected={'example'}), pins)
+
+    def test_historical_crossroot_harness_falls_back_without_digest_change(self):
+        pins = self.roster(count=2, harness_recipe='fixture-1')
+        with patch.object(update, 'repository', return_value='owner/repo'), patch.object(
+                update, 'download', side_effect=self.local_download):
+            full = update.checkout_data(self.head, self.root / 'full')
+            actual = {}
+            selected = update.checkout_data(self.head, self.root / 'selected', actual,
+                                            selected={'example'})
+            self.assertEqual(actual, pins)
+            self.assertEqual(harness_digest(selected), harness_digest(full))
+            self.assertEqual(tree_manifest(selected / 'recipes'), tree_manifest(full / 'recipes'))
+            with self.assertRaisesRegex(ValueError, 'unregistered'):
+                update.checkout_data(self.head, self.root / 'invalid', selected={'missing'})
+
+    def test_historical_owned_harness_needs_only_selected_payload(self):
+        pins = self.roster(count=2, harness_recipe='example')
+        with patch.object(update, 'repository', return_value='owner/repo'), patch.object(
+                update, 'download', side_effect=self.local_download):
+            full = update.checkout_data(self.head, self.root / 'full')
+            actual = {}
+            selected = update.checkout_data(self.head, self.root / 'selected', actual,
+                                            selected={'example'})
+            self.assertEqual(actual, pins)
+            self.assertEqual(harness_digest(selected), harness_digest(full))
+            self.assertFalse((selected / 'recipes/fixture-1/PKGBUILD').exists())
 
     def test_moving_branch_cannot_advance_pinned_recipe(self):
         recipes.materialize(self.control, self.head, 'owner/repo', update.extract_tree)
