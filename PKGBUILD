@@ -12,11 +12,10 @@ pkgname=${_cratename}
 pkgdesc="Easy, fast and local-first microVM runtime"
 
 pkgver=0.7.4
-pkgrel=2
+pkgrel=3
 _pkgvername=${pkgver}
 
-arch=('x86_64' 'aarch64')
-_barch=('x86_64' 'aarch64')
+arch=('x86_64')
 
 url="https://github.com/${_pkgauthor}/${_pkgname}"
 
@@ -29,48 +28,31 @@ depends=('glibc' 'libgcc' 'libcap-ng')
 
 options=('!strip' '!lto')
 
-source=("${_pkgname}-${_pkgvername}.crate::https://crates.io/api/v1/crates/${_cratename}/${_pkgvername}/download"
-        "https://people.redhat.com/sgrubb/libcap-ng/libcap-ng-0.8.5.tar.gz")
+source=("microsandbox-${pkgver}.crate::https://crates.io/api/v1/crates/microsandbox/${pkgver}/download"
+        "microsandbox-runtime.tar.gz::https://github.com/superradcompany/microsandbox/releases/download/v${pkgver}/microsandbox-linux-x86_64.tar.gz")
+noextract=('microsandbox-runtime.tar.gz')
 sha256sums=('d2d4d6223c59456b82cb98cb7a020bf2dc23dc8d3de6d5ed74c04ed0e9bed856'
-            '3ba5294d1cbdfa98afaacfbc00b6af9ed2b83e8a21817185dfd844cc8c7ac6ff')
+            'a3689a2fb4cc9dd88e36f7c11883bb2bdf98b1c1ffd2f41a414224e4cd89bf59')
 
 
-# CARCH selects the package target independently of the native build host.
-_target="${CARCH}-unknown-linux-gnu"
-
-_build_env() {
-	if [[ $(uname -m) != "$CARCH" ]]; then
-		[[ $CARCH == x86_64 ]] || { error "Unsupported cross target: $CARCH"; return 1; }
-		export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
-		export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc
-		export CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++
-		export AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar
-	fi
-}
+_target=x86_64-unknown-linux-gnu
 
 prepare() {
 	cd ${srcdir}/${_cratename}-${_pkgvername} || exit 1
 
-	_build_env
+	# Upstream build.rs reads this exact profile cache before attempting a download.
+	# Keep its default features and matching official msb/libkrunfw pair unchanged.
+	install -Dm644 "$srcdir/microsandbox-runtime.tar.gz" \
+		"${CARGO_TARGET_DIR:-target}/$_target/release/.microsandbox-runtime-cache/microsandbox-runtime-${pkgver}-linux-x86_64.tar.gz"
+	export MSB_HOME="$srcdir/microsandbox-build-home"
 	cargo fetch --locked --target "$_target"
 }
 
 build() {
-	local target_flags=()
-	# Supply the target link library, not the ARM host's libcap-ng.
-	# The installed package uses Arch's declared libcap-ng dependency.
-	if [[ $(uname -m) != "$CARCH" ]]; then
-		# This release includes configure; no host autotools bootstrap is needed.
-		cd "$srcdir/libcap-ng-0.8.5"
-		./configure --host=x86_64-linux-gnu --prefix=/usr \
-			--disable-static --without-python --without-python3
-		make -C src
-		target_flags+=("-Lnative=$srcdir/libcap-ng-0.8.5/src/.libs")
-	fi
 	cd ${srcdir}/${_cratename}-${_pkgvername} || exit 1
 
-	_build_env
-	RUSTFLAGS="--remap-path-prefix=$(pwd)=/build/ ${target_flags[*]}" cargo build --release --locked --target "$_target"
+	export MSB_HOME="$srcdir/microsandbox-build-home"
+	RUSTFLAGS="--remap-path-prefix=$(pwd)=/build/" cargo build --release --locked --target "$_target"
 }
 
 package() {
