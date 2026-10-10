@@ -23,6 +23,15 @@ class RecipeCandidateBoundaries(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
+    def test_recipe_authorization_rejects_extra_duplicate_or_foreign_package_roots(self):
+        for names in ([], ['other'], ['example', 'other'], ['example', 'example']):
+            record = {'kind': 'recipe', 'pkgbase': 'example',
+                      'packages': [{'pkgbase': name} for name in names]}
+            with self.subTest(names=names), self.assertRaisesRegex(ValueError, 'exactly its owned'):
+                candidates._verify_inputs(record, True, None, None)
+            with self.subTest(current_names=names), self.assertRaisesRegex(ValueError, 'exactly its owned'):
+                candidates.verify_current_controller(record, {})
+
     def test_pending_native_conversion_preserves_original_baseline_and_requires_exact_review(self):
         work = Path.home()/'.local/state/arch-packages/import-tests'
         work.mkdir(parents=True, exist_ok=True)
@@ -168,7 +177,7 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             if route.endswith('a'*40):
                 return {'tree': {'sha': 'd'*40}, 'parents': [{'sha': 'b'*40}]}
             raise AssertionError(route)
-        def checkout(control, destination, pins=None):
+        def checkout(control, destination, pins=None, selected=None):
             if pins is not None:
                 pins['example'] = 'a'*40 if adoption else 'b'*40
             shutil.copytree(baseline if adoption and control == L else old, destination)
@@ -498,7 +507,7 @@ class RecipeCandidateBoundaries(unittest.TestCase):
         def download(route, destination):
             self.assertEqual(route, update.route('/actions/artifacts/81/zip'))
             destination.write_bytes(state['archive'])
-        def checkout(control, destination, pins=None):
+        def checkout(control, destination, pins=None, selected=None):
             self.assertEqual(control, record['base'])
             if pins is not None:
                 pins['example'] = record['recipe_base']

@@ -508,7 +508,7 @@ def verify_legacy_adoption(proposal, C, current, pins, require_attestation=True)
             or recipe.get('tree', {}).get('sha') != proposal['recipe_tree']):
         raise ValueError('accepted legacy recipe tuple differs')
     with tempfile.TemporaryDirectory(prefix='legacy-adoption-', dir=scratch_root()) as directory:
-        baseline = u.checkout_data(L, Path(directory)/'baseline')
+        baseline = u.checkout_data(L, Path(directory)/'baseline', selected={name})
         baseline_lock = u.load(baseline/'inputs'/f'{name}.json')
         baseline_provenance = u.load(baseline/'upstream'/f'{name}.json')
         if (proposal.get('baseline_lock') != baseline_lock

@@ -408,7 +408,7 @@ class AcceptanceInvariants(unittest.TestCase):
             current = Path(directory)/'current'
             current.mkdir()
             update.dump(current/'packages.json', {'schema': 1, 'packages': [policy]})
-            def checkout(sha, destination, recipe_pins=None):
+            def checkout(sha, destination, recipe_pins=None, selected=None):
                 destination.mkdir()
                 (destination/'build-image.txt').write_text('image')
                 update.dump(destination/'packages.json', {'schema': 1, 'packages': [policy]})

@@ -148,6 +148,11 @@ gh workflow run update.yml --repo vith/arch-packages
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
+Independent one-root recipe candidates export only their owned recipe body while
+authenticating the entire enrolled recipe roster and every immutable pin. Historical
+build harnesses that require another recipe's files retain full payload exports;
+controller, source-only and publication checks continue to validate all bodies.
+
 Each authorized package input builds once in its own independent hosted x86_64
 workflow run, using accepted-main worker tools without a per-worker environment
 approval. The candidate coordinator dispatches those runs and collects verified
