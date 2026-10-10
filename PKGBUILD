@@ -1,8 +1,7 @@
 # Based on the AUR zig0.15 recipe by Vitalii Kuzhdin and zig-bootstrap's build script.
-# CARCH is the package target. The executable bootstrap compiler runs on ARM only.
 pkgname=zig0.15
 pkgver=0.15.2
-pkgrel=2
+pkgrel=3
 pkgdesc='General-purpose programming language and toolchain for maintaining robust, optimal, and reusable software'
 arch=('x86_64')
 url='https://ziglang.org'
@@ -12,28 +11,22 @@ conflicts=('zig0.15-bin')
 options=('emptydirs' '!buildflags' '!lto' '!strip' '!debug')
 source=(
   "https://ziglang.org/download/${pkgver}/zig-bootstrap-${pkgver}.tar.xz"
-  "https://ziglang.org/download/${pkgver}/zig-aarch64-linux-${pkgver}.tar.xz"
+  "https://ziglang.org/download/${pkgver}/zig-x86_64-linux-${pkgver}.tar.xz"
 )
 sha256sums=(
   'a6845459501df3c3264ebc587b02a7094ad14f4f3f7287c48f04457e784d0d85'
-  '958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f'
+  '02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239'
 )
 
 build() {
-  if [[ $(uname -m) != aarch64 ]]; then
-    error 'This recipe requires native aarch64 Linux build tools, targeting x86_64.'
-    return 1
-  fi
-
   local root="${srcdir}/zig-bootstrap-${pkgver}"
-  local zig="${srcdir}/zig-aarch64-linux-${pkgver}/zig"
+  local zig="${srcdir}/zig-x86_64-linux-${pkgver}/zig"
   local host="${root}/out/host-tools"
   local target=x86_64-linux-musl
   local prefix="${root}/out/${target}"
 
-  # Never pass the package's x86 makepkg flags to the ARM host compiler.
   # Two compile jobs, one tablegen/link job, no LTO or debug info keep LLVM's
-  # peak memory down on the 2-OCPU/12-GiB builder. Build Zig separately at -j1.
+  # peak memory down. Build Zig separately at -j1.
   unset CPPFLAGS CFLAGS CXXFLAGS LDFLAGS
   export CMAKE_BUILD_PARALLEL_LEVEL=2
   export CCACHE_BASEDIR="${srcdir}"
@@ -87,8 +80,8 @@ build() {
   )
 
   # Only the source-matched TableGen programs must run on the host. The pinned
-  # native Zig input is a build tool, not a package payload. This avoids building
-  # a second complete LLVM/Clang/LLD and Zig just to obtain a cross compiler.
+  # native Zig input is a build tool, not a package payload. The target compiler
+  # and its complete LLVM/Clang/LLD libraries are built from the source bundle.
   cmake -S "${root}/llvm" -B "${host}" "${llvm_options[@]}" \
     -DCMAKE_C_COMPILER=cc \
     -DCMAKE_CXX_COMPILER=c++ \
@@ -99,9 +92,9 @@ build() {
     -DLLVM_ENABLE_ZSTD=OFF
   cmake --build "${host}" --parallel 2 --target llvm-tblgen clang-tblgen
 
-  # Zig supplies the target libc/libc++ sysroot. The image's native cross-binutils
-  # archive x86 objects without ever executing them. No target system LLVM is used.
-  local cross_options=(
+  # Zig builds the target libc/libc++ sysroot from sources. Native binutils
+  # archive the x86 objects. No system LLVM is used.
+  local target_options=(
     -G Ninja
     -DCMAKE_BUILD_TYPE=Release
     '-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG'
@@ -116,13 +109,13 @@ build() {
     -DCMAKE_C_COMPILER_LAUNCHER=ccache
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
     -DCMAKE_LINK_DEPENDS_USE_LINKER=OFF
-    -DCMAKE_AR=/usr/bin/x86_64-linux-gnu-ar
-    -DCMAKE_RANLIB=/usr/bin/x86_64-linux-gnu-ranlib
+    -DCMAKE_AR=/usr/bin/ar
+    -DCMAKE_RANLIB=/usr/bin/ranlib
   )
 
   # zig cc/c++ use Clang, but ccache cannot infer that from the executable name.
   export CCACHE_COMPILERTYPE=clang
-  cmake -S "${root}/zlib" -B "${root}/out/build-zlib" "${cross_options[@]}"
+  cmake -S "${root}/zlib" -B "${root}/out/build-zlib" "${target_options[@]}"
   cmake --build "${root}/out/build-zlib" --parallel 2 --target install
 
   # These are precisely the source groups used by upstream zig-bootstrap;
@@ -137,7 +130,7 @@ build() {
   # Keep every upstream LLVM backend: this x86 compiler must still be able to
   # cross-compile user programs for architectures other than x86.
   cmake -S "${root}/llvm" -B "${root}/out/build-llvm-target" \
-    "${llvm_options[@]}" "${cross_options[@]}" \
+    "${llvm_options[@]}" "${target_options[@]}" \
     -DLLVM_TARGETS_TO_BUILD=all \
     "-DLLVM_DEFAULT_TARGET_TRIPLE=${target}" \
     "-DLLVM_TABLEGEN=${host}/bin/llvm-tblgen" \
