@@ -2,7 +2,7 @@
 
 pkgname=fresh-editor
 pkgver=0.5.2
-pkgrel=1
+pkgrel=2
 pkgdesc='A lightweight, fast terminal-based text editor with LSP support and TypeScript plugins'
 url='https://sinelaw.github.io/fresh/'
 license=('GPL-3.0-or-later')
@@ -16,45 +16,24 @@ sha256sums=('1474c67bebb248e6e68c98c54a91a76212cc49d037e30ac5d20a35393ae1a043')
 
 _target=x86_64-unknown-linux-gnu
 
-_cross_env() {
-    [[ $CARCH == x86_64 ]] || { error "Unsupported package target: $CARCH"; return 1; }
-    # Use the image's installed Rust and target stdlib, not the source tree's
-    # rust-toolchain.toml (which would download into root-owned RUSTUP_HOME).
+_native_env() {
+    # Preserve the pinned toolchain and output path on the native runner.
     export RUSTUP_TOOLCHAIN=nightly-2026-08-12
     export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$srcdir/target}"
-
-    # QuickJS proc macros and the syntect/oniguruma syntax-pack generator run
-    # on the host. Only target libraries may use the x86_64 cross compiler.
-    export HOST_CC=gcc HOST_CXX=g++ HOST_AR=ar
-    local prefix=
-    if [[ $(uname -m) != x86_64 ]]; then
-        prefix=x86_64-linux-gnu-
-    fi
-    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="${prefix}gcc"
-    export CC_x86_64_unknown_linux_gnu="${prefix}gcc"
-    export CXX_x86_64_unknown_linux_gnu="${prefix}g++"
-    export AR_x86_64_unknown_linux_gnu="${prefix}ar"
-    # cc-rs combines generic and target flags; do not leak makepkg's x86
-    # flags into the native ARM build dependencies.
-    export CFLAGS_x86_64_unknown_linux_gnu="${CFLAGS_x86_64_unknown_linux_gnu:-${CFLAGS:-} ${CPPFLAGS:-}}"
-    export CXXFLAGS_x86_64_unknown_linux_gnu="${CXXFLAGS_x86_64_unknown_linux_gnu:-${CXXFLAGS:-} ${CPPFLAGS:-}}"
-    unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
-
-    # Both crates ship their C sources. Avoid probing host libraries or
-    # requiring a target liblzma/oniguruma development sysroot.
+    # Both crates ship their C sources; keep the existing static linkage.
     export LZMA_API_STATIC=1
     export RUSTONIG_SYSTEM_LIBONIG=0 RUSTONIG_STATIC_LIBONIG=1
 }
 
 prepare() {
     cd "fresh-$pkgver"
-    _cross_env
+    _native_env
     cargo fetch --locked --target "$_target"
 }
 
 build() {
     cd "fresh-$pkgver"
-    _cross_env
+    _native_env
     export FRESH_BUILD_CHANNEL=aur
     # Keep upstream's default plugins/runtime and the AUR's opt-in web UI.
     cargo build --frozen --release --package fresh-editor --bin fresh \
