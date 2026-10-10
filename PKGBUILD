@@ -1,19 +1,19 @@
 # Maintainer: Jason Papakostas <jason.papakostas@gmail.com>
 pkgname=captiveportalautologin-vith-git
-pkgver=r691.a96014f
-pkgrel=3
+pkgver=r694.000b352
+pkgrel=4
 pkgdesc='Automatically detect and log in to supported captive portals (vith fork)'
 arch=('any')
 url='https://git.n3t.work/vith/CaptivePortalAutoLogin'
 license=('unknown')
 depends=('java-runtime>=17' 'networkmanager' 'libnotify')
-makedepends=('git' 'java-environment>=17')
+makedepends=('git' 'jdk17-openjdk')
 provides=('captiveportalautologin' 'captiveportalautologin-git')
 conflicts=('captiveportalautologin' 'captiveportalautologin-git')
 source=("git+${url}.git#branch=main"
         'captiveportalautologin.service')
-b2sums=('SKIP'
-        '190ee5de87ceeaddf601177d68a4001363e68abe4b63189a5f7bba2765624fc3028919a28ddb6b16124c35a330a021aae5f23d1898ff75c8c6c2a95f1e3a0e0a')
+sha256sums=('SKIP'
+            'f89cc5d141c12f2715e8b3dc4bad155190dd5071a1bb3494f3994695d01c937b')
 
 pkgver() {
   cd CaptivePortalAutoLogin
@@ -22,7 +22,9 @@ pkgver() {
 
 build() {
   cd CaptivePortalAutoLogin
-  # JVM bytecode is architecture-independent; use the execution host's JDK.
+  # Use the native JDK matching the upstream Linux workflow and JVM target.
+  export JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+  export PATH="$JAVA_HOME/bin:$PATH"
   ./gradlew --no-daemon --max-workers="$(nproc)" :linux:shadowJar
 }
 
