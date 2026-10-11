@@ -1,4 +1,4 @@
-"""Exact source-only validation and ordinary protected automatic merge."""
+"""Exact source-only validation before an ordinary protected human Merge."""
 import argparse
 import os
 from pathlib import Path
@@ -94,37 +94,14 @@ def validate(number,base,head,directory,bootstrap=False):
         u.remove_verification_tree(old);u.remove_verification_tree(new)
 
 
-def finalize(number,base,head,bootstrap=False):
-    proof=authority(number,base,head,bootstrap)
-    jobs=u.api(u.route('/actions/runs/'+proof['run_id']+'/attempts/'+proof['run_attempt']+'/jobs?per_page=100'))
-    matches=[job for job in jobs['jobs'] if job.get('name')==f'Validate source PR {number} head {head} base {base}']
-    if jobs.get('total_count',len(jobs['jobs']))>100 or len(matches)!=1 or matches[0].get('conclusion')!='success':
-        raise ValueError('exact source validation job did not succeed')
-    states={s['context']:s['state'] for s in reversed(u.api(u.route('/commits/'+head+'/statuses')))}
-    if any(states.get(k)!='success' for k in ('verify','candidate-build','recipe-policy')):
-        raise ValueError('required exact-head statuses missing')
-    authority(number,base,head,bootstrap)
-    result=u.api(u.route('/pulls/'+str(number)+'/merge'),'PUT',{'sha':head,'merge_method':'merge'})
-    if not result.get('merged') or not u.SHA.fullmatch(result.get('sha','')):
-        raise ValueError('expected-head merge failed')
-    # Actions-token merges do not trigger push workflows; resume publication only.
-    u.api(u.route('/actions/workflows/publish.yml/dispatches'),'POST',{'ref':'main','inputs':{'accepted_sha':result['sha']}})
-    return result
-
 
 def cli():
     parser=argparse.ArgumentParser()
     parser.add_argument('--pr',required=True,type=int);parser.add_argument('--base',required=True)
-    parser.add_argument('--head',required=True);parser.add_argument('--directory')
+    parser.add_argument('--head',required=True);parser.add_argument('--directory',required=True)
     parser.add_argument('--bootstrap',action='store_true')
-    parser.add_argument('--finalize',action='store_true')
     args=parser.parse_args()
-    if args.finalize:
-        finalize(args.pr,args.base,args.head,args.bootstrap)
-    else:
-        if not args.directory:
-            parser.error('--directory is required for validation')
-        validate(args.pr,args.base,args.head,args.directory,args.bootstrap)
+    validate(args.pr,args.base,args.head,args.directory,args.bootstrap)
 
 
 if __name__=='__main__':cli()

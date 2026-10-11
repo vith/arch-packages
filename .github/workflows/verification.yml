@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Exact main PR number for automatic source-only verification
+        description: Exact main PR number for source-only verification before human Merge
         required: true
         type: string
       expected_head:
@@ -127,30 +127,6 @@ jobs:
           path: ${{ env.ARCH_WORK }}/evidence/source-review-evidence.json
           if-no-files-found: error
           retention-days: 90
-  source-merge:
-    needs: source-validation
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      actions: write
-      statuses: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ inputs.bootstrap && inputs.expected_head || inputs.expected_base }}
-          persist-credentials: false
-      - name: Merge exact validated head through ordinary branch protection
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-          EXPECTED_HEAD: ${{ inputs.expected_head }}
-          EXPECTED_BASE: ${{ inputs.expected_base }}
-          BOOTSTRAP: ${{ inputs.bootstrap }}
-        run: |
-          args=()
-          if [ "$BOOTSTRAP" = true ]; then args+=(--bootstrap); fi
-          python3 -m tools.source_review --pr "$PR_NUMBER" --base "$EXPECTED_BASE" --head "$EXPECTED_HEAD" --finalize "${args[@]}"
   regression-tests:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest

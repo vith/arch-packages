@@ -1,45 +1,72 @@
-# Arch packages
+# Arch packages: prerequisite operational instructions
 
-This project is the standalone `vith/arch-packages` GitHub repository.
+This is the standalone `vith/arch-packages` repository. This prerequisite changes only main-PR source routing and the end of source-only verification. It does not install the core build-before-merge worker model. The old recipe approval, worker, cache, checkpoint, and output-recovery contracts remain in force until the later coherent cutover.
 
-- Manage GitHub repository settings, environments, permissions, and signing secrets through `opentofu/`. Use `tools/tofu.sh plan -out=github.tfplan`, inspect the plan, then `tools/tofu.sh apply github.tfplan`. Verify a subsequent plan has no changes.
-- The wrapper uses the existing GitHub CLI login. Never print credentials. State and saved plans must remain encrypted and gitignored; recovery files live under `~/.local/state/arch-packages/` outside Git.
-- Workflow and recipe changes are ordinary version-controlled source files. Do not use repository-file resources to overwrite source history.
-- Statically freeze exact control/base/head/tree, source lock, policy and metadata claims without executing recipes. Persist the original candidate JSON with accepted-main OIDC prebuild provenance independently of compilation or artifact expiry. Only non-trivial PKGBUILD changes require human approval; independently validate unchanged/enrolled-literal PKGBUILD transitions automatically. Before any recipe invocation, workers must independently verify that automatic authorization or genuine protected `recipe-review` approval bound to the exact candidate/run/attempt; stored booleans or passing statuses are not authority.
-- Build each authorized input once in its own independent GitHub-hosted x86_64 workflow run with accepted-main tools and no per-worker environment approval. Candidate coordination dispatches approved build workers and must print child links and state transitions live; worker build stdout must stream while remaining in the receipt. Publication never dispatches any worker, including transport recovery, and never compiles.
-- All approved build workers restore/save compatible trusted dependency/compiler caches, including failed-compilation progress; do not exclude candidates or split caches by publication kind. Unapproved code must never populate trusted caches. Compiler caches are not durable package output.
-- Protect the original compilation outcome with a root-owned checkpoint beginning before the first recipe execution. A successful compilation remains successful after metadata/runtime/copy/upload/attestation/storage failure. Recover its exact original bytes; if missing, refuse concretely rather than rebuilding. Only an authenticated actual failed compilation permits a retry; canceled, started or unknown outcomes require recovery or refusal.
-- Retain raw output, canonical context and bound GitHub OIDC attestation bundle in durable draft `build-<inputdigest>` storage. These attestations are not pacman signatures, and GitHub assets are not platform-immutable: verify bound asset IDs, size/hash, certificate/workflow/run/attempt, original source/tree/metadata and runtime evidence before use. Explicit transport recovery executes no recipe, uses no compiler cache and has a distinct signer while preserving the original producer. Publication consumes authenticated existing bytes or unchanged signed content, never recasts original build evidence.
-- Never compile packages on the workstation. Local Python tests, shell syntax checks, OpenTofu formatting and validation are appropriate.
-- Isolated source tests must receive the complete exact tracked-source snapshot, including workflow/control files, never `.git`, ignored state or credentials. Main verification exports `GITHUB_SHA` with `git archive`; container test fixtures use the explicitly created `/verify/.work/tmp`, not `/tmp`.
-- Fetch source Git objects directly from pinned upstream identities. Do not publish Git source bundles.
-- Recipe proposals target protected `pkg/*` branches and contain only package-root payload. Only new/non-trivial PKGBUILD code requires the exact-head `recipe-review` checkpoint before execution. Unchanged PKGBUILD and enrolled literal version/pkgrel/checksum changes use independently reconstructed automatic authorization; auxiliary payload, metadata, policy or retirement alone must not add human gates. Invalid source/metadata transitions fail rather than ask for irrelevant approval. After genuine authorization and successful validation, merge automatically through normal exact-head branch protection; no separate human merge. Never approve recipe-review on the user's behalf.
-- `main` records exact accepted recipe merges through independently reconstructed automatic bookkeeping, verifying reviewed-head-to-accepted-merge parents/tree without recipe execution or worker dispatch. Controller, workflow, policy, infrastructure and documentation changes validate and merge automatically, without code-review or bootstrap-admission approval. Source-only validation binds exact control/head/PR/workflow/run/attempt, proves zero changed package inputs, then runs exact-head tests isolated without credentials. Preserve the retired code-review environment ID and actual historical approval history for original producer verification, but never issue new code-review authority.
-- Automatic non-bookkeeping main source candidates must have an independently observed same-repository head. Reject external, missing or null head repositories before saving candidate authority and again when reconstructing automatic authorization; do not add a human source gate. Native recipe and independently proven bookkeeping paths retain their distinct validation.
-- New candidate preparation uses current trusted `main` tools; reuse of compatible approved output preserves its original control SHA. Keep control SHA, recipe base/head/tree and accepted merge identities distinct; durable receipts alone are not build or approval authority.
-- Git packages follow their configured branch or tag when discovering updates; freeze the resolved commit only for that build's verification and publication, never as a permanent update freeze. Frozen Git rewrites must use `MAKEPKG_GIT_CONFIG` and matching `GIT_CONFIG_SYSTEM`, with `GIT_CONFIG_GLOBAL=/dev/null`: makepkg replaces the global configuration channel, so do not disable system config. Keep the config and source mirrors root-owned and read-only during recipe execution.
-- Run legacy reconciliation through trusted `update.yml` dispatch with `migrate_pr`. Fresh recipe execution still requires exact authorization and must not repeat successful compilation; never transfer old approvals, directly synchronize protected recipe tips, or sign with a human token pretending to be the Actions bot.
-- Package payload changes need a version or `pkgrel` bump. Bookkeeping, documentation, tooling, image and controller-only changes select zero package compilations. Pending unchanged approved base/head inputs must reuse successful original bytes and producer provenance across compatible control advancement; ordinary upstream/AUR ref advancement must not invalidate frozen approved inputs. A deliberate `pkgrel` bump requests a new authorized build.
-- Never apply a copied local OpenTofu state from another checkout; use the canonical encrypted state and inspect saved plans before applying them.
-- Limit changes to this project. Other software repositories and infrastructure have independent ownership and state.
+## Ownership and administration
 
-## Initial automatic source-workflow cutover
+- Limit changes to this project. The OMP fork, n3t infrastructure, other repositories, and client machines have independent ownership.
+- Use the assigned worktree; do not switch/reset/edit the user-owned primary checkout. Persistent task scratch belongs under `~/.local/state/omp/work/`, not `/tmp`. Administrative recovery files remain under their established `~/.local/state/arch-packages/` paths outside Git.
+- Never compile packages on the workstation. Local Python tests, shell syntax/diff checks, and applicable OpenTofu checks are appropriate. Task agents skip checks mid-flight; the parent runs checks after integration.
+- Task agents do not commit, push, mutate remotes, dispatch workflows, approve environments, or apply infrastructure. Never fabricate statuses or impersonate automation with a human token.
+- Manage repository settings, environments, permissions, and signing secrets through `opentofu/`. Use the canonical encrypted state and inspected saved plans. Never apply copied state from another checkout or print credentials.
+- The wrapper uses the existing GitHub CLI login. State and plans stay encrypted/gitignored; private signing and passphrase files stay outside Git. Workflow and recipe changes are ordinary version-controlled files, not repository-file resources.
+- All Git fetches disable recursive submodules. No new source-submodule scheme, dependency scheduler, source-reference rewriting just for tracking, or unrelated repository changes.
+- Write documentation slowly against the interim source. Update existing files; do not add a changelog or describe the later core contract as already active.
 
-Freeze accepted main as `C` and the final source-only PR head as `H`. Create or
-update the PR against an owned staging base pinned to `C`. Mark it ready while
-still targeting staging, then retarget main without changing `H`: the old
-dispatcher reacts to opened/synchronize/reopened/ready events even for drafts,
-but not edited events. Keep the exact-PR dispatch guard; do not bypass history or
-branch protection.
+## Narrow source-routing prerequisite
 
-Dispatch `verification.yml` with the exact PR/base/head and `bootstrap=true`
-only from the direct-commit `source-review-<H>` tag. The managed
-`source-review-immutable` ruleset permits creation but forbids update/deletion,
-without bypass actors. Bootstrap selects the immutable initial controller, not
-a human approval requirement. Git-object scope and actual workflow identity are
-checked before checkout, and unchanged package content is verified before and
-after isolated exact-head tests. Successful real checks permit ordinary protected
-automatic merge and explicit publication dispatch; Actions-token merges do not
-trigger push workflows. Publication reuses existing bytes and never compiles.
-Never fabricate statuses, impersonate automation, or treat local tests as hosted
-deployment acceptance.
+- Main-target `pull_request_target` events are metadata only. `candidate-dispatch.yml` checks out the protected event base `${{ github.sha }}` with `persist-credentials: false`, never the proposed PR checkout.
+- The `dispatch` job skips event drafts. Its fresh PR read also requires open, non-draft, same-repository, main-target metadata. If the captured PR base is not current main, log the skip and dispatch nothing. Do not rebase the human branch automatically.
+- `unchanged_git_scope(base, head)` compares exact Git tree scope before candidate code executes. Truncated/incomplete trees, missing enrollment/workflow data, and altered package scope cannot use source-only verification.
+- Unchanged package scope dispatches the existing `verification.yml` flow on main with exact PR, head, and base. Package-changing scope retains the existing `candidate.yml` route. Recipe-root branches still require writer/reconciliation/manual handoffs because they contain no workflows.
+- Source-only verification binds the actual workflow run/attempt/ref/path/title, exact same-repository PR, current main base, head, and unchanged package scope before checkout. Normal source control comes from the exact protected base; only the narrowly defined bootstrap uses the immutable head tag.
+- Source tests receive the complete exact tracked snapshot, including workflows/control files, but no `.git`, ignored state, or credentials. Test in the pinned baseline Arch sandbox. Recheck authority before and after execution.
+- Successful source validation writes evidence and the existing `verify`, `candidate-build`, and `recipe-policy` contexts. It ends there and waits for the human's ordinary protected **Merge**. It does not merge, dispatch publication, or run a source finalizer. The source CLI only validates, with `--pr`, `--base`, `--head`, `--directory`, and optional `--bootstrap`.
+- Do not add a source-merge job or helper. Do not fabricate passing checks to install the prerequisite. Local tests are not hosted acceptance.
+
+## Old recipe and worker contracts retained
+
+- Statically freeze exact control/base/head/tree, source lock, policy, and metadata without executing recipes. Retain original candidate JSON and accepted-main OIDC prebuild provenance independently of compilation/artifact expiry.
+- Before recipe invocation, independently verify genuine exact candidate/run/attempt protected `recipe-review` approval for new/non-trivial PKGBUILD changes, or reconstruct eligible automatic authorization. Stored booleans and passing statuses are not authority. Never approve recipe-review on the user's behalf.
+- Recipe PRs target protected `pkg/*` and contain package-root payload. Unchanged executable code and enrolled literal version/`pkgrel`/checksum transitions can qualify automatically after independent source/metadata checks. Invalid inputs fail, not prompt for irrelevant approval. Existing authorized recipe merges remain automatic through normal protection; this prerequisite does not change that policy.
+- Build each authorized input once in an independent hosted x86_64 worker with accepted-main tools and no per-worker environment approval. The coordinator does not compile; it prints child links/state transitions, and worker stdout streams while remaining in the receipt.
+- Retain the old root-owned compilation checkpoint before first recipe execution. A successful compilation followed by metadata/runtime/copy/upload/attestation/storage failure still needs original-byte recovery, not another compilation. Only authenticated actual failed compilation permits retry. Started/canceled/unknown outcomes require recovery or refusal.
+- Keep old durable draft `build-<inputdigest>` output, context, and bound OIDC bundle. Verify asset descriptors, size/hash, certificate/workflow/run/attempt, original source/tree/metadata/runtime evidence before reuse. GitHub assets are not platform-immutable and attestations are not pacman signatures.
+- Old explicit transport recovery executes no recipe, uses no compiler cache, and preserves the original producer with its distinct signer. Do not replace old recovery behavior with the later whole-worker model in this prerequisite.
+- Keep compatible trusted dependency/compiler cache restore/save, including failed compilation progress, for approved workers. Unapproved code must not populate trusted caches. Cache is not durable package output.
+- Keep existing generic and OMP runtime checks in this interim worker/consumer system. Their removal belongs to the later atomic core cutover, not this prerequisite.
+
+## Isolation, acceptance, and publication retained
+
+- API credentials/OIDC stay in trusted host tools outside recipe containers. Run recipes unprivileged in disposable pinned Arch containers. No host root/home/checkout/credentials or Docker socket mounts; only an authenticated job-owned package cache may bind.
+- Dependencies resolve official Arch first, then signed `vith-gh`, then signed n3t `vith-arch`. Both custom databases and packages require signatures. Freeze latest-release redirects to fixed dependency snapshots; consumer proof uses its selected snapshot. No publication signing credentials enter either.
+- Git updates follow configured branches/tags. Per-build frozen identity is not a permanent update freeze. Retain the interim frozen Git configuration: `MAKEPKG_GIT_CONFIG` and matching `GIT_CONFIG_SYSTEM`, with `GIT_CONFIG_GLOBAL=/dev/null`; keep config and mirrors root-owned/read-only. Do not disable the system channel that makepkg needs.
+- Accepted recipe bookkeeping verifies reviewed head against accepted merge parents/tree, without another recipe execution or worker. Documentation, tooling, image, controller, and bookkeeping select zero package compilations. Preserve exact successful output/provenance across compatible controller movement; bump `pkgrel` to deliberately request new package contents.
+- Legacy reconciliation uses trusted `update.yml` with `migrate_pr`. Do not transfer old approvals or directly synchronize protected recipe tips. Targeted `reconcile_pr` skips unrelated discovery/proposal work.
+- Publication retains its existing byte collection/recovery checks, relay, signatures, public readback, and rollback. It never dispatches workers or compiles, including transport recovery. Preserve original provenance, signed snapshots, filenames, source/license assets, and historical enrollment.
+- Manual signed consumer proof remains separate from publication/client installation. Its success does not prove interactive live GNOME/Wayland capture or recording.
+- Provision `libarchive-tools` before archive approval/recovery handling. Negotiate Actions ZIP and release bytes separately. Storage redirects never receive API authorization tokens.
+- The existing historical lookup/scan behavior is still an interim caveat. Do not claim the prerequisite fixes state batching, duplicate dispatch, failed-worker lifecycle, or scan removal.
+
+## Immutable initial installation
+
+Freeze accepted main as `C` and the final source-only PR head as `H`. Keep unchanged package scope. If staging is needed, create/update against an owned staging base pinned to `C`, mark ready there, then retarget main without changing `H`. The dispatcher subscribes to opened/synchronize/reopened/ready events, not edited; do not rely on retargeting to dispatch. Do not bypass protected history or the exact-PR guard.
+
+For initial installation only, dispatch `verification.yml` with exact PR/base/head and `bootstrap=true` from the direct-commit tag `source-review-<H>`. The managed `source-review-immutable` ruleset permits creation but forbids update/deletion with no bypass actors. The actual tag must point directly to `H`; a moving branch or annotated tag is not a substitute.
+
+The tag selects the initial controller, not a human environment approval. Read-only object/run identity checks occur before checkout; package scope is checked before and after isolated tests. Source validation then waits for human normal Merge. Keep this immutable bootstrap path intact until the later coherent core cutover.
+
+## Evidence checkpoint and delivery boundary
+
+Prerequisite checks observed: 284 tests passed in 35.155 seconds with one skip; shell syntax and diff checks passed. These are local checks, not a protected hosted merge or rollout claim.
+
+The selected sequence is this small prerequisite, then one atomic core PR with reviewable component commits. Do not apply the old-gate removal plan during this prerequisite. OpenTofu fmt/validate passed and an encrypted saved plan was inspected with 0 additions, 0 changes, and 3 destructions for the `recipe_review` and `code_review` environments and the `source_review` ruleset. It is **not applied**. Removal waits until coherent protected core code is installed, followed by a no-change plan.
+
+User-token API access is not App quota recovery. Read-only smoke is not state migration, signing, promotion, or live-controller acceptance. Keep deployment and acceptance claims separate and remove stale dated observations rather than presenting them as current state.
+
+
+## Repository prerequisites and safety
+
+Write documentation slowly and carefully. Use the historical client setup record without claiming a fresh check of the current laptop. That record used `/etc/pacman.conf`, the `[arch-packages]` database name, and the latest-release URL, with `Required` trusted signatures for both packages and databases. The recorded fingerprint is `9C293ABB1F701DA04BA2C0D5711FC9BDDC5AF617`. The README may name `vith-gh` for newer snapshots; keep the historical database name when describing the recorded setup.
+
+Other existing repositories supply more packages. Never remove them or infer that this repository replaces them. Installed packages must not be downgraded to match it. Adding this repository grants no permission to upgrade, downgrade, or remove laptop packages. The recorded setup synced only this repository and changed no installed packages. The original configuration and inventory backup is recorded at `~/.local/state/arch-packages/laptop-setup/`. These are historical facts, not newly verified workstation state.
