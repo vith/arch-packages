@@ -148,7 +148,7 @@ Keep required contexts `verify`, `recipe-policy`, and `candidate-build`. `recipe
 - Bookkeeping selects no worker and needs no second human approval or compilation.
 - Human recipe merges are picked up through targeted or scheduled reconciliation. Explicit handoffs remain where Actions-token merges suppress push events.
 
-Use one candidate main-source-test route for documentation, controller, image, and bookkeeping with zero package workers. Remove the overlapping manual source-review workflow route. Executable main code still requires human Merge.
+Use one candidate main-source-test route for documentation, controller, image, and bookkeeping with zero package workers. Remove the overlapping manual source-review workflow route.
 
 Source verification markers bind base and PR, with head supplied by the status SHA. Same running/successful/failed inputs are not redispatched. Terminal failure needs explicit retry. Source preparation exceptions are reported only after a fresh-identity check; stale candidates cannot fail a replacement head. Captured bases behind main skip without blocking other work or rebasing human branches.
 
