@@ -1,14 +1,14 @@
 # Arch packages: operational instructions
 
-This is the standalone `vith/arch-packages` repository. Core PR #67 merged on protected main; signing and protected merges are unchanged. Live acceptance and publication remain incomplete.
+This is the standalone `vith/arch-packages` repository. Signed snapshot promotion and hosted installation verification have passed; live rollback and the remaining operational scenarios are still open.
 
 ## Ownership and work discipline
 
 - Limit changes to this repository. The OMP fork, n3t infrastructure, other software repositories, and client machines have separate owners.
-- Use the assigned worktree. Do not switch, reset, or edit the user-owned primary checkout. The implementation worktree is `/home/vith/.local/state/arch-packages/worktrees/pr-build-pipeline`, on `refactor/pr-build-pipeline`, originally based on main `f5b1f735737944150331d06e0b05506f5c7d6957`.
+- Use the assigned worktree. Do not switch, reset, or edit the user-owned primary checkout.
 - Persistent task scratch belongs under `~/.local/state/omp/work/`, not `/tmp`. Keep administrative recovery files under their established `~/.local/state/arch-packages/` paths, outside Git. Workflow scratch follows the paths declared in YAML.
 - Never build packages or run package consumers on the workstation. Local Python tests, shell syntax checks, diff checks, and applicable OpenTofu checks are allowed. Task agents skip builds, lint, tests, and formatters mid-flight; the parent integrates changes and runs checks afterward.
-- Task agents do not commit, push, mutate remotes, dispatch workflows, approve environments, or apply infrastructure. The human owns protected non-trivial merges. Never approve or merge on the user's behalf, fabricate statuses, or impersonate the Actions bot with a human token.
+- Task agents do not commit, push, mutate remotes, dispatch workflows, approve environments, or apply infrastructure. The assistant may make and merge authorized internal repository changes through ordinary protected Merge. Only external PKGBUILD changes require user approval. Never fabricate statuses, impersonate the Actions bot with a human token, or approve external reviews on the user's behalf.
 - Author documentation slowly and check each statement against source and evidence. Update the existing README, guide, plan, and operational instructions; do not add a changelog or parallel live explanation.
 - All Git fetches disable recursive submodules. Do not turn source dependencies into new submodules or rewrite source references merely for tracking.
 
@@ -16,7 +16,7 @@ This is the standalone `vith/arch-packages` repository. Core PR #67 merged on pr
 
 - Statically prepare an exact same-repository recipe PR before execution. Keep trusted controller identity, recipe predecessor, recipe head/tree, request, actual producer, and accepted merge distinct.
 - Build the exact recipe PR before human approval. No new-build `recipe-review`, `code-review`, or `source-review` environment gate belongs in the core route.
-- New recipes, first import conversions, non-trivial changes, and executable recipe changes require the human's ordinary protected **Merge** after a successful build. Trusted classification alone may select automatic merge for independently eligible literal changes. An arbitrary caller flag, stored boolean, or passing status cannot change merge policy.
+- A human-classified PR stays open until ordinary protected Merge, which the assistant may perform for authorized internal changes. External PKGBUILD changes require user approval. Trusted classification alone may select automatic merge for independently eligible literal changes. An arbitrary caller flag, stored boolean, or passing status cannot change merge policy.
 - Automatic recipe merge needs the whole registered worker attempt to finish successfully and retain its durable original output. Recheck the current PR head before finalization or merge. Files, an attestation, or a successful internal build step do not establish whole-worker success.
 - A worker failure anywhere is a failed attempt. Do not salvage its output, scan older runs, use compilation checkpoints, or dispatch transport-recovery workers. An explicit failed retry reserves a fresh request and may compile again. Cancellation, timeout, missing registration, and ambiguous state are not success.
 - Successful exact output is reused for acceptance and inclusion. Coordinator, controller, or bookkeeping movement alone does not request another compilation. Missing successful output is an error; inclusion never silently substitutes a rebuild.
@@ -79,13 +79,13 @@ Observed evidence:
 - Hosted read-only smoke [38081926361](https://github.com/vith/arch-packages/actions/runs/38081926361) passed both jobs: native fixture 57 seconds, historical consumers 2 minutes 40 seconds. It did not deploy the controller or publish anything.
 
 - [Prerequisite PR #66](https://github.com/vith/arch-packages/pull/66) and [core PR #67](https://github.com/vith/arch-packages/pull/67) were human-merged. README-only [PR #68](https://github.com/vith/arch-packages/pull/68) auto-merged: [candidate 38147850295](https://github.com/vith/arch-packages/actions/runs/38147850295) succeeded; the package-worker step was skipped.
-- Unmerged descriptor-verifier fix: 3 meaningful RED/GREEN boundary regressions; 308 tests passed in 21.713 seconds. The actual CLI with the fix rejects the old schema-2 descriptor with `ValueError: invalid direct build descriptor`.
-- Old OMP [worker 37979975267](https://github.com/vith/arch-packages/actions/runs/37979975267) failed; no salvage.
-- Fresh OMP pkgrel 2 [PR #69](https://github.com/vith/arch-packages/pull/69), head `a8be88808739a0a4bbc024e113b88cb075805f80`: [worker 38169157502](https://github.com/vith/arch-packages/actions/runs/38169157502) succeeded through all steps in 15 minutes 29 seconds; [candidate 38168988462](https://github.com/vith/arch-packages/actions/runs/38168988462) succeeded. All three exact-head checks succeeded; the PR remains open.
+- [PR #70](https://github.com/vith/arch-packages/pull/70) and [PR #69](https://github.com/vith/arch-packages/pull/69) merged through normal branch protection.
+- [Original worker 38169157502](https://github.com/vith/arch-packages/actions/runs/38169157502) succeeded in 15m29s; its schema-3 receipt and original producer identity were retained.
+- [Generated acceptance PR #71](https://github.com/vith/arch-packages/pull/71) automatically merged as `b77c257a421d14b6f3fd3c362b96290ac8b9a21e`. Local verification passed 308 tests in 21.713 seconds, including three boundary tests; the unsupported-descriptor regression was verified RED/GREEN. [Source candidate 38171124912](https://github.com/vith/arch-packages/actions/runs/38171124912) succeeded with zero package workers.
+- [Publication 38173038296](https://github.com/vith/arch-packages/actions/runs/38173038296) authenticated the original output archive, attestation, and bytes, and promoted signed snapshot `snapshot-b77c257a421d14b6f3fd3c362b96290ac8b9a21e-38173038296-1` to `latest`.
+- [Hosted consumer 38178456012](https://github.com/vith/arch-packages/actions/runs/38178456012) succeeded: every enrolled package installed with required signatures in a disposable Arch root.
 
-PR #69 is pkgrel-only but human-classified. Its successful checks do not establish testing of a non-trivial executable recipe change. Source-verifier fix [PR #70](https://github.com/vith/arch-packages/pull/70) requires exact hosted validation followed by a human protected Merge.
-
-No new publication, signed installation, promotion, rollback, or warm-cache proof. Keep all unproved acceptance boundaries open.
+Not yet demonstrated: live rollback, warm-cache behavior, retry/concurrency, changed-head handling, corrupt-output handling, and an external non-trivial recipe scenario. PR #69 changed only `pkgrel`; its normal merge does not prove review of an external executable recipe. Keep these boundaries open.
 
 
 ## Repository setup safety
