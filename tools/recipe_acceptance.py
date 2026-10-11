@@ -257,6 +257,10 @@ def verify_accepted_build(record, package, accepted_main):
     if len(matches) != 1:
         raise ValueError('accepted original build package mapping differs')
     frozen = matches[0]
+    verified = build_store.lookup({**package, 'build': descriptor}, record=original)
+    if verified is None or verified != descriptor:
+        raise ValueError('accepted original durable descriptor differs or is missing')
+    recipe_candidates.verify_result(original, descriptor)
     actual = descriptor['evidence']['packages'][0]
     verify_native_evidence(original, descriptor['evidence'])
     if (package.get('lock') != actual['source_lock']
@@ -269,10 +273,6 @@ def verify_accepted_build(record, package, accepted_main):
                         ('upstream/' + name + '.json', receipt['provenance'])]:
         if manifest.get(path) != ('100644', 'blob', blob_sha(value)):
             raise ValueError('accepted main source state differs from receipt')
-    recipe_candidates.verify_result(original, descriptor)
-    verified = build_store.lookup(package, record=original)
-    if verified is None or verified != descriptor:
-        raise ValueError('accepted original durable descriptor differs or is missing')
     return {'record': original, 'acceptance': receipt,
             'mapping': {'head': original['head'], 'accepted': A,
                         'recipe_tree': original['recipe_tree']}}
