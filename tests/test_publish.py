@@ -1,3 +1,7 @@
+import base64
+from contextlib import ExitStack
+import os
+import re
 import copy
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -419,6 +423,152 @@ class PublicationBoundaries(unittest.TestCase):
     def test_signed_catalog_destination_cannot_redirect_to_arbitrary_host(self):
         with self.assertRaisesRegex(ValueError,'immutable repository'):
             publish.previous_catalog('https://attacker.example/catalog.json',self.root,self.root/'ring')
+
+
+class AcceptedDescriptorPlanning(unittest.TestCase):
+    """Exercise the real acceptance/state/worker contract at publication planning."""
+    def setUp(self):
+        from tools import build_store, recipe_acceptance, recipe_candidates, recipe_gate, recipe_state, update
+        self.acceptance = recipe_acceptance
+        self.state = recipe_state
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch.dict(os.environ, {
+            'GITHUB_REPOSITORY': 'owner/repo',
+            'GITHUB_RUN_ID': '100', 'GITHUB_RUN_ATTEMPT': '1'}))
+        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.stack.enter_context(patch.object(publish, 'ROOT', self.root))
+        self.main, self.accepted, base, head, tree = (c * 40 for c in 'acdef')
+        expected = 'pkgbase = demo\n\tpkgver = 1\n\tpkgrel = 1\n\tarch = x86_64\npkgname = demo\n'
+        actual = expected.replace('pkgver = 1', 'pkgver = 2')
+        policy = {'pkgbase': 'demo', 'outputs': [{'name': 'demo', 'arch': 'x86_64'}]}
+        planned_lock = {'schema': 1, 'version': '1-1', 'sources': []}
+        actual_lock = {'schema': 1, 'version': '2-1', 'sources': []}
+        frozen = {'pkgbase': 'demo', 'recipe_commit': head, 'tree_sha': '1' * 64,
+                  'input_digest': '2' * 64, 'expected_srcinfo': expected,
+                  'policy': policy, 'lock': planned_lock}
+        self.record = {
+            'schema': 1, 'repository': 'owner/repo', 'pkgbase': 'demo',
+            'base': base, 'head': head, 'recipe_base': '9' * 40, 'recipe_tree': tree,
+            'pr_number': 7, 'image': 'ghcr.io/archlinux/archlinux@sha256:' + '3' * 64,
+            'recipe_pins': {'demo': head}, 'previous_recipe_pins': {'demo': '9' * 40},
+            'provenance': {'watchers': []}, 'packages': [frozen]}
+        self.record['request_id'] = recipe_candidates.request_id(self.record)
+        producer = {'run_id': '200', 'run_attempt': '1', 'head_sha': base,
+                    'path': build_store.WORKFLOW, 'pkgbase': 'demo'}
+        native = {'pkgbase': 'demo', 'recipe_commit': head, 'tree_sha': frozen['tree_sha'],
+                  'request_input_digest': frozen['input_digest'], 'input_digest': '4' * 64,
+                  'harness_sha': '5' * 64, 'run_id': '200', 'run_attempt': '1',
+                  'metadata': {**recipe_gate.parse_srcinfo(actual), 'srcinfo': actual,
+                               'dynamic_pkgver': True},
+                  'source_lock': actual_lock,
+                  'files': [{'name': 'demo', 'arch': 'x86_64', 'version': '2-1',
+                             'filename': 'demo-2-1-x86_64.pkg.tar.zst', 'sha256': '6' * 64}]}
+        evidence = {key: copy.deepcopy(self.record[key]) for key in (
+            'schema', 'repository', 'base', 'head', 'request_id', 'image',
+            'recipe_pins', 'previous_recipe_pins')}
+        evidence.update({'producer': producer, 'run_id': '200', 'run_attempt': '1',
+                         'harness_sha': native['harness_sha'], 'packages': [native]})
+        self.descriptor = {
+            'schema': 3, 'request_id': self.record['request_id'], 'pkgbase': 'demo',
+            'input_digest': frozen['input_digest'], 'record': self.record, 'producer': producer,
+            'release': {'id': 10, 'tag_name': 'build-' + self.record['request_id'],
+                        'target_commitish': base},
+            'asset': {'id': 11, 'name': 'unsigned.tar', 'size': 10240, 'sha256': '7' * 64},
+            'attestation': {'id': 12, 'name': 'attestation.jsonl', 'size': 100,
+                            'sha256': '8' * 64,
+                            'signer': {key: producer[key] for key in (
+                                'run_id', 'run_attempt', 'head_sha', 'path')}},
+            'evidence_sha256': recipe_acceptance.digest(evidence), 'evidence': evidence}
+        self.receipt = {
+            'schema': 1, 'kind': 'recipe-acceptance', 'repository': 'owner/repo',
+            'pkgbase': 'demo', 'candidate_base': base, 'accepted': self.accepted,
+            'candidate_digest': recipe_candidates.candidate_digest(self.record),
+            'build': self.descriptor, 'lock': actual_lock, 'policy': policy,
+            'provenance': self.record['provenance'],
+            **{key: self.record[key] for key in ('recipe_base', 'head', 'recipe_tree', 'pr_number')}}
+        self.plan = {'head': self.main, 'packages': [{
+            'pkgbase': 'demo', 'recipe_commit': self.accepted, 'recipe_dir': 'recipes/demo',
+            'input_digest': 'a' * 64, 'lock': actual_lock, 'policy': policy,
+            'metadata': recipe_gate.parse_srcinfo(expected), 'reuse': False}]}
+        recipe = self.root / 'recipes/demo'
+        recipe.mkdir(parents=True)
+        (recipe / '.SRCINFO').write_text(expected)
+        self.worker_conclusion = 'success'
+        self.stack.enter_context(patch.object(update, 'ref_head', return_value='b' * 40))
+        self.stack.enter_context(patch.object(update, 'api', side_effect=self.api))
+        forbidden = AssertionError('planning must not download worker/package bytes')
+        self.stack.enter_context(patch.object(build_store, 'download_asset', side_effect=forbidden))
+        self.stack.enter_context(patch.object(build_store, 'download_api', side_effect=forbidden))
+        self.stack.enter_context(patch.object(publish.github_api, 'download', side_effect=forbidden))
+
+    def api(self, endpoint, method='GET', data=None, **kwargs):
+        if endpoint == 'graphql':
+            rows = {}
+            for alias, path in re.findall(r'(r\d+): object\(expression: "[^":]+:([^"]+)"\)', data['query']):
+                namespace, key = path.removesuffix('.json').split('/')
+                if key != self.record['request_id']:
+                    raise AssertionError('unexpected historical state lookup')
+                value = {'build-request': self.record, 'build-result': self.descriptor}[namespace]
+                raw = json.dumps({'schema': 1, 'digest': self.state.digest(value), 'value': value})
+                rows[alias] = {'__typename': 'Blob', 'byteSize': len(raw.encode()),
+                               'isBinary': False, 'text': raw}
+            return {'data': {'repository': rows}}
+        prefix = '/repos/owner/repo'
+        if endpoint == prefix + '/git/commits/' + self.main:
+            return {'tree': {'sha': 'c' * 40}}
+        if endpoint == prefix + '/git/trees/' + 'c' * 40 + '?recursive=1':
+            leaves = {
+                'recipes/demo': ('160000', 'commit', self.accepted),
+                **{path: ('100644', 'blob', self.acceptance.blob_sha(value))
+                   for path, value in [('acceptance/demo.json', self.receipt),
+                                       ('inputs/demo.json', self.receipt['lock']),
+                                       ('upstream/demo.json', self.receipt['provenance'])]}}
+            return {'tree': [{'path': path, 'mode': row[0], 'type': row[1], 'sha': row[2]}
+                             for path, row in leaves.items()], 'truncated': False}
+        if endpoint == prefix + '/git/blobs/' + self.acceptance.blob_sha(self.receipt):
+            return {'encoding': 'base64', 'content': base64.b64encode(
+                publish.github_api.canonical(self.receipt)).decode()}
+        if endpoint == prefix + '/git/commits/' + self.accepted:
+            return {'sha': self.accepted, 'tree': {'sha': self.record['recipe_tree']},
+                    'parents': [{'sha': self.record['recipe_base']}, {'sha': self.record['head']}]}
+        if endpoint == prefix + '/actions/runs/200/attempts/1':
+            if self.descriptor['schema'] != 3:
+                raise AssertionError('unsupported descriptors must not consult worker history')
+            return {'id': 200, 'run_attempt': 1, 'status': 'completed',
+                    'conclusion': self.worker_conclusion, 'head_sha': self.record['base'],
+                    'path': '.github/workflows/build-package.yml', 'head_branch': 'main',
+                    'event': 'workflow_dispatch', 'repository': {'full_name': 'owner/repo'}}
+        raise AssertionError('unexpected transport: ' + endpoint)
+
+    def test_current_descriptor_preserves_original_producer_and_actual_native_version(self):
+        original = copy.deepcopy(self.descriptor)
+        publish.bind_accepted_builds(self.plan)
+        package = self.plan['packages'][0]
+        self.assertEqual(package['build'], original)
+        self.assertEqual(package['metadata']['version'], '2-1')
+        self.assertEqual(package['acceptance'], {
+            'head': self.record['head'], 'accepted': self.accepted,
+            'recipe_tree': self.record['recipe_tree']})
+        self.assertEqual(self.descriptor, original)
+
+    def test_unsupported_embedded_descriptor_rejects_before_worker_or_download(self):
+        self.descriptor['schema'] = 2
+        del self.descriptor['evidence']
+        del self.descriptor['request_id']
+        with self.assertRaises(ValueError):
+            publish.bind_accepted_builds(self.plan)
+        self.assertNotIn('build', self.plan['packages'][0])
+        self.assertNotIn('acceptance', self.plan['packages'][0])
+
+    def test_failed_entire_worker_rejects_even_with_valid_native_output(self):
+        self.worker_conclusion = 'failure'
+        with self.assertRaises(ValueError):
+            publish.bind_accepted_builds(self.plan)
+        package = self.plan['packages'][0]
+        self.assertNotIn('build', package)
+        self.assertNotIn('acceptance', package)
+        self.assertEqual(package['metadata']['version'], '1-1')
 
 
 if __name__=='__main__':

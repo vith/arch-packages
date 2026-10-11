@@ -296,18 +296,12 @@ def expectations(head, run_id, attempt, previous, pins):
 
 def bind_accepted_builds(plan):
     """Resolve accepted successful output without downloading package bytes."""
-    from tools import build_store, recipe_acceptance
+    from tools import recipe_acceptance
     for package in plan['packages']:
         if package['reuse']:
             continue
         accepted = recipe_acceptance.verify_accepted_build(None, package, plan['head'])
-        expected_descriptor = accepted['acceptance']['build']
-        descriptor = build_store.lookup({**package, 'build':expected_descriptor}, record=accepted['record'])
-        if descriptor is None:
-            raise ValueError('missing original successful build output: ' + package['pkgbase'])
-        if descriptor != expected_descriptor:
-            raise ValueError('durable descriptor differs from accepted original build')
-        verified = recipe_acceptance.verify_accepted_build(descriptor['record'], package, plan['head'])
+        descriptor = accepted['acceptance']['build']
         receipt = descriptor['evidence']['packages'][0]
         recipe_srcinfo = (ROOT / package['recipe_dir'] / '.SRCINFO').read_text()
         if not metadata_equivalent(recipe_srcinfo, receipt['metadata']['srcinfo'], dynamic=receipt['metadata'].get('dynamic_pkgver', False)):
@@ -316,7 +310,7 @@ def bind_accepted_builds(plan):
         if package['metadata']['version'] != package['lock']['version']:
             raise ValueError('accepted native version differs from accepted source lock')
         package['build'] = descriptor
-        package['acceptance'] = verified['mapping']
+        package['acceptance'] = accepted['mapping']
 
 
 def prepare(head, run_id, attempt, directory):
