@@ -35,6 +35,10 @@ jobs:
           if (current['state'] != 'open' or current['draft'] or current['base']['ref'] != 'main'
               or current['head']['repo']['full_name'] != repository):
               raise SystemExit('Not an open same-repository main candidate')
+          main = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/git/ref/heads/main']))['object']['sha']
+          if current['base']['sha'] != main:
+              print('Update the PR branch to current main before validation; no workflow dispatched')
+              raise SystemExit(0)
           arguments = ['--repo', repository, '--ref', 'main',
                        '-f', 'pr_number=' + number, '-f', 'expected_head=' + current['head']['sha']]
           try:
