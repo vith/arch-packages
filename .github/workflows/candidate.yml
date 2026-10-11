@@ -4,13 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Numeric PR number; control and harness always come from main
+        description: Exact same-repository PR number
         required: true
         type: string
       expected_head:
-        description: Exact full PR head SHA; stale dispatches fail closed
+        description: Exact PR head SHA
         required: true
         type: string
+      retry:
+        description: Explicitly retry failed source validation or a failed/unregistered package request
+        required: false
+        default: false
+        type: boolean
 env:
   ARCH_WORK: /home/runner/.local/state/arch-packages/work/arch-packages/${{ github.run_id }}/${{ github.run_attempt }}
   TMPDIR: /home/runner/.local/state/arch-packages/work/arch-packages/${{ github.run_id }}/${{ github.run_attempt }}/tmp
@@ -20,25 +25,17 @@ concurrency:
   group: candidate-${{ inputs.pr_number }}
   cancel-in-progress: false
 jobs:
-  prepare:
+  candidate:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 210
     permissions:
       contents: write
-      actions: read
-      pull-requests: read
+      actions: write
+      pull-requests: write
       statuses: write
-      id-token: write
-      attestations: write
-    outputs:
-      base: ${{ steps.prepare.outputs.base }}
-      head: ${{ steps.prepare.outputs.head }}
-      mechanical: ${{ steps.prepare.outputs.mechanical }}
-      review_environment: ${{ steps.prepare.outputs.review_environment }}
-      authorized_reuse: ${{ steps.prepare.outputs.authorized_reuse }}
     steps:
-      - name: Prepare persistent scratch and trusted validation tools
+      - name: Prepare persistent scratch and trusted tools
         run: |
           mkdir -p "$ARCH_WORK" "$TMPDIR"
           sudo apt-get update
@@ -52,207 +49,29 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
           EXPECTED_HEAD: ${{ inputs.expected_head }}
-        run: python3 -m tools.update prepare --pr "$PR_NUMBER" --directory "$ARCH_WORK/prepared"
-      - name: Attest original static candidate before authorization
-        id: candidate-provenance
-        if: steps.prepare.outputs.provenance_exists != 'true'
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-path: ${{ steps.prepare.outputs.candidate }}
-      - name: Persist independent prebuild candidate provenance
-        if: steps.prepare.outputs.provenance_exists != 'true'
+          RETRY: ${{ inputs.retry }}
+        run: |
+          args=()
+          if [ "$RETRY" = true ]; then args+=(--retry); fi
+          python3 -m tools.update prepare --pr "$PR_NUMBER" --directory "$ARCH_WORK/prepared" "${args[@]}"
+      - name: Build exact recipe before merge
+        if: steps.prepare.outputs.kind == 'recipe'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          CANDIDATE: ${{ steps.prepare.outputs.candidate }}
-          BUNDLE: ${{ steps.candidate-provenance.outputs.bundle-path }}
-        run: python3 -m tools.update source-provenance --record "$CANDIDATE" --bundle "$BUNDLE"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: prepared-candidate-${{ github.run_attempt }}
-          path: ${{ env.ARCH_WORK }}/prepared
-          if-no-files-found: error
-          retention-days: 2
-  build:
-    name: Dispatch and collect independent package runs
-    needs: [prepare, manual-review, automatic-authorization]
-    if: always() && needs.prepare.result == 'success' && (needs.prepare.outputs.authorized_reuse == 'true' || needs.manual-review.result == 'success' || needs.automatic-authorization.result == 'success')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      statuses: write
-      actions: write
-      pull-requests: read
-    timeout-minutes: 190
-    steps:
-      - name: Prepare persistent scratch and trusted validation tools
+          RETRY: ${{ inputs.retry }}
         run: |
-          mkdir -p "$ARCH_WORK" "$TMPDIR"
-          sudo apt-get update
-          sudo apt-get install --yes libarchive-tools
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.prepare.outputs.base }}
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: prepared-candidate-${{ github.run_attempt }}
-          path: ${{ env.ARCH_WORK }}/prepared
-      - name: Run approved exact candidate tests
+          args=()
+          if [ "$RETRY" = true ]; then args+=(--retry); fi
+          python3 -m tools.package_runs collect "$ARCH_WORK/prepared" "${args[@]}"
+      - name: Finalize exact successful candidate
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python3 -m tools.update run-approved-tests --record "$ARCH_WORK/prepared/candidate.json" --directory "$ARCH_WORK/tests"
-      - name: Dispatch separate package builds and collect results
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          python3 -m tools.package_runs collect "$ARCH_WORK/prepared" --kind candidate
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: native-candidate-${{ github.run_attempt }}
-          path: ${{ env.ARCH_WORK }}/prepared/unsigned
-          if-no-files-found: error
-          retention-days: 2
-  validate:
-    needs: [prepare, build]
-    if: always() && needs.prepare.result == 'success' && needs.build.result == 'success'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
-      pull-requests: read
-      statuses: write
-    steps:
-      - name: Prepare persistent scratch and trusted validation tools
-        run: |
-          mkdir -p "$ARCH_WORK" "$TMPDIR"
-          sudo apt-get update
-          sudo apt-get install --yes libarchive-tools
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.prepare.outputs.base }}
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: prepared-candidate-${{ github.run_attempt }}
-          path: ${{ env.ARCH_WORK }}/prepared
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: native-candidate-${{ github.run_attempt }}
-          path: ${{ env.ARCH_WORK }}/outputs
-      - env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python3 -m tools.update validate-build --record "$ARCH_WORK/prepared/candidate.json" --directory "$ARCH_WORK/outputs"
-  report-failure:
-    needs: [prepare, build, validate]
-    if: always() && needs.prepare.result == 'success' && (needs.build.result != 'success' || needs.validate.result != 'success')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-      statuses: write
-    steps:
-      - name: Prepare persistent scratch and trusted validation tools
-        run: |
-          mkdir -p "$ARCH_WORK" "$TMPDIR"
-          sudo apt-get update
-          sudo apt-get install --yes libarchive-tools
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.prepare.outputs.base }}
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: prepared-candidate-${{ github.run_attempt }}
-          path: ${{ env.ARCH_WORK }}/prepared
-      - env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python3 -m tools.update fail-build --record "$ARCH_WORK/prepared/candidate.json"
-  manual-review:
-    name: Review PR ${{ inputs.pr_number }} head ${{ needs.prepare.outputs.head }} base ${{ needs.prepare.outputs.base }}
-    needs: prepare
-    if: needs.prepare.outputs.authorized_reuse != 'true' && needs.prepare.outputs.review_environment != ''
-    environment: ${{ needs.prepare.outputs.review_environment }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
-      pull-requests: read
-      statuses: write
-    steps:
-      - name: Prepare persistent scratch and trusted validation tools
-        run: |
-          mkdir -p "$ARCH_WORK" "$TMPDIR"
-          sudo apt-get update
-          sudo apt-get install --yes libarchive-tools
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.prepare.outputs.base }}
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: prepared-candidate-${{ github.run_attempt }}
-          path: ${{ env.ARCH_WORK }}/prepared
-      - name: Revalidate exact approved candidate
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python3 -m tools.update review --record "$ARCH_WORK/prepared/candidate.json"
-  automatic-authorization:
-    name: Authorize PR ${{ inputs.pr_number }} head ${{ needs.prepare.outputs.head }} base ${{ needs.prepare.outputs.base }}
-    needs: prepare
-    if: needs.prepare.outputs.authorized_reuse != 'true' && needs.prepare.outputs.review_environment == ''
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
-      pull-requests: read
-      statuses: write
-    steps:
-      - name: Prepare persistent scratch and trusted validation tools
-        run: |
-          mkdir -p "$ARCH_WORK" "$TMPDIR"
-          sudo apt-get update
-          sudo apt-get install --yes libarchive-tools
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.prepare.outputs.base }}
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: prepared-candidate-${{ github.run_attempt }}
-          path: ${{ env.ARCH_WORK }}/prepared
-      - env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python3 -m tools.update authorize --record "$ARCH_WORK/prepared/candidate.json"
-  finalize:
-    needs: [prepare, validate, manual-review, automatic-authorization]
-    if: always() && needs.validate.result == 'success' && (needs.prepare.outputs.authorized_reuse == 'true' || needs.manual-review.result == 'success' || needs.automatic-authorization.result == 'success')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      statuses: write
-      actions: write
-    steps:
-      - name: Prepare persistent scratch and trusted validation tools
-        run: |
-          mkdir -p "$ARCH_WORK" "$TMPDIR"
-          sudo apt-get update
-          sudo apt-get install --yes libarchive-tools
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.prepare.outputs.base }}
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: prepared-candidate-${{ github.run_attempt }}
-          path: ${{ env.ARCH_WORK }}/prepared
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: native-candidate-${{ github.run_attempt }}
-          path: ${{ env.ARCH_WORK }}/outputs
-      - env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
-          BASE_SHA: ${{ needs.prepare.outputs.base }}
-          HEAD_SHA: ${{ needs.prepare.outputs.head }}
-        run: python3 -m tools.update finalize --pr "$PR_NUMBER" --base "$BASE_SHA" --head "$HEAD_SHA" --record "$ARCH_WORK/prepared/candidate.json" --directory "$ARCH_WORK/outputs"
+          BASE_SHA: ${{ steps.prepare.outputs.base }}
+          HEAD_SHA: ${{ steps.prepare.outputs.head }}
+        run: python3 -m tools.update finalize --pr "$PR_NUMBER" --base "$BASE_SHA" --head "$HEAD_SHA" --record "$ARCH_WORK/prepared/candidate.json" --directory "$ARCH_WORK/prepared"
+      - name: Report exact-head failure
+        if: failure() && steps.prepare.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m tools.update fail-build --record "$ARCH_WORK/prepared/candidate.json"

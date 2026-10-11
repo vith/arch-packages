@@ -1,22 +1,18 @@
-"""Durable draft-release transport for original approved unsigned package bytes."""
+"""Direct durable transport for original fully successful package workers."""
 import hashlib
 import http.client
 import json
 import os
 from pathlib import Path
 import re
-import tarfile
-import tempfile
 import urllib.error
 import urllib.request
 
-from tools import attestations, github_api, recipe_candidates, recipe_state, update
+from tools import attestations, github_api, recipe_state, recipes, sources, update
 
-NAMESPACE = 'built-by-input'
 MAXIMUM = 805306368
 DIGEST = re.compile(r'[0-9a-f]{64}')
 WORKFLOW = '.github/workflows/build-package.yml'
-
 
 def sha(path):
     value = hashlib.sha256()
@@ -42,138 +38,108 @@ def package_record(record, name=None):
     return package
 
 
-def producer_run(record, producer):
+def producer_run(record, producer, completed=True):
     run = github_api.api(route(record) + '/actions/runs/' + str(int(producer['run_id'])) + '/attempts/' + str(int(producer['run_attempt'])))
     package = package_record(record, producer.get('pkgbase'))
-    expected_title = f"Build {package['pkgbase']} / {record['run_id']}.{record['run_attempt']}"
-    if not producer.get('legacy'):
-        expected_title += ' / ' + package['input_digest']
-    if (run['path'] != WORKFLOW or run['head_sha'] != record['base']
+    if (run['path'] != WORKFLOW
             or run['head_branch'] != 'main' or run['event'] != 'workflow_dispatch'
-            or run['display_title'] != expected_title or run['run_attempt'] != int(producer['run_attempt'])
-            or producer['head_sha'] != run['head_sha'] or producer['path'] != WORKFLOW):
-        raise ValueError('original package producer identity mismatch')
-    from tools.package_runs import rows
-    jobs = list(rows(route(record) + '/actions/runs/' + str(run['id']) + '/attempts/' + str(run['run_attempt']) + '/jobs', 'jobs'))
-    if producer.get('legacy'):
-        comparison = github_api.api(route(record) + '/compare/' + run['head_sha'] + '...da060b28eb528971c99c6dd3b08a52df06ce9957')
-        if comparison.get('status') not in ('ahead', 'identical'):
-            raise ValueError('legacy protocol is restricted to original accepted pre-cutover ancestors')
-    marker = 'Build package without credentials' if producer.get('legacy') else 'Authenticate actual compilation success'
-    if not any(step.get('name') == marker and step.get('conclusion') == 'success'
-               for job in jobs if job.get('name') == 'package' for step in job.get('steps', [])):
-        raise ValueError('original package compilation did not succeed')
+            or run['display_title'] != f"Build {package['pkgbase']} / {record['request_id']}"
+            or run['run_attempt'] != int(producer['run_attempt'])
+            or producer['head_sha'] != run['head_sha'] or producer['path'] != WORKFLOW
+            or run.get('repository', {}).get('full_name', record['repository']) != record['repository']):
+        raise ValueError('exact trusted package worker identity mismatch')
+    if completed and (run['status'] != 'completed' or run['conclusion'] != 'success'):
+        raise ValueError('entire original worker did not succeed')
+    current_main = github_api.api(route(record) + '/git/ref/heads/main')['object']['sha']
+    if (not recipes.is_ancestor(record['repository'], record['base'], producer['head_sha'])
+            or not recipes.is_ancestor(record['repository'], producer['head_sha'], current_main)):
+        raise ValueError('worker controller is not in protected-main lineage')
     return run
 
 
-def validate_outputs(record, directory, name=None):
-    from tools import publish
-    recipe_candidates.verify_authorization(record)
-    package = package_record(record, name)
-    selected = {**record, 'packages': [package]}
-    evidence = update.validate_build_outputs(selected, directory, report=False)
+def validate_metadata(record, evidence):
+    from tools.recipe_gate import metadata_equivalent, parse_srcinfo
+    package = package_record(record)
+    for key in ('repository', 'base', 'head', 'request_id', 'image'):
+        if evidence.get(key) != record[key]:
+            raise ValueError('native evidence identity differs: ' + key)
+    if len(evidence.get('packages', [])) != 1:
+        raise ValueError('worker must produce exactly one package receipt')
     receipt = evidence['packages'][0]
-    metadata = update.parse_srcinfo(package['expected_srcinfo'])
-    if {k: v for k, v in receipt['metadata'].items() if k != 'srcinfo'} != metadata:
-        raise ValueError('native metadata fields differ from approved input')
-    tree = package.get('tree_sha')
-    if tree is None and record.get('recipe_manifest') is not None:
-        tree = hashlib.sha256(github_api.canonical(record['recipe_manifest'])).hexdigest()
-    if tree is None:
-        proposal = recipe_state.load('proposal', record.get('proposal_head', record['head']))
-        tree = hashlib.sha256(github_api.canonical(proposal['recipe_manifest'])).hexdigest()
-    plan = {**selected, 'packages': [{**package, 'reuse': False, 'metadata': metadata, 'tree_sha': tree}]}
-    publish.validate_original_unsigned(directory, plan)
-    return evidence
+    if any(receipt.get(key) != package[key] for key in ('pkgbase', 'recipe_commit', 'tree_sha')):
+        raise ValueError('native receipt differs from requested recipe')
+    if (receipt.get('request_input_digest') != package['input_digest']
+            or not DIGEST.fullmatch(receipt.get('input_digest', ''))
+            or not DIGEST.fullmatch(evidence.get('harness_sha', ''))
+            or receipt.get('harness_sha') != evidence['harness_sha']):
+        raise ValueError('actual build digest or original request binding differs')
+    actual = receipt['metadata']['srcinfo']
+    dynamic = receipt['metadata'].get('dynamic_pkgver', False)
+    if not isinstance(dynamic, bool):
+        raise ValueError('invalid dynamic pkgver declaration')
+    if not metadata_equivalent(package['expected_srcinfo'], actual, dynamic=dynamic):
+        raise ValueError('native non-version declarations differ from recipe')
+    metadata = parse_srcinfo(actual)
+    if {k: v for k, v in receipt['metadata'].items() if k not in ('srcinfo', 'dynamic_pkgver')} != metadata:
+        raise ValueError('native metadata fields differ from actual SRCINFO')
+    actual_lock = receipt['source_lock']
+    if actual_lock.get('schema') != 1 or actual_lock['version'] != metadata['version']:
+        raise ValueError('actual source lock version differs')
+    planned_sources = package['lock']['sources']
+    actual_sources = actual_lock['sources']
+    if len(planned_sources) != len(actual_sources):
+        raise ValueError('actual source declaration set differs')
+    for planned, actual_source in zip(planned_sources, actual_sources):
+        mutable = {'commit', 'git_context', 'tag_object', 'peeled_commit'} if planned['kind'] == 'git' else set()
+        if ({k: v for k, v in planned.items() if k not in mutable}
+                != {k: v for k, v in actual_source.items() if k not in mutable}):
+            raise ValueError('actual source identity differs')
+        if planned['kind'] == 'git' and not sources.HEX.fullmatch(actual_source.get('commit', '')):
+            raise ValueError('actual Git source commit is not full')
+    wanted = {(row['name'], row['arch']) for row in package['policy']['outputs']}
+    found = set()
+    for file in receipt['files']:
+        identity = (file['name'], file['arch'])
+        filename = f"{file['name']}-{metadata['version'].split(':', 1)[-1]}-{file['arch']}.pkg.tar.zst"
+        if identity in found or identity not in wanted or file['version'] != metadata['version'] or file['filename'] != filename:
+            raise ValueError('native output identity differs')
+        found.add(identity)
+    if found != wanted:
+        raise ValueError('native output set is incomplete')
+    return receipt
 
 
-def verify(descriptor):
-    if set(descriptor) != {'schema', 'pkgbase', 'input_digest', 'record', 'producer', 'release', 'asset', 'attestation', 'evidence_sha256'} or descriptor['schema'] != 2:
-        raise ValueError('invalid durable build descriptor')
-    record = descriptor['record']
-    package = package_record(record, descriptor['pkgbase'])
-    if descriptor['pkgbase'] != package['pkgbase'] or descriptor['input_digest'] != package['input_digest']:
-        raise ValueError('durable build input mismatch')
-    recipe_candidates.verify_authorization(record)
-    producer_run(record, descriptor['producer'])
-    recipe_state.require_attestation(NAMESPACE, descriptor['input_digest'], descriptor, record['head'])
-    if recipe_state.load(NAMESPACE, descriptor['input_digest']) != descriptor:
-        raise ValueError('durable build descriptor changed')
-    release = github_api.api(route(record) + '/releases/' + str(int(descriptor['release']['id'])))
-    if (release['draft'] is not True or release['tag_name'] != 'build-' + descriptor['input_digest']
-            or any(release.get(k) != v for k, v in descriptor['release'].items())):
-        raise ValueError('durable build release identity changed')
-    asset = github_api.api(route(record) + '/releases/assets/' + str(int(descriptor['asset']['id'])))
-    if (not any(row['id'] == asset['id'] for row in release['assets'])
-            or any(asset.get(k) != descriptor['asset'][k] for k in ('id', 'name', 'size'))
-            or not 0 < asset['size'] <= MAXIMUM
-            or not DIGEST.fullmatch(descriptor['asset']['sha256'])
-            or not DIGEST.fullmatch(descriptor['evidence_sha256'])):
-        raise ValueError('durable build asset replaced, renamed, or oversized')
-    bound = descriptor['attestation']
-    if (not any(row['id'] == bound['id'] for row in release['assets'])
-            or bound['name'] != 'attestation.jsonl'):
-        raise ValueError('durable attestation asset is not in original build release')
-    root = Path.home() / '.local/state/omp/work/build-store-verify'
-    root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=root) as temporary:
-        archive = Path(temporary) / 'unsigned.tar'
-        fetch_original(descriptor, archive)
-        original = unpack_original(archive, Path(temporary) / 'original', record, descriptor['producer'].get('legacy', False))
-        if sha(original / 'native-evidence.json') != descriptor['evidence_sha256']:
-            raise ValueError('cryptographically bound original evidence differs')
-    return descriptor
-
-
-def compatible(package, original):
-    fields = ('pkgbase', 'recipe_commit', 'previous_recipe_commit', 'tree_sha',
-              'lock', 'policy', 'expected_srcinfo')
-    return all(key in package and key in original and package[key] == original[key] for key in fields)
-
-
-def _lookup_durable(package, record=None):
-    if not isinstance(package.get('pkgbase'), str) or not re.fullmatch(r'[a-z0-9][a-z0-9+_.-]*', package['pkgbase']):
-        raise ValueError('invalid package lookup identity')
-    if record is None and package.get('build') is not None:
-        if package['build']['pkgbase'] != package['pkgbase']:
-            raise ValueError('accepted build descriptor belongs to another package')
-        return verify(package['build'])
-    selected = package if record is None else next(p for p in record['packages'] if p['pkgbase'] == package['pkgbase'])
-    digest = selected.get('input_digest')
-    if digest is not None and not DIGEST.fullmatch(digest):
-        raise ValueError('invalid build input lookup')
-    if digest is None and not compatible(selected, selected):
-        raise ValueError('compatible original lookup requires complete static recipe/source/policy/metadata identity')
-    descriptor = recipe_state.load_optional(NAMESPACE, digest) if digest is not None else None
-    if descriptor is None:
-        originals = []
-        for key in recipe_state.keys(NAMESPACE, ''):
-            stored = recipe_state.load(NAMESPACE, key)
-            if stored.get('schema') != 2 or stored.get('pkgbase') != selected['pkgbase']:
-                continue
-            original = package_record(stored['record'], selected['pkgbase'])
-            if compatible(selected, original):
-                originals.append(stored)
-        if not originals:
-            return None
-        original = min(originals, key=lambda row: (int(row['producer']['run_id']), int(row['producer']['run_attempt'])))
-        return verify(original)
-    if descriptor['input_digest'] != digest or descriptor['pkgbase'] != selected['pkgbase']:
-        raise ValueError('lookup receipt differs from requested complete compilation input')
-    return verify(descriptor)
+def publication_record(descriptor):
+    receipt = validate_metadata(descriptor['record'], descriptor['evidence'])
+    package = package_record(descriptor['record'])
+    return {**descriptor['record'], 'harness_sha': receipt['harness_sha'], 'producer': descriptor['producer'],
+            'run_id': descriptor['producer']['run_id'],
+            'run_attempt': descriptor['producer']['run_attempt'], 'packages': [{**package, 'lock': receipt['source_lock'],
+            'input_digest': receipt['input_digest'], 'request_input_digest': package['input_digest'],
+            'expected_srcinfo': receipt['metadata']['srcinfo'], 'metadata': receipt['metadata'], 'reuse': False}]}
 
 
 def lookup(package, record=None):
-    descriptor = _lookup_durable(package, record)
-    if descriptor is not None:
-        return descriptor
-    from tools import package_runs
-    selected = package if record is None else next(p for p in record['packages'] if p['pkgbase'] == package['pkgbase'])
-    plan = record if record is not None else {'packages': [selected]}
-    root = Path.home() / '.local/state/omp/work/build-store-recovery'
-    root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='original-' + selected['pkgbase'] + '-', dir=root) as work:
-        return package_runs.recover(plan, selected['pkgbase'], Path(work))
+    descriptor = package.get('build')
+    request_id = package.get('request_id') or (record or {}).get('request_id')
+    if descriptor is None:
+        if request_id is None:
+            return None
+        descriptor = recipe_state.load_optional('build-result', request_id)
+    if descriptor is None:
+        return None
+    if descriptor.get('schema') != 3 or descriptor['pkgbase'] != package['pkgbase']:
+        raise ValueError('invalid direct build descriptor')
+    if request_id is not None and descriptor['request_id'] != request_id:
+        raise ValueError('direct build request differs')
+    if descriptor['record']['request_id'] != descriptor['request_id']:
+        raise ValueError('descriptor does not bind original request')
+    if record is not None and descriptor['record'] != record:
+        raise ValueError('descriptor differs from original request')
+    validate_metadata(descriptor['record'], descriptor['evidence'])
+    if descriptor['evidence'].get('producer') != descriptor['producer']:
+        raise ValueError('native evidence differs from exact descriptor producer')
+    return descriptor
 
 
 class AssetAPIRedirect(urllib.request.HTTPRedirectHandler):
@@ -220,82 +186,76 @@ def download_api(endpoint, destination, maximum, *, accept):
     return destination
 
 
-def attestation_context(record, producer, signer, original_artifact=None):
+def attestation_context(record, producer, signer):
     package = package_record(record, producer['pkgbase'])
-    return {'schema': 1, 'archive_format': 'legacy-native-v1' if producer.get('legacy') else 'native-v2',
+    return {'schema': 2, 'archive_format': 'native-v3',
             'record_sha256': hashlib.sha256(github_api.canonical(record)).hexdigest(),
-            'pkgbase': package['pkgbase'], 'input_digest': package['input_digest'],
-            'producer': producer, 'signer': signer, 'original_artifact': original_artifact}
+            'pkgbase': package['pkgbase'], 'request_id': record['request_id'],
+            'input_digest': package['input_digest'], 'producer': producer, 'signer': signer}
 
 
-def verify_attestation(archive, bundle, record, producer, signer, original_artifact=None):
-    repository = record['repository']
-    signer_run = github_api.api(route(record) + '/actions/runs/' + str(int(signer['run_id'])) + '/attempts/' + str(int(signer['run_attempt'])))
-    package = package_record(record, producer['pkgbase'])
-    expected_title = f"Build {package['pkgbase']} / {record['run_id']}.{record['run_attempt']} / {package['input_digest']}"
-    title_matches = signer_run['display_title'] == expected_title
-    if original_artifact is not None:
-        title_matches = (signer_run['display_title'].startswith('Build ' + package['pkgbase'] + ' / ')
-                         and signer_run['display_title'].endswith(' / ' + package['input_digest']))
-    if (signer_run['path'] != WORKFLOW or signer_run['head_sha'] != signer['head_sha']
-            or signer_run['head_branch'] != 'main' or signer_run['event'] != 'workflow_dispatch'
-            or not title_matches or signer['path'] != WORKFLOW
-            or signer_run['run_attempt'] != int(signer['run_attempt'])):
-        raise ValueError('attestation signer is not the exact accepted-main transport worker')
-    if producer.get('legacy') and original_artifact is None:
-        raise ValueError('legacy bytes require immutable original artifact and separate recovery signer')
-    if original_artifact is None and signer != {k: producer[k] for k in ('run_id', 'run_attempt', 'head_sha', 'path')}:
-        raise ValueError('different storage signer requires original immutable artifact binding')
+def verify_attestation(archive, bundle, record, producer, signer):
+    if signer != {key: producer[key] for key in ('run_id', 'run_attempt', 'head_sha', 'path')}:
+        raise ValueError('archive attestation is not from original producer')
     context = Path(archive).with_name('attestation-context.json')
-    context.write_bytes(github_api.canonical(attestation_context(record, producer, signer, original_artifact)))
-    expected_signer = {**signer, 'repository': repository}
-    original_certificate = attestations.verify(Path(archive), bundle, expected_signer)
-    context_certificate = attestations.verify(context, bundle, expected_signer)
-    if original_certificate['certificate_sha256'] != context_certificate['certificate_sha256']:
-        raise ValueError('archive and provenance context have different signing certificates')
+    context.write_bytes(github_api.canonical(attestation_context(record, producer, signer)))
+    expected = {**signer, 'repository': record['repository']}
+    archive_certificate = attestations.verify(Path(archive), bundle, expected)
+    context_certificate = attestations.verify(context, bundle, expected)
+    if archive_certificate['certificate_sha256'] != context_certificate['certificate_sha256']:
+        raise ValueError('archive and context certificates differ')
 
 
-def unpack_original(archive, destination, record, legacy=False):
+def unpack_original(archive, destination, record):
     from tools import publish
     publish.safe_extract(archive, destination)
     candidate = destination / 'candidate.json'
-    if legacy and not candidate.exists():
-        return destination
-    if not candidate.is_file() or candidate.stat().st_size > 8 * 1024 * 1024 or update.load(candidate) != record:
-        raise ValueError('raw producer archive does not bind original approved candidate')
+    if (not candidate.is_file() or candidate.is_symlink() or candidate.stat().st_size > 8 * 1024 * 1024
+            or update.load(candidate) != record):
+        raise ValueError('archive does not bind exact original request')
     candidate.unlink()
     return destination
 
 
 def fetch_original(descriptor, archive):
     record = descriptor['record']
+    release = github_api.api(route(record) + '/releases/' + str(int(descriptor['release']['id'])))
+    if release['draft'] is not True or any(release.get(k) != v for k, v in descriptor['release'].items()):
+        raise ValueError('durable draft release identity changed')
     for field, destination, maximum in (
             ('asset', Path(archive), MAXIMUM),
             ('attestation', Path(archive).with_name('attestation.jsonl'), github_api.MAX_JSON)):
         bound = descriptor[field]
-        if not 0 < bound['size'] <= maximum or not DIGEST.fullmatch(bound['sha256']):
-            raise ValueError('invalid durable archive or attestation bounds')
+        if (not 0 < bound['size'] <= maximum or not DIGEST.fullmatch(bound['sha256'])
+                or not any(row['id'] == bound['id'] for row in release['assets'])):
+            raise ValueError('invalid durable asset bounds or release membership')
         metadata = github_api.api(route(record) + '/releases/assets/' + str(int(bound['id'])))
         if any(metadata.get(key) != bound[key] for key in ('id', 'name', 'size')):
-            raise ValueError('durable archive or attestation asset replaced')
+            raise ValueError('durable archive or attestation asset changed')
         download_asset(record['repository'], bound['id'], destination, bound['size'])
         if destination.stat().st_size != bound['size'] or sha(destination) != bound['sha256']:
-            raise ValueError('durable build archive or attestation bytes differ')
-    attestation = descriptor['attestation']
+            raise ValueError('durable archive or attestation digest differs')
     verify_attestation(archive, Path(archive).with_name('attestation.jsonl'), record,
-                       descriptor['producer'], attestation['signer'], attestation.get('original_artifact'))
+                       descriptor['producer'], descriptor['attestation']['signer'])
 
 
 def materialize(descriptor, destination):
-    verify(descriptor)
+    from tools import publish
+    lookup({'pkgbase': descriptor['pkgbase'], 'build': descriptor})
+    stored = recipe_state.load('build-result', descriptor['request_id'])
+    if stored != descriptor or recipe_state.build_request(descriptor['request_id']) != descriptor['record']:
+        raise ValueError('inclusion descriptor differs from registered durable result')
+    producer_run(descriptor['record'], descriptor['producer'])
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     archive = destination.with_name(destination.name + '.tar')
     fetch_original(descriptor, archive)
-    unpack_original(archive, destination, descriptor['record'], descriptor['producer'].get('legacy', False))
+    unpack_original(archive, destination, descriptor['record'])
     if sha(destination / 'native-evidence.json') != descriptor['evidence_sha256']:
-        raise ValueError('original native evidence differs')
-    validate_outputs(descriptor['record'], destination, descriptor['pkgbase'])
+        raise ValueError('original native evidence digest differs')
+    if update.load(destination / 'native-evidence.json') != descriptor['evidence']:
+        raise ValueError('original native evidence differs from descriptor')
+    publish.validate_original_unsigned(destination, publication_record(descriptor))
     return destination
 
 
@@ -330,72 +290,39 @@ def upload(repository, release_id, archive, name='unsigned.tar'):
 def persist(record, directory, producer=None):
     directory = Path(directory)
     evidence = update.load(directory / 'native-evidence.json')
-    if len(evidence['packages']) != 1:
-        raise ValueError('worker archive must contain exactly one package')
-    name = evidence['packages'][0]['pkgbase']
-    package = package_record(record, name)
-    validate_outputs(record, directory, name)
-    producer = producer or {'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'head_sha': record['base'], 'path': WORKFLOW, 'pkgbase': name}
-    producer_run(record, producer)
+    validate_metadata(record, evidence)
+    package = package_record(record)
+    producer = producer or {'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+        'head_sha': os.environ['GITHUB_SHA'], 'path': WORKFLOW, 'pkgbase': package['pkgbase']}
+    producer_run(record, producer, completed=False)
+    if evidence.get('producer') != producer:
+        raise ValueError('native evidence does not identify original producer')
+    if any(str(evidence.get(key)) != str(producer[key]) or str(evidence['packages'][0].get(key)) != str(producer[key])
+           for key in ('run_id', 'run_attempt')):
+        raise ValueError('native evidence is not bound to original worker attempt')
     archive = directory.parent / 'unsigned.tar'
-    if not archive.exists():
-        with tarfile.open(archive, 'w') as stream:
-            for path in sorted(directory.iterdir()):
-                stream.add(path, arcname=path.name, recursive=False)
-            candidate_bytes = github_api.canonical(record)
-            candidate = tarfile.TarInfo('candidate.json')
-            candidate.size = len(candidate_bytes)
-            import io
-            stream.addfile(candidate, io.BytesIO(candidate_bytes))
-    signer_path = directory.parent / 'attestation-signer.json'
-    signer = update.load(signer_path) if signer_path.exists() else {k: producer[k] for k in ('run_id', 'run_attempt', 'head_sha', 'path')}
-    source_path = directory.parent / 'original-artifact.json'
-    original_artifact = update.load(source_path) if source_path.exists() else None
+    signer = {key: producer[key] for key in ('run_id', 'run_attempt', 'head_sha', 'path')}
     bundle = directory.parent / 'attestation.jsonl'
-    if not bundle.is_file() or bundle.is_symlink() or bundle.stat().st_size > github_api.MAX_JSON:
-        raise ValueError('original archive lacks bounded producer or recovery OIDC attestation')
-    verify_attestation(archive, bundle, record, producer, signer, original_artifact)
-    existing = _lookup_durable(package, record)
-    if existing is not None:
-        if (existing['asset']['sha256'] != sha(archive)
-                or existing['asset']['size'] != archive.stat().st_size
-                or existing['evidence_sha256'] != sha(directory / 'native-evidence.json')):
-            raise ValueError('existing durable descriptor differs from validated original producer bytes')
-        return existing
-    checked = directory.parent / 'archive-validated'
-    unpack_original(archive, checked, record, producer.get('legacy', False))
-    validate_outputs(record, checked, name)
-    if sha(checked / 'native-evidence.json') != sha(directory / 'native-evidence.json'):
-        raise ValueError('staged archive evidence differs from original outputs')
-    for file in evidence['packages'][0]['files']:
-        if sha(checked / file['filename']) != sha(directory / file['filename']):
-            raise ValueError('staged archive package differs from original outputs')
-    tag = 'build-' + package['input_digest']
-    try:
-        release = github_api.api(route(record) + '/releases/tags/' + tag)
-    except github_api.GitHubError as error:
-        if error.status != 404:
-            raise
-        release = github_api.api(route(record) + '/releases', 'POST', {'tag_name': tag, 'target_commitish': record['base'], 'name': tag, 'draft': True, 'prerelease': False, 'make_latest': 'false', 'body': 'Original approved unsigned build transport; never promote.'})
-    if release['draft'] is not True or release['target_commitish'] != record['base']:
-        raise ValueError('existing build release identity differs')
-    matches = [asset for asset in release['assets'] if asset['name'] == 'unsigned.tar']
-    if len(matches) > 1:
-        raise ValueError('ambiguous build archive assets')
-    asset = matches[0] if matches else upload(record['repository'], release['id'], archive)
-    recovered = directory.parent / 'stored-readback.tar'
-    download_asset(record['repository'], asset['id'], recovered, MAXIMUM)
-    if sha(recovered) != sha(archive) or asset['size'] != archive.stat().st_size:
-        raise ValueError('stored build readback differs from original bytes')
-    bundles = [entry for entry in release['assets'] if entry['name'] == 'attestation.jsonl']
-    if len(bundles) > 1:
-        raise ValueError('ambiguous stored attestation bundles')
-    stored_bundle = bundles[0] if bundles else upload(record['repository'], release['id'], bundle, 'attestation.jsonl')
-    bundle_readback = directory.parent / 'attestation-readback.jsonl'
-    download_asset(record['repository'], stored_bundle['id'], bundle_readback, github_api.MAX_JSON)
-    if sha(bundle_readback) != sha(bundle) or stored_bundle['size'] != bundle.stat().st_size:
-        raise ValueError('stored attestation readback differs from verified producer bundle')
-    descriptor = {'schema': 2, 'pkgbase': package['pkgbase'], 'input_digest': package['input_digest'], 'record': record, 'producer': producer, 'release': {key: release[key] for key in ('id', 'tag_name', 'target_commitish')}, 'asset': {**{key: asset[key] for key in ('id', 'name', 'size')}, 'sha256': sha(archive)}, 'attestation': {**{key: stored_bundle[key] for key in ('id', 'name', 'size')}, 'sha256': sha(bundle), 'signer': signer, 'original_artifact': original_artifact}, 'evidence_sha256': sha(directory / 'native-evidence.json')}
-    recipe_state.attest(NAMESPACE, package['input_digest'], descriptor, record['head'])
-    recipe_state.save(NAMESPACE, package['input_digest'], descriptor)
+    if (not archive.is_file() or archive.is_symlink() or not 0 < archive.stat().st_size <= MAXIMUM
+            or not bundle.is_file() or bundle.is_symlink() or not 0 < bundle.stat().st_size <= github_api.MAX_JSON):
+        raise ValueError('worker lacks bounded original archive and OIDC attestation')
+    verify_attestation(archive, bundle, record, producer, signer)
+    tag = 'build-' + record['request_id']
+    release = github_api.api(route(record) + '/releases', 'POST', {
+        'tag_name': tag, 'target_commitish': record['base'], 'name': tag, 'draft': True,
+        'prerelease': False, 'make_latest': 'false', 'body': 'Original unsigned worker transport. Never promote.'})
+    asset = upload(record['repository'], release['id'], archive)
+    stored_bundle = upload(record['repository'], release['id'], bundle, 'attestation.jsonl')
+    for asset_metadata, local, maximum in ((asset, archive, MAXIMUM), (stored_bundle, bundle, github_api.MAX_JSON)):
+        readback = directory.parent / ('readback-' + local.name)
+        download_asset(record['repository'], asset_metadata['id'], readback, maximum)
+        if asset_metadata['size'] != local.stat().st_size or sha(readback) != sha(local):
+            raise ValueError('durable original transport readback differs')
+    descriptor = {'schema': 3, 'request_id': record['request_id'], 'pkgbase': package['pkgbase'],
+        'input_digest': package['input_digest'], 'record': record, 'producer': producer,
+        'release': {key: release[key] for key in ('id', 'tag_name', 'target_commitish')},
+        'asset': {**{key: asset[key] for key in ('id', 'name', 'size')}, 'sha256': sha(archive)},
+        'attestation': {**{key: stored_bundle[key] for key in ('id', 'name', 'size')}, 'sha256': sha(bundle), 'signer': signer},
+        'evidence_sha256': sha(directory / 'native-evidence.json'), 'evidence': evidence}
+    recipe_state.put_build_result(record['request_id'], descriptor)
     return descriptor

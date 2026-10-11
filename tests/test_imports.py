@@ -69,7 +69,7 @@ class PendingImports(unittest.TestCase):
             imports.activate(activated, self.item)
         self.assertFalse((self.root/'proof'/'example'/'origin.git'/'FETCH_HEAD').exists())
 
-    def test_main_prepare_and_independent_authorization_select_zero_packages(self):
+    def test_exact_static_import_admission_selects_zero_package_workers(self):
         repo = Path(update.__file__).parents[1]
         for root in (self.old, self.new):
             harness_files = {'tools/build.sh', 'tools/native.py', 'tools/sources.py',
@@ -91,15 +91,12 @@ class PendingImports(unittest.TestCase):
                 return 'a'*40
             return git(*args, **kwargs)
         pr = {'base': {'ref': 'main'}, 'head': {'repo': {'full_name': 'owner/repo'}}}
-        with patch.object(update, 'ROOT', self.old), patch.object(sources, 'git', side_effect=controller_git), patch.object(update, 'api', return_value=pr), patch.object(update, 'pr_identity', return_value=(pr, 'a'*40, 'b'*40)), patch.object(update, 'checkout_data', side_effect=checkout), patch.object(update, 'status'), patch.object(recipe_acceptance, 'validate_bookkeeping', return_value=None), patch.object(recipe_state, 'save'), patch.object(recipe_state, 'attest'), patch.object(recipe_candidates, 'candidate_provenance_exists', return_value=False):
+        with patch.object(update, 'ROOT', self.old), patch.object(sources, 'git', side_effect=controller_git), patch.object(update, 'api', return_value=pr), patch.object(update, 'pr_identity', return_value=(pr, 'a'*40, 'b'*40)), patch.object(update, 'checkout_data', side_effect=checkout), patch.object(update, 'status'), patch.object(recipe_acceptance, 'validate_bookkeeping', return_value=None):
             record = update.prepare(1, self.root/'candidate')
             self.assertEqual(record['packages'], [])
-            self.assertEqual(record['review_environment'], '')
-            self.assertTrue(record['auto_merge'])
-            recipe_candidates._verify_inputs(record, True, lambda *args: self.fail('import entered executable source transition'), lambda *args, **kwargs: self.fail('import entered native metadata'))
             (self.new/'tools'/'untrusted.py').write_text('raise RuntimeError()')
             with self.assertRaises(ValueError):
-                recipe_candidates._verify_inputs(record, True, lambda *args: None, lambda *args, **kwargs: None)
+                update.prepare(1, self.root/'unrelated-executable')
         self.assertFalse((self.root/'EXECUTED').exists())
 
     def test_mismatched_module_identity_is_not_metadata_admission(self):

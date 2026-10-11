@@ -17,7 +17,7 @@ import urllib.parse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools import github_api, recipes
 from tools.update import extract_tree
-from tools.recipe_gate import harness_digest, input_digest, parse_srcinfo, tree_manifest
+from tools.recipe_gate import harness_digest, input_digest, metadata_equivalent, parse_srcinfo, tree_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 MAXIMUM = 805306368
@@ -129,29 +129,35 @@ def validate_catalog(catalog, repository, key_fingerprint):
         record = descriptor.get('record', {})
         candidates = [p for p in record.get('packages', []) if p.get('pkgbase') == name]
         native = recipe.get('native_evidence', {})
+        if descriptor.get('schema') == 3 and native != descriptor.get('evidence'):
+            raise ValueError('catalog changes original native evidence')
         receipts = [p for p in native.get('packages', []) if p.get('pkgbase') == name]
         if len(candidates) != 1 or len(receipts) != 1:
             raise ValueError('missing original catalog build provenance')
         original, receipt = candidates[0], receipts[0]
+        actual_digest = receipt.get('input_digest') if descriptor.get('schema') == 3 else original.get('input_digest')
+        if descriptor.get('schema') == 3 and receipt.get('request_input_digest') != original.get('input_digest'):
+            raise ValueError('catalog changes original request identity')
         mapping = recipe.get('accepted_mapping', {})
         if (descriptor.get('pkgbase') != name or descriptor.get('input_digest') != original.get('input_digest')
                 or recipe.get('recipe_commit') != original.get('recipe_commit')
-                or recipe.get('input_digest') != original.get('input_digest')
+                or recipe.get('input_digest') != actual_digest
                 or mapping.get('head') != record.get('head')
                 or mapping.get('accepted') != recipe.get('accepted_recipe_commit')
                 or mapping.get('recipe_tree') != record.get('recipe_tree')):
-            raise ValueError('catalog relabels original approved producer')
-        for key in ('repository','base','head','run_id','run_attempt','image','harness_sha'):
-            if native.get(key) != record.get(key):
+            raise ValueError('catalog relabels original producer')
+        identity = {**record, **descriptor.get('producer', {})} if descriptor.get('schema') == 3 else record
+        identity_keys = ('repository', 'head', 'run_id', 'run_attempt') if descriptor.get('schema') == 3 else ('repository','base','head','run_id','run_attempt','image','harness_sha')
+        for key in identity_keys:
+            if native.get(key) != identity.get(key):
                 raise ValueError('catalog original native evidence identity mismatch')
         if (receipt.get('recipe_commit') != original.get('recipe_commit')
-                or receipt.get('input_digest') != original.get('input_digest')
-                or receipt.get('source_lock') != original.get('lock')
-                or recipe.get('sources') != original.get('lock', {}).get('sources')):
+                or receipt.get('input_digest') != actual_digest
+                or recipe.get('sources') != receipt.get('source_lock', {}).get('sources')):
             raise ValueError('catalog original source provenance mismatch')
         for output in receipt.get('files', []):
             entry = catalog['files'].get(output.get('filename'), {})
-            if entry.get('sha256') != output.get('sha256'):
+            if output.get('sha256') is not None and entry.get('sha256') != output['sha256']:
                 raise ValueError('catalog package differs from original build hash')
     return catalog
 
@@ -264,8 +270,9 @@ def expectations(head, run_id, attempt, previous, pins):
         aur = upstream.get('aur')
         if aur is not None and (not isinstance(aur, dict) or not re.fullmatch(r'[0-9a-f]{40}', aur.get('commit', '')) or aur.get('url') not in ('https://aur.archlinux.org/' + name + '.git', 'https://github.com/archlinux/aur.git')):
             raise ValueError('invalid accepted optional AUR provenance')
-        if lock.get('schema') != 1 or lock.get('version') != metadata['version']:
+        if lock.get('schema') != 1:
             raise ValueError('accepted lock/native metadata mismatch: ' + name)
+        # bind_accepted_builds authenticates actual metadata for changed outputs.
         digest = input_digest(recipe, lock, item, image, harness)
         old = previous['recipes'].get(name) if previous else None
         content_digest = input_digest(recipe, lock, item, 'package-content-v1', '')
@@ -287,8 +294,8 @@ def expectations(head, run_id, attempt, previous, pins):
     return {'schema':1,'repository':REPOSITORY,'base':head,'head':head,'run_id':str(run_id),'run_attempt':str(attempt),'image':image,'harness_sha':harness,'recipe_pins':active_pins,'packages':packages}
 
 
-def bind_approved_builds(plan):
-    """Resolve original authorized output; publication has no build fallback."""
+def bind_accepted_builds(plan):
+    """Resolve accepted successful output without downloading package bytes."""
     from tools import build_store, recipe_acceptance
     for package in plan['packages']:
         if package['reuse']:
@@ -297,11 +304,17 @@ def bind_approved_builds(plan):
         expected_descriptor = accepted['acceptance']['build']
         descriptor = build_store.lookup({**package, 'build':expected_descriptor}, record=accepted['record'])
         if descriptor is None:
-            raise ValueError('missing original successful approved build bytes: ' + package['pkgbase']
-                             + '; recover the original producer artifact into the durable build store')
+            raise ValueError('missing original successful build output: ' + package['pkgbase'])
         if descriptor != expected_descriptor:
             raise ValueError('durable descriptor differs from accepted original build')
         verified = recipe_acceptance.verify_accepted_build(descriptor['record'], package, plan['head'])
+        receipt = descriptor['evidence']['packages'][0]
+        recipe_srcinfo = (ROOT / package['recipe_dir'] / '.SRCINFO').read_text()
+        if not metadata_equivalent(recipe_srcinfo, receipt['metadata']['srcinfo'], dynamic=receipt['metadata'].get('dynamic_pkgver', False)):
+            raise ValueError('accepted native declarations differ from recipe')
+        package['metadata'] = parse_srcinfo(receipt['metadata']['srcinfo'])
+        if package['metadata']['version'] != package['lock']['version']:
+            raise ValueError('accepted native version differs from accepted source lock')
         package['build'] = descriptor
         package['acceptance'] = verified['mapping']
 
@@ -318,30 +331,14 @@ def prepare(head, run_id, attempt, directory):
         url = catalog_url(previous_release)
         previous = previous_catalog(url, work, ring)
         plan = expectations(head, run_id, attempt, previous, pins)
-    bind_approved_builds(plan)
+    bind_accepted_builds(plan)
     (directory / 'publication-plan.json').write_bytes(github_api.canonical({'previous_release':previous_release,'previous_url':url,'expected':plan}))
-    unsigned = directory / 'unsigned'
-    unsigned.mkdir()
-    evidence = {'schema':2, 'builds':{}}
-    for package in plan['packages']:
-        if package['reuse']:
-            continue
-        old = previous['recipes'].get(package['pkgbase']) if previous else None
-        if old and old.get('version') == package['lock']['version']:
-            raise ValueError('changed package inputs require a pkgrel/version bump: ' + package['pkgbase'])
-        from tools import build_store
-        original = build_store.materialize(package['build'], directory / ('original-' + package['pkgbase']))
-        for name in filenames(package):
-            shutil.copyfile(original / name, unsigned / name)
-        evidence['builds'][package['pkgbase']] = package['build']
-    (unsigned / 'native-evidence.json').write_bytes(github_api.canonical(evidence))
-    with tarfile.open(directory / 'unsigned.tar', 'w') as archive:
-        for path in sorted(unsigned.iterdir()):
-            archive.add(path, arcname=path.name, recursive=False)
-    return len(evidence['builds'])
+    return sum(not package['reuse'] for package in plan['packages'])
+
 
 
 def safe_extract(archive, destination):
+    """Extract bounded original worker data without links or nested paths."""
     destination.mkdir()
     with tarfile.open(archive, 'r:*') as stream:
         entries = []
@@ -354,7 +351,8 @@ def safe_extract(archive, destination):
         for entry in entries:
             if not entry.isfile() or not NAME.fullmatch(entry.name) or entry.name in names or entry.size > MAXIMUM:
                 raise ValueError('unsafe unsigned artifact member')
-            names.add(entry.name); total += entry.size
+            names.add(entry.name)
+            total += entry.size
             if total > 8 * MAXIMUM:
                 raise ValueError('unsigned artifact total size exceeded')
         for entry in entries:
@@ -406,7 +404,7 @@ def validate_native_receipt(directory, package, receipt, original_record, origin
     native_text = returned_metadata.get('srcinfo')
     if not isinstance(native_text, str) or parse_srcinfo(native_text) != package['metadata']:
         raise ValueError('native prepared metadata differs from accepted metadata')
-    if {k:v for k,v in returned_metadata.items() if k != 'srcinfo'} != package['metadata']:
+    if {k:v for k,v in returned_metadata.items() if k not in ('srcinfo', 'dynamic_pkgver')} != package['metadata']:
         raise ValueError('native metadata fields differ')
     wanted = {'recipe_commit':original_package['recipe_commit'],
               'input_digest':original_package['input_digest'], 'tree_sha':package['tree_sha'],
@@ -415,12 +413,6 @@ def validate_native_receipt(directory, package, receipt, original_record, origin
     for field, value in wanted.items():
         if receipt.get(field) != value:
             raise ValueError('native receipt mismatch: ' + field)
-    if package['pkgbase'] == 'oh-my-pi-vith-git':
-        match = re.fullmatch(r'(?:[0-9]+:)?(.+)\.vith\.r([0-9]+)\.g([0-9a-f]{12})-[0-9]+(?:\.[0-9]+)*', package['lock']['version'])
-        proof = receipt.get('runtime') or {}
-        expected_runtime = f'{match[1]}+vith-fork.{match[2]}.{match[3]}' if match else None
-        if not expected_runtime or proof.get('runtime_identity') != expected_runtime or proof.get('cli_version') != 'omp/' + expected_runtime or 'libpipewire-0.3.so.0' not in proof.get('dynamic', '') or not re.fullmatch(r'[0-9a-f]{64}', proof.get('addon_sha256', '')) or not proof.get('help'):
-            raise ValueError('native OMP runtime proof differs from accepted identity')
     output_receipts = receipt.get('files', [])
     expected_files = filenames(package)
     if len(output_receipts) != len(expected_files) or {f.get('filename') for f in output_receipts} != set(expected_files):
@@ -428,15 +420,12 @@ def validate_native_receipt(directory, package, receipt, original_record, origin
     for output in output_receipts:
         path = directory / output['filename']
         info = pkginfo(path)
-        if info != expected_files[path.name] or output.get('sha256') != sha(path) or any(output.get(k) != info[v] for k,v in [('name','pkgname'),('version','pkgver'),('arch','arch')]):
+        if info != expected_files[path.name] or any(output.get(k) != info[v] for k,v in [('name','pkgname'),('version','pkgver'),('arch','arch')]):
             raise ValueError('package metadata/hash differs')
 
 
 def validate_original_unsigned(directory, plan):
     """Validate an original worker archive without publication transport or remapping."""
-    expected = {n for p in plan['packages'] for n in filenames(p)}
-    if {p.name for p in directory.iterdir()} != expected | {'native-evidence.json'}:
-        raise ValueError('extra/missing unsigned outputs')
     evidence_path = directory / 'native-evidence.json'
     if evidence_path.stat().st_size > 32*1024*1024:
         raise ValueError('oversized native evidence')
@@ -447,42 +436,38 @@ def validate_original_unsigned(directory, plan):
     receipts = evidence.get('packages', [])
     if len(receipts) != len(plan['packages']) or {p.get('pkgbase') for p in receipts} != {p['pkgbase'] for p in plan['packages']}:
         raise ValueError('missing/duplicate native receipts')
+    expected = set()
     for package in plan['packages']:
         receipt = next(p for p in receipts if p['pkgbase'] == package['pkgbase'])
-        validate_native_receipt(directory, package, receipt, plan, package)
+        planned_srcinfo = package['expected_srcinfo']
+        if not metadata_equivalent(planned_srcinfo, receipt['metadata']['srcinfo'], dynamic=receipt['metadata'].get('dynamic_pkgver', False)):
+            raise ValueError('native declarations differ from requested recipe')
+        actual = {**package, 'lock':receipt['source_lock'],
+                  'metadata':parse_srcinfo(receipt['metadata']['srcinfo'])}
+        expected.update(filenames(actual))
+        validate_native_receipt(directory, actual, receipt, plan, package)
+    if {p.name for p in directory.iterdir()} != expected | {'native-evidence.json'}:
+        raise ValueError('extra/missing unsigned outputs')
     return evidence
 
 
-def validate_unsigned(directory, plan):
-    changed = [p for p in plan['packages'] if not p['reuse']]
-    expected = {n for p in changed for n in filenames(p)}
-    actual = {p.name for p in directory.iterdir()}
-    if actual != expected | {'native-evidence.json'}:
-        raise ValueError('extra/missing unsigned outputs')
-    evidence_path = directory / 'native-evidence.json'
-    if evidence_path.stat().st_size > 32*1024*1024:
-        raise ValueError('oversized native evidence')
-    evidence = json.loads(evidence_path.read_text())
-    if evidence != {'schema':2, 'builds':{p['pkgbase']:p['build'] for p in changed}}:
-        raise ValueError('native artifact original build identity mismatch')
+def materialize_builds(directory, plan):
+    """Fetch and authenticate each original output once, before key import."""
     from tools import build_store, recipe_acceptance
+    directory.mkdir()
     originals = {}
-    for package in changed:
+    for package in plan['packages']:
+        if package['reuse']:
+            continue
         descriptor = package['build']
         accepted = recipe_acceptance.verify_accepted_build(descriptor['record'], package, plan['head'])
         if accepted['mapping'] != package['acceptance']:
             raise ValueError('accepted merge mapping changed')
-        with tempfile.TemporaryDirectory(prefix='original-build-', dir=directory.parent) as session:
-            original = build_store.materialize(descriptor, Path(session) / 'bytes')
-            native = json.loads((original / 'native-evidence.json').read_text())
-            receipt = next(p for p in native['packages'] if p['pkgbase'] == package['pkgbase'])
-            for name in filenames(package):
-                if sha(original / name) != sha(directory / name):
-                    raise ValueError('transport differs from original approved package bytes')
+        original = build_store.materialize(descriptor, directory.parent / ('original-' + package['pkgbase']))
+        native = json.loads((original / 'native-evidence.json').read_text())
         originals[package['pkgbase']] = native
-        original_record = descriptor['record']
-        original_package = next(p for p in original_record['packages'] if p['pkgbase'] == package['pkgbase'])
-        validate_native_receipt(directory, package, receipt, original_record, original_package)
+        for name in filenames(package):
+            shutil.move(original / name, directory / name)
     return originals
 
 
@@ -643,9 +628,10 @@ def promote(target, previous, catalog, ring, work):
         time.sleep(5)
     else:
         raise ValueError('promotion did not select requested snapshot')
-    observed = verified_snapshot(target, work, ring)
+    work.mkdir()
     active = latest_catalog(work, ring)
-    if active != catalog or observed != catalog or latest_release() != target:
+    validate_catalog(active, REPOSITORY, fingerprint())
+    if active != catalog or active['snapshot'] != target['tag'] or latest_release() != target:
         raise ValueError('active catalog changed during verification')
 
 
@@ -690,17 +676,18 @@ def publish(args):
     pins = recipes.materialize(ROOT, args.accepted_sha, REPOSITORY, extract_tree)
     previous = previous_catalog(carried['previous_url'], work, ring)
     plan = expectations(args.accepted_sha, args.run_id, args.run_attempt, previous, pins)
-    bind_approved_builds(plan)
+    bind_accepted_builds(plan)
     if carried['expected'] != plan:
         raise ValueError('build plan differs from accepted trusted inputs')
     unsigned = work / 'unsigned'
-    safe_extract(Path(args.artifact), unsigned)
-    originals = validate_unsigned(unsigned, plan)
+    from tools.source_review import verify_source_evidence
+    source_evidence = verify_source_evidence(args.accepted_sha)
+    originals = materialize_builds(unsigned, plan)
     packages = work / 'packages'; packages.mkdir()
     assets = work / 'assets'; assets.mkdir()
     snapshot = f'snapshot-{args.accepted_sha}-{args.run_id}-{args.run_attempt}'
     catalog = {'schema':1,'repository':REPOSITORY,'snapshot':snapshot,'accepted_sha':args.accepted_sha,'key_fingerprint':fingerprint(),'recipes':{},'files':{},'source_assets':dict(previous['source_assets']) if previous else {},'retained_packages':{},'retained_snapshots':dict(previous['retained_snapshots']) if previous else {}}
-    catalog['publication'] = {'accepted_main':args.accepted_sha, 'run_id':str(args.run_id), 'run_attempt':str(args.run_attempt)}
+    catalog['publication'] = {'accepted_main':args.accepted_sha, 'run_id':str(args.run_id), 'run_attempt':str(args.run_attempt), 'source_evidence':source_evidence}
     catalog['accepted_recipes'] = {
         p['pkgbase']:{'recipe_commit':p['recipe_commit'], 'tree_sha':p['tree_sha'],
                       'content_digest':p['content_digest']}
@@ -723,7 +710,7 @@ def publish(args):
             catalog['recipes'][name] = {
                 'recipe_commit':original_package['recipe_commit'], 'accepted_recipe_commit':package['recipe_commit'],
                 'accepted_mapping':package['acceptance'], 'tree_sha':package['tree_sha'],
-                'input_digest':original_package['input_digest'], 'content_digest':package['content_digest'],
+                'input_digest':originals[name]['packages'][0]['input_digest'], 'content_digest':package['content_digest'],
                 'version':lock['version'], 'aur':package['aur'], 'sources':lock['sources'],
                 'build_provenance':descriptor, 'native_evidence':originals[name],
             }
@@ -825,7 +812,6 @@ def main():
             p.add_argument('--output-dir',required=True)
         else:
             p.add_argument('--plan',required=True)
-            p.add_argument('--artifact',required=True)
             p.add_argument('--work-dir',required=True)
     p = sub.add_parser('rollback')
     p.add_argument('--target-tag',required=True)

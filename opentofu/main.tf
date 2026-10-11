@@ -69,25 +69,6 @@ resource "github_actions_repository_permissions" "packages" {
   sha_pinning_required = false
 }
 
-resource "github_repository_ruleset" "source_review" {
-  name        = "source-review-immutable"
-  repository  = github_repository.packages.name
-  target      = "tag"
-  enforcement = "active"
-
-  conditions {
-    ref_name {
-      include = ["refs/tags/source-review-*"]
-      exclude = []
-    }
-  }
-
-  rules {
-    update   = true
-    deletion = true
-  }
-}
-
 resource "github_branch_protection" "main" {
   repository_id       = github_repository.packages.node_id
   pattern             = "main"
@@ -148,24 +129,6 @@ resource "github_repository_environment_deployment_policy" "publish_main" {
   repository     = github_repository.packages.name
   environment    = github_repository_environment.publish.environment
   branch_pattern = "main"
-}
-
-resource "github_repository_environment" "recipe_review" {
-  repository          = github_repository.packages.name
-  environment         = "recipe-review"
-  can_admins_bypass   = false
-  prevent_self_review = false
-  reviewers {
-    users = [3265539]
-  }
-}
-
-# Retain the environment ID for historical producer proof, without new approvals.
-resource "github_repository_environment" "code_review" {
-  repository          = github_repository.packages.name
-  environment         = "code-review"
-  can_admins_bypass   = false
-  prevent_self_review = false
 }
 
 resource "github_actions_environment_secret" "signing" {

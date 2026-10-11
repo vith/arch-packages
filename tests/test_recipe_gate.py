@@ -4,7 +4,56 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.recipe_gate import classify_recipe_update, parse_srcinfo, tree_manifest, input_digest, needs_pkgbuild_review, verify_automatic_recipe, harness_digest
+from tools.recipe_gate import classify_recipe_update, parse_srcinfo, tree_manifest, input_digest, needs_pkgbuild_review, verify_automatic_recipe, harness_digest, metadata_equivalent
+
+
+class MetadataEquivalentTests(unittest.TestCase):
+    metadata = """pkgbase = example
+pkgver = r10.abcdef
+pkgrel = 2
+epoch = 1
+arch = x86_64
+source = upstream::git+https://example.org/upstream.git
+sha256sums = SKIP
+makedepends = gcc
+checkdepends = python
+license = MIT
+pkgname = example
+depends = glibc
+unknown_field = preserved
+pkgname = example-tools
+depends = example=1:r10.abcdef-2
+"""
+
+    def test_only_pkgver_can_change(self):
+        actual = self.metadata.replace('pkgver = r10.abcdef', 'pkgver = r11.123456')
+        self.assertFalse(metadata_equivalent(self.metadata, actual))
+        self.assertTrue(metadata_equivalent(self.metadata, actual, dynamic=True))
+        self.assertTrue(metadata_equivalent(self.metadata, self.metadata))
+
+    def test_all_other_fields_scopes_and_order_remain_bound(self):
+        for old, new in (
+                ('pkgrel = 2', 'pkgrel = 3'), ('epoch = 1', 'epoch = 2'),
+                ('arch = x86_64', 'arch = any'), ('license = MIT', 'license = GPL'),
+                ('upstream.git', 'different.git'), ('sha256sums = SKIP', 'sha256sums = changed'),
+                ('makedepends = gcc', 'makedepends = clang'),
+                ('checkdepends = python', 'checkdepends = pytest'),
+                ('depends = glibc', 'depends = musl'),
+                ('example=1:r10.abcdef-2', 'example=1:r11.123456-2'),
+                ('unknown_field = preserved', 'unknown_field = changed'),
+                ('pkgname = example-tools', 'pkgname = other-tools')):
+            with self.subTest(field=old):
+                self.assertFalse(metadata_equivalent(self.metadata, self.metadata.replace(old, new), dynamic=True))
+        actual = self.metadata.replace('makedepends = gcc\ncheckdepends = python',
+                                       'checkdepends = python\nmakedepends = gcc')
+        self.assertFalse(metadata_equivalent(self.metadata, actual))
+        self.assertFalse(metadata_equivalent(self.metadata, self.metadata + 'depends = extra\n'))
+
+    def test_invalid_metadata_is_not_equivalent(self):
+        for actual in ('', self.metadata + 'pkgver = extra\n',
+                       self.metadata.replace('pkgver = r10.abcdef', 'pkgver = invalid version')):
+            with self.subTest(actual=actual), self.assertRaises(ValueError):
+                metadata_equivalent(self.metadata, actual)
 
 
 class HarnessDigestTests(unittest.TestCase):

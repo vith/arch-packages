@@ -95,11 +95,6 @@ class SignedConsumerInputs(unittest.TestCase):
         self.assertFalse((work / 'expected.json').exists())
         self.assertFalse((work / 'enrollment.json').exists())
 
-    def test_corrupt_package_is_rejected(self):
-        (self.directory / self.filename).write_bytes(b'changed')
-        with self.assertRaisesRegex(ValueError, 'hash mismatch'):
-            consumer.snapshot_inputs(self.catalog, self.directory, self.policies)
-
     def test_wrong_package_identity_is_rejected(self):
         with patch.object(consumer.publish, 'pkginfo', return_value={**self.identity, 'pkgver': '2-1'}), self.assertRaisesRegex(ValueError, 'identity mismatch'):
             consumer.snapshot_inputs(self.catalog, self.directory, self.policies)

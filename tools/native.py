@@ -162,14 +162,6 @@ def builder(argv, cwd, env, *, stream=False):
     return run(['setpriv', '--reuid=1000', '--regid=1000', '--clear-groups', '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', '--', *argv], cwd=cwd, env=env, stream=stream)
 
 
-def readonly(root):
-    for path in [*root.rglob('*'), root]:
-        if path.is_symlink():
-            continue
-        os.chown(path, 0, 0)
-        path.chmod(0o555 if path.is_dir() or path.stat().st_mode & 0o111 else 0o444)
-
-
 def cache_environment(root):
     locations = {
         'CARGO_HOME': 'cargo', 'RUSTUP_HOME': 'rustup', 'CARGO_TARGET_DIR': 'target',
@@ -189,59 +181,53 @@ def cache_environment(root):
     return {key: str(root / name) for key, name in locations.items()}
 
 
-def runtime_identity(version):
-    match = re.fullmatch(r'(?:[0-9]+:)?(.+)\.vith\.r([0-9]+)\.g([0-9a-f]{12})-[0-9]+(?:\.[0-9]+)*', version)
-    if not match:
-        raise ValueError('OMP lock lacks exact fork version context')
-    return f'{match[1]}+vith-fork.{match[2]}.{match[3]}'
+def dynamic_pkgver(directory: Path, env: dict) -> bool:
+    """Inspect the loaded recipe only inside the unprivileged build sandbox."""
+    observed = builder(['bash', '--noprofile', '--norc', '-c',
+                        'source ./PKGBUILD >/dev/null || exit; '
+                        'if builtin declare -F pkgver >/dev/null; then printf true; else printf false; fi'],
+                       directory, env).strip()
+    if observed not in ('true', 'false'):
+        raise ValueError('invalid dynamic pkgver detection')
+    return observed == 'true'
 
 
-def omp_proof(cli: Path, addon: Path, version: str, cwd: Path, env: dict) -> dict:
-    expected = runtime_identity(version)
-    observed = builder([str(cli), '--version'], cwd, env).strip()
-    if observed != 'omp/' + expected:
-        raise ValueError(f'OMP runtime identity mismatch: expected {expected!r}, got {observed!r}')
-    help_text = builder([str(cli), '--help'], cwd, env)
-    if not help_text.strip():
-        raise ValueError('OMP help absent')
-    stamp = expected.encode()
-    if stamp not in addon.read_bytes():
-        raise ValueError('native addon does not contain exact fork stamp')
-    dynamic = run(['readelf', '-d', str(addon)])
-    if 'libpipewire-0.3.so.0' not in dynamic:
-        raise ValueError('native addon lacks PipeWire linkage')
-    return {'runtime_identity': expected, 'cli_version': observed, 'help': help_text, 'addon_sha256': hashlib.sha256(addon.read_bytes()).hexdigest(), 'dynamic': dynamic}
-
-
-def compilation_checkpoint(bundle, state):
-    checkpoint = Path('/compilation.json')
-    checkpoint.write_bytes(canonical({
-        'schema': 1, 'state': state,
-        'input_digest': bundle['packages'][0]['input_digest'],
-        'pkgbase': bundle['packages'][0]['pkgbase'],
-        'image': bundle['image'], 'harness_sha': bundle['harness_sha'],
-        'run_id': bundle['run_id'], 'run_attempt': bundle['run_attempt'],
-    }))
-    checkpoint.chmod(0o600)
-
-
-def recipe_makepkg(bundle, argv, directory, env):
-    try:
-        return builder(argv, directory, env, stream=True)
-    except subprocess.CalledProcessError:
-        compilation_checkpoint(bundle, 'failure')
-        raise
+def actual_source_lock(lock, directory: Path, version: str) -> dict:
+    """Record the Git working copies used by makepkg without changing them."""
+    from tools.sources import HEX, git, version_context
+    actual = json.loads(json.dumps(lock))
+    actual['version'] = version
+    for source in actual['sources']:
+        if source['kind'] != 'git':
+            continue
+        declaration = source['source'].split('#', 1)[0]
+        alias, separator, _ = declaration.partition('::')
+        name = alias if separator else declaration.rstrip('/').rsplit('/', 1)[-1].removesuffix('.git')
+        repository = contained(directory / 'src', name)
+        if not repository.is_dir() or repository.is_symlink():
+            raise ValueError('missing or unsafe Git working copy')
+        if Path(git('rev-parse', '--show-toplevel', cwd=repository)).resolve() != repository.resolve():
+            raise ValueError('Git source is not its own working copy')
+        commit = git('rev-parse', '--verify', 'HEAD^{commit}', cwd=repository)
+        if not HEX.fullmatch(commit):
+            raise ValueError('invalid actual Git commit')
+        source['commit'] = commit
+        source['git_context'] = version_context(repository, commit)
+        if source['ref'].startswith('refs/tags/'):
+            source['tag_object'] = git('rev-parse', '--verify', source['ref'], cwd=repository)
+            source['peeled_commit'] = git('rev-parse', '--verify', source['ref'] + '^{commit}', cwd=repository)
+            if source['peeled_commit'] != commit:
+                raise ValueError('Git tag source differs from working-copy commit')
+    return actual
 
 
 def build(path: Path, output: Path):
     if os.geteuid() != 0 or os.uname().machine != 'x86_64' or not Path('/etc/arch-release').exists():
         raise ValueError('native build requires disposable root Arch x86_64 container')
-    from tools.recipe_gate import parse_srcinfo, tree_manifest, input_digest, harness_digest
-    from tools.sources import materialize_sources
+    from tools.recipe_gate import parse_srcinfo, tree_manifest, input_digest, harness_digest, metadata_equivalent
     bundle = validate_bundle(path)
     if len(bundle['packages']) != 1:
-        raise ValueError('approved worker requires exactly one compilation input')
-    compilation_checkpoint(bundle, 'not-started')
+        raise ValueError('worker requires exactly one package input')
     persistent_cache_env = {}
     if os.environ.get('ARCH_PACKAGE_CACHE') == '1':
         if len(bundle['packages']) != 1:
@@ -283,14 +269,8 @@ def build(path: Path, output: Path):
         shutil.copytree(original, directory, symlinks=True)
         home = work / (name + '-home')
         home.mkdir()
-        mirrors = work / (name + '-mirrors')
-        mapping = materialize_sources(package['lock'], mirrors)
-        readonly(mirrors)
         gitconfig = home / '.gitconfig'
-        gitconfig.write_text('[core]\n hooksPath = /dev/null\n[protocol "file"]\n allow = always\n')
-        for url, mirror in mapping.items():
-            run(['git', 'config', '--file', str(gitconfig), '--add', f'url.file://{mirror}.insteadOf', url])
-            run(['git', 'config', '--file', str(gitconfig), '--add', 'safe.directory', str(mirror)])
+        gitconfig.write_text('[core]\n hooksPath = /dev/null\n[fetch]\n recurseSubmodules = false\n')
         for p in [directory, *directory.rglob('*')]:
             if not p.is_symlink():
                 os.chown(p, 1000, 1000)
@@ -303,14 +283,13 @@ def build(path: Path, output: Path):
         env = {'PATH': '/usr/bin', 'HOME': str(home), 'LANG': 'C.UTF-8', 'GOTOOLCHAIN': 'local', 'MAKEPKG_GIT_CONFIG': str(gitconfig), 'GIT_CONFIG_SYSTEM': str(gitconfig), 'GIT_CONFIG_GLOBAL': '/dev/null'}
         env.update(persistent_cache_env)
         command = ['makepkg', '--config', str(config)]
-        compilation_checkpoint(bundle, 'started')
-        prepared_log = recipe_makepkg(bundle, [*command, '--nobuild', '--noconfirm', '--cleanbuild'], directory, env)
+        dynamic = dynamic_pkgver(directory, env)
+        prepared_log = builder([*command, '--nobuild', '--noconfirm', '--cleanbuild'], directory, env, stream=True)
         prepared = builder([*command, '--printsrcinfo'], directory, env)
-        if prepared != (original / '.SRCINFO').read_text():
-            raise ValueError(f'{name}: complete prepared .SRCINFO differs from accepted metadata')
+        if not metadata_equivalent(package['expected_srcinfo'], prepared, dynamic=dynamic):
+            raise ValueError(f'{name}: prepared .SRCINFO declarations differ from requested metadata')
         metadata = parse_srcinfo(prepared)
-        if metadata['version'] != package['lock']['version']:
-            raise ValueError(f'{name}: native version differs from frozen lock')
+        source_lock = actual_source_lock(package['lock'], directory, metadata['version'])
         if name == 'carapace':
             modules = list((directory / 'src').rglob('go.mod'))
             roots = [p for p in modules if p.parent.name.startswith('carapace-bin')]
@@ -321,10 +300,14 @@ def build(path: Path, output: Path):
             version_tuple = lambda value: tuple(int(x) for x in value.split('.')) + (0,) * (3-len(value.split('.')))
             if not requirement or not installed or version_tuple(installed[1]) < version_tuple(requirement[1]):
                 raise ValueError('installed Go does not meet carapace go.mod (GOTOOLCHAIN=local)')
-        build_log = recipe_makepkg(bundle, [*command, '--noextract', '--noconfirm'], directory, env)
-        compilation_checkpoint(bundle, 'success')
-        if builder([*command, '--printsrcinfo'], directory, env) != prepared:
-            raise ValueError('native metadata changed during build')
+        build_log = builder([*command, '--noextract', '--noconfirm'], directory, env, stream=True)
+        final_srcinfo = builder([*command, '--printsrcinfo'], directory, env)
+        if not metadata_equivalent(package['expected_srcinfo'], final_srcinfo, dynamic=dynamic):
+            raise ValueError('native declarations changed during build')
+        metadata = parse_srcinfo(final_srcinfo)
+        if actual_source_lock(package['lock'], directory, metadata['version'])['sources'] != source_lock['sources']:
+            raise ValueError('Git source revisions changed during build')
+        source_lock['version'] = metadata['version']
         files = []
         expected = {(x['name'], x['arch']) for x in package['policy']['outputs']}
         found = set()
@@ -339,18 +322,12 @@ def build(path: Path, output: Path):
             if target.exists():
                 raise ValueError('duplicate output filename')
             shutil.copyfile(archive, target)
-            files.append({'filename': archive.name, 'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'name': info['pkgname'], 'version': info['pkgver'], 'arch': info['arch']})
+            files.append({'filename': archive.name, 'name': info['pkgname'], 'version': info['pkgver'], 'arch': info['arch']})
         if found != expected:
             raise ValueError(f'missing outputs: {expected-found}')
-        proof = None
-        if name == 'oh-my-pi-vith-git':
-            addons = list((directory / 'src').rglob('pi_natives.linux-x64-baseline.node'))
-            if len(addons) != 1:
-                raise ValueError('OMP native addon missing/ambiguous')
-            cli = directory / 'pkg' / name / 'usr/bin/omp'
-            proof = omp_proof(cli, addons[0], metadata['version'], directory, env)
-        metadata['srcinfo'] = prepared
-        receipts.append({'pkgbase': name, 'recipe_commit': package['recipe_commit'], 'files': files, 'metadata': metadata, 'source_lock': package['lock'], 'input_digest': package['input_digest'], 'tree_sha': hashlib.sha256(canonical(tree_manifest(original))).hexdigest(), 'run_id': bundle['run_id'], 'run_attempt': bundle['run_attempt'], 'image': bundle['image'], 'harness_sha': bundle['harness_sha'], 'runtime': proof, 'prepare_log': prepared_log, 'build_log': build_log})
+        metadata['srcinfo'] = final_srcinfo
+        metadata['dynamic_pkgver'] = dynamic
+        receipts.append({'pkgbase': name, 'recipe_commit': package['recipe_commit'], 'files': files, 'metadata': metadata, 'source_lock': source_lock, 'input_digest': package['input_digest'], 'request_input_digest': package.get('request_input_digest', package['input_digest']), 'tree_sha': hashlib.sha256(canonical(tree_manifest(original))).hexdigest(), 'run_id': bundle['run_id'], 'run_attempt': bundle['run_attempt'], 'image': bundle['image'], 'harness_sha': bundle['harness_sha'], 'prepare_log': prepared_log, 'build_log': build_log})
     evidence = {key: value for key, value in bundle.items() if key != 'packages'}
     evidence['packages'] = receipts
     (output / 'native-evidence.json').write_bytes(canonical(evidence))

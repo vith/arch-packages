@@ -9,28 +9,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from tools.native import cache_environment, contained, dependency_names, parse_pkginfo, runtime_identity, validate_bundle, validate_output
-from tools import native
-
-
-class CompilationCheckpoints(unittest.TestCase):
-    def test_actual_makepkg_failure_is_explicit_but_unknown_launcher_error_is_not(self):
-        root = Path.home() / '.local/state/omp/work/native-checkpoint-tests'
-        root.mkdir(parents=True, exist_ok=True)
-        bundle = {'packages': [{'pkgbase': 'first', 'input_digest': 'd' * 64}],
-                  'image': 'image', 'harness_sha': 'harness', 'run_id': '123', 'run_attempt': '1'}
-        for error, expected in ((subprocess.CalledProcessError(1, ['makepkg']), 'failure'),
-                                (OSError('launcher disconnected'), 'started')):
-            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory(dir=root) as temporary:
-                checkpoint = Path(temporary) / 'compilation.json'
-                with patch('tools.native.Path', return_value=checkpoint):
-                    native.compilation_checkpoint(bundle, 'started')
-                    with patch('tools.native.builder', side_effect=error), self.assertRaises(type(error)):
-                        native.recipe_makepkg(bundle, ['makepkg'], root, {})
-                actual = json.loads(checkpoint.read_text())
-                self.assertEqual(actual['state'], expected)
-                self.assertEqual(actual['input_digest'], bundle['packages'][0]['input_digest'])
-                self.assertEqual(checkpoint.stat().st_mode & 0o777, 0o600)
+from tools.native import actual_source_lock, cache_environment, contained, dependency_names, dynamic_pkgver, parse_pkginfo, validate_bundle, validate_output
+from tools import sources
 
 
 class NativeRunTests(unittest.TestCase):
@@ -121,6 +101,92 @@ sys.exit({returncode})
             })
 
 
+class DynamicPkgverTests(unittest.TestCase):
+    def test_loaded_static_and_dynamic_recipes_are_distinguished(self):
+        state = Path.home() / '.local/state/omp/work/native-test'
+        state.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=state) as directory:
+            root = Path(directory)
+            def sandbox(argv, cwd, env):
+                return subprocess.run(argv, cwd=cwd, env={**os.environ, **env},
+                                      check=True, capture_output=True, text=True).stdout
+            for code, expected in (
+                    ('pkgver=1\n', False),
+                    ('pkgver=1\npkgver() { printf 2; }\n', True),
+                    ('pkgver=1\n# pkgver() { printf 2; }\n', False),
+                    ("pkgver=1\ncomment='pkgver() { printf 2; }'\n", False)):
+                (root / 'PKGBUILD').write_text(code)
+                with self.subTest(code=code), patch('tools.native.builder', side_effect=sandbox):
+                    self.assertEqual(dynamic_pkgver(root, {}), expected)
+
+
+class ActualSourceTests(unittest.TestCase):
+    def setUp(self):
+        state = Path.home() / '.local/state/omp/work/native-test'
+        state.mkdir(parents=True, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=state)
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.repository = self.root / 'src' / 'upstream'
+        self.repository.mkdir(parents=True)
+        sources.git('init', self.repository)
+        sources.git('config', 'user.name', 'Native test', cwd=self.repository)
+        sources.git('config', 'user.email', 'native@example.org', cwd=self.repository)
+        (self.repository / 'file').write_text('first')
+        sources.git('add', 'file', cwd=self.repository)
+        sources.git('commit', '-m', 'first', cwd=self.repository)
+        sources.git('tag', '-a', 'v1.0', '-m', 'version', cwd=self.repository)
+        self.first = sources.git('rev-parse', 'HEAD', cwd=self.repository)
+        (self.repository / 'file').write_text('second')
+        sources.git('commit', '-am', 'second', cwd=self.repository)
+        self.second = sources.git('rev-parse', 'HEAD', cwd=self.repository)
+        self.lock = {'schema': 1, 'version': 'stale-1', 'sources': [{
+            'id': 'upstream', 'kind': 'git',
+            'source': 'upstream::git+https://example.org/repo.git#branch=main',
+            'url': 'https://example.org/repo.git', 'ref': 'refs/heads/main',
+            'commit': self.first, 'tag_object': None, 'peeled_commit': None,
+            'release_id': None, 'asset_id': None, 'checksums': {'sha256': 'SKIP'},
+            'git_context': sources.version_context(self.repository, self.first),
+        }]}
+
+    def test_records_actual_commit_and_dynamic_version_without_changing_history(self):
+        before = sources.refs(self.repository)
+        recorded = actual_source_lock(self.lock, self.root, '1.0.r1-1')
+        self.assertEqual(recorded['version'], '1.0.r1-1')
+        self.assertEqual(recorded['sources'][0]['commit'], self.second)
+        self.assertEqual(recorded['sources'][0]['git_context']['version_tag']['commit'], self.first)
+        self.assertEqual(self.lock['sources'][0]['commit'], self.first)
+        self.assertEqual(sources.git('rev-parse', 'HEAD', cwd=self.repository), self.second)
+        self.assertEqual(sources.refs(self.repository), before)
+        self.assertEqual(sources.git('rev-list', '--count', 'HEAD', cwd=self.repository), '2')
+
+    def test_unaliased_git_source_uses_native_basename(self):
+        self.lock['sources'][0]['source'] = 'git+https://example.org/upstream.git'
+        self.assertEqual(actual_source_lock(self.lock, self.root, 'new-1')['sources'][0]['commit'], self.second)
+
+    def test_missing_escaping_and_parent_git_working_copies_are_rejected(self):
+        for declaration in ('missing::git+https://example.org/repo.git',
+                            '../upstream::git+https://example.org/repo.git'):
+            self.lock['sources'][0]['source'] = declaration
+            with self.subTest(source=declaration), self.assertRaises(ValueError):
+                actual_source_lock(self.lock, self.root, 'new-1')
+        child = self.repository / 'child'
+        child.mkdir()
+        self.lock['sources'][0]['source'] = 'upstream/child::git+https://example.org/repo.git'
+        with self.assertRaisesRegex(ValueError, 'own working copy'):
+            actual_source_lock(self.lock, self.root, 'new-1')
+
+    def test_tag_records_original_object_and_rejects_different_checkout(self):
+        self.lock['sources'][0]['ref'] = 'refs/tags/v1.0'
+        with self.assertRaisesRegex(ValueError, 'tag source'):
+            actual_source_lock(self.lock, self.root, 'new-1')
+        sources.git('checkout', '--detach', 'v1.0', cwd=self.repository)
+        actual = actual_source_lock(self.lock, self.root, '1.0-1')['sources'][0]
+        self.assertEqual(actual['peeled_commit'], self.first)
+        self.assertEqual(actual['tag_object'], sources.git('rev-parse', 'refs/tags/v1.0', cwd=self.repository))
+        self.assertNotEqual(actual['tag_object'], actual['commit'])
+
+
 class PackageMetadataTests(unittest.TestCase):
     def test_restored_cache_survives_next_build_setup(self):
         state = Path.home() / '.local/state/arch-packages/work/native-test'
@@ -178,12 +244,6 @@ class PackageMetadataTests(unittest.TestCase):
         for expected in [{('carapace', 'any')}, {('other', 'x86_64')}]:
             with self.subTest(expected=expected), self.assertRaises(ValueError):
                 validate_output(info, 'carapace-1.8.0-1-x86_64.pkg.tar.zst', '2:1.8.0-1', expected)
-
-    def test_omp_identity_uses_locked_ancestry(self):
-        self.assertEqual(runtime_identity('14.2.0.vith.r7.g0123456789ab-2'), '14.2.0+vith-fork.7.0123456789ab')
-        for version in ['r25173.c1a969eada61-2', '14.2.0.vith.r7.g0123456-1', '14.2.0-1']:
-            with self.subTest(version=version), self.assertRaises(ValueError):
-                runtime_identity(version)
 
     def test_dependency_names_preserve_native_checks_without_options(self):
         text = """pkgbase = carapace
