@@ -1,330 +1,460 @@
 # System flow
 
-This guide describes the **interim system with the small source-routing prerequisite**, not the later core cutover. The prerequisite routes unchanged-package main PRs into existing source-only verification and stops that verification before merge. Recipe approval, worker execution, checkpoints, caches, recovery, and publication otherwise remain unchanged.
+`arch-packages` turns source changes into real recipe PRs, retained builds, and signed Arch snapshots. This repository owns its controller, workflows, policy, recipes, and tests. The OMP fork supplies source and n3t supplies signed dependencies. This pipeline administers neither and does not install packages on client machines.
 
-`arch-packages` turns source updates into reviewed recipes, authenticated builds, and signed Arch snapshots. This repository owns its controller, workflows, tests, and package policy. The OMP fork supplies input and n3t supplies signed dependencies. This pipeline administers neither and never installs packages on client machines.
+## Status and how to read this guide
 
-## Workflows, jobs, and identities
+The core implementation is complete locally. Protected production rollout is pending. This guide describes the coherent core route supplied with this PR, not a claim that deployed main already uses it. The selected delivery is a small source-routing prerequisite followed by one atomic core cutover PR with reviewable component commits. Until that cutover, the prerequisite retains the old approval and worker behavior.
 
-A workflow is a YAML entrypoint containing jobs. Jobs contain sequential steps; actions implement `uses` steps. Independent workers are `build-package.yml` runs, not reusable workflows. The interim seven workflows declare no `workflow_call` and use no `jobs.<job>.uses`.
+Read the lifecycle first, then the workflow contracts and failure rules. [Implementation plan](implementation-plan.md) records scope, evidence, and unfinished live acceptance. [README](../README.md) contains client installation instructions.
 
-| Identity | Interim contract |
+## Workflows, jobs, actions, and identities
+
+A workflow is a YAML entrypoint. A job runs on a runner. Steps within a job run sequentially; an action implements a `uses` step. A worker here is an independent workflow run, not a reusable workflow job.
+
+There are exactly seven workflows. None declares `workflow_call`; none uses `jobs.<job>.uses`. The source-test helper runs from the candidate job; it is not an eighth workflow or a separate source-merge job.
+
+| Identity | Meaning |
 | --- | --- |
-| C | Immutable trusted controller/harness revision |
-| B | Exact proposal base or predecessor |
-| H | Full exact reviewed PR head |
-| Input digest | Authenticated recipe, source lock, policy, and compilation identity |
-| Original producer | Authenticated successful compilation run and attempt, preserved through old recovery and publication |
+| Controller | Authenticated trusted-main tools used for preparation or execution |
+| Base/predecessor | Exact proposal base or previous accepted recipe |
+| Head | Exact PR head, not a moving branch name |
+| Request | Immutable reserved package build request |
+| Input digest | Actual receipt identity for recipe, sources, policy, and harness |
+| Producer | Original registered worker run and attempt |
+| Accepted merge | Protected merge whose parents/tree correspond to the tested or built proposal |
 
-Keep recipe head, trusted controller, and accepted merge identities distinct. Old-head approval does not authorize a changed head. Candidate static preparation is not the executable recipe `prepare()` function.
+GitHub controller, recipe, base, and head SHAs are full 40-character values. Actual Git source commits support 40- or 64-character object IDs. Do not confuse source IDs with GitHub workflow identities.
 
-| Location | Contents |
+A queued request may execute under a later authenticated trusted-main harness. Keep the original request immutable and record the actual harness and producer. Controller movement alone must not restart the same request or rewrite its history.
+
+Candidate preparation is static. It does not invoke a recipe. A `PKGBUILD` function called `prepare()` is different: it is executable recipe code that `makepkg` may run in the worker container.
+
+## Data and ownership
+
+| Location | Purpose |
 | --- | --- |
-| `packages.json` | Enrollment policy and pending-import registry; registration grants no execution authority |
-| `recipes/`, `.gitmodules` | Accepted recipe gitlinks and mapping |
-| `pkg/<name>`, `aur/<name>` | Maintained recipe and imported AUR histories |
-| `inputs/`, `upstream/`, `acceptance/` | Frozen locks, accepted tracking, and original-build mapping |
-| `controller-state` | Retained proposal/candidate/provenance/build/approval/acceptance records |
-| Workflow artifacts | Expiring transport and diagnostics |
-| Never-public draft build releases | Durable unsigned bytes and proof |
-| Public snapshot releases | Signed packages, databases, catalog, and retained provenance/legal assets |
+| `packages.json` | Enrollment policy and authenticated pending imports |
+| `recipes/`, `.gitmodules` | Accepted recipe gitlinks and their mapping |
+| `pkg/<package>` | Maintained recipe history and recipe PR target |
+| `aur/<package>` | Imported AUR ancestry |
+| `inputs/` | Accepted actual version and source records |
+| `upstream/` | Accepted upstream/update tracking |
+| `acceptance/` | Accepted recipe-to-original-build references |
+| `controller-state` | Direct pending, immutable request/result, proposal, and acceptance records |
+| Workflow artifacts | Expiring handoffs and diagnostics, not durable package authority |
+| Draft build releases | Durable original unsigned archive, attestation, and bound asset metadata |
+| Public snapshot releases | Signed packages, databases, catalog, original provenance, and retained legal assets |
 
-Identity envelopes remain immutable. Concurrent state writes preserve other receipts through exact leases and bounded retries. Workflow artifacts are not durable authority. Attestations are OIDC provenance, not pacman signatures. Compiler cache is not successful package output.
+Pending state is directly keyed by package. Immutable build requests and results are directly keyed by request identity. Lookups are read-only: they do not search historical workflow runs or discover substitute output.
 
-## Interim lifecycle
+An operation-level `StateSnapshot` resolves the state tip once, batch-loads exact records through GraphQL, and caches immutable values. PR heads/checks come from paginated GraphQL. Controllers compare locally and write only changes. Writers use exact leases/CAS and refresh around competing writes. Concurrency groups help serialization but do not replace request reservation.
+
+Draft build assets are not platform-immutable just because they are on GitHub. Inclusion checks their bound IDs, sizes/digests, archive/context attestation, exact request, producer, and whole-worker success. An OIDC attestation is provenance, not a pacman signature. Compiler cache is neither output nor authority.
+
+## Lifecycle
 
 ```mermaid
 flowchart TD
-    U[Source discovery or reconciliation] --> R[Recipe PR targeting pkg/package]
-    R --> C[Candidate static freeze]
-    C --> A[Exact recipe-review or independent automatic authorization]
-    A --> W[Independent authorized package workers]
-    W --> V[Candidate output validation]
-    V --> M[Existing protected automatic recipe merge]
-    M --> B[Generated main bookkeeping; zero new compilation]
-    B --> P[Existing publication collects original output]
-    Q[Main PR metadata event] --> D[Protected event-base dispatcher]
-    D --> S{Unchanged package Git scope?}
-    S -->|Yes| I[Existing verification source-identity]
-    I --> T[Source-validation with isolated exact-head tests]
-    T --> H[Stop and wait for human normal Merge]
-    S -->|No| C
-    H --> MAIN[Accepted main]
-    MAIN --> REG[Push regression tests]
-    MAIN --> U
-    MAIN --> P
-    P --> SIGN[Sign snapshot and perform public readback]
-    SIGN --> L[Promote latest]
-    L --> CP[Separate manual signed consumer proof]
-    L --> CLIENT[Separate human client install]
+    U[Discover sources or reconcile known PRs] --> R[Exact recipe PR targeting pkg/package]
+    R --> C[Candidate job statically prepares exact head]
+    C --> W[Reserve and dispatch independent package worker]
+    W --> B[Normal makepkg and recipe-owned tests]
+    B --> O[Retain original output and actual source/version sidecar]
+    O --> S{Whole worker succeeded?}
+    S -->|No| F[Record terminal failure; explicit retry only]
+    S -->|Yes| P{Trusted merge classification}
+    P -->|Human| H[PR waits for human normal Merge]
+    P -->|Automatic| A[Exact-head protected automatic merge]
+    H --> K[Reconcile accepted recipe merge]
+    A --> K
+    K --> M[Generated main bookkeeping]
+    M --> T[Candidate source tests; zero workers]
+    Q[Other main source/document/controller/image PR] --> T
+    T --> N[Protected main merge under its merge policy]
+    N --> COL[Publication metadata plan]
+    COL --> INC[Authenticate and materialize original output once]
+    INC --> SIGN[Sign packages, database, and catalog]
+    SIGN --> READ[Public readback then latest promotion]
+    READ --> CP[Separate manual signed consumer proof]
+    READ --> CLIENT[Separate human client installation]
 ```
 
-The prerequisite changes only the metadata-to-source route and its endpoint. Source-only validation writes evidence and statuses, then waits for human normal Merge. It does not merge or dispatch publication.
+There is no pre-build human approval. New/imported recipes and non-trivial or executable recipe changes build first, then wait for the human's ordinary **Merge**. Independently eligible literal changes can auto-merge only after durable output and the entire worker's final success.
 
-Recipe execution still follows old exact pre-build approval/automatic authorization. Existing recipe merges remain automatic after authorized validation, with no separate human merge approval. Generated bookkeeping needs no second recipe approval or build.
+A successful internal compile step, uploaded archive, passing candidate status, or attestation cannot override a failed worker. There is no failed-worker salvage, compilation checkpoint, historical run search, or transport-recovery route.
 
-Pending imports stay outside routine discovery/publication until activation. Their first conversion uses the existing exact recipe-approval contract. Registration itself does not execute recipes.
+After recipe merge, reconciliation verifies the exact head/merge relationship and generates main bookkeeping. It records the gitlink, actual source/version data, upstream information, and original build reference. Pending imports can activate at this point. Bookkeeping selects zero workers and requires no second recipe approval or build.
 
-## Exact prerequisite dispatcher contract
+All main documentation, source, controller, image, and bookkeeping candidates use one source-test route with zero package workers. Executable main code requires human normal Merge; generated exact bookkeeping can merge automatically after validation. No alternative manual source-review workflow remains in the core.
 
-[`candidate-dispatch.yml`](../.github/workflows/candidate-dispatch.yml), named **Start candidate validation**, handles main-target `pull_request_target` events: `opened`, `synchronize`, `reopened`, and `ready_for_review`. It has no manual inputs, concurrency group, or explicit timeout.
+## Recipes and actual metadata
 
-Its only job is `dispatch`, guarded by `github.event.pull_request.draft == false`. Workflow permissions are contents read, actions write, and pull-requests read. The job has two steps:
-
-1. `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1`, checking out `${{ github.sha }}` with `persist-credentials: false`.
-2. A Python `run` step using `gh` metadata and protected-base `tools.source_review.unchanged_git_scope`.
-
-The checkout is the protected event base. No proposed PR code executes in the dispatcher. The fresh PR read requires an open, non-draft, same-repository, main-target PR. The current main ref is read independently. If the captured PR base differs from current main, the job prints a skip and dispatches nothing. It does not rebase the human branch or block unrelated work.
-
-The scope helper compares recursive Git trees at exact base/head. Package scope includes `packages.json`, `.gitmodules`, `recipes`, `inputs`, `upstream`, and `acceptance`, including the corresponding directory entries. Trees must be complete, not truncated. The head's verification workflow must be a regular `100644` blob, and package enrollment must be present.
-
-If scope is unchanged, the dispatcher runs `verification.yml` on main with `pr_number`, `expected_head`, and `expected_base`. A scope `ValueError` selects existing `candidate.yml` with PR/head instead; it is not permission to execute candidate files in this metadata job. Unexpected failures are not hidden as successful validation.
-
-Recipe-root branches have no workflows. Their writers, reconciliation, or humans retain explicit candidate dispatch handoffs. This event route applies only to main-target PRs.
-
-## Existing source verification, ending at human Merge
-
-[`verification.yml`](../.github/workflows/verification.yml) is named **Trusted recipe and publication verification**. It runs on main push and `workflow_dispatch`.
-
-| Dispatch input | Type, required/default | Effect |
-| --- | --- | --- |
-| `pr_number` | Required string | Exact main PR for source-only verification before human Merge |
-| `expected_head` | Required string | Exact head H |
-| `expected_base` | Required string | Exact base B, equal to current main |
-| `bootstrap` | Optional boolean, `false` | Select initial controller from exact immutable `source-review-<H>` tag |
-
-Titles are `Trusted main verification <SHA>` for push and `Source review PR <N> head <H> base <B>` for dispatch.
-
-Default permissions are contents read and statuses write. Concurrency is `verification-<event_name>-<PR or ref>`, with `cancel-in-progress: false`. `ARCH_WORK` is `/home/runner/.local/state/arch-packages/work/source-review/<run>/<attempt>` and `TMPDIR` is its `tmp` directory.
-
-| Job | Guard/dependency | Permissions and contract |
-| --- | --- | --- |
-| `source-identity` | Manual dispatch only | contents, pull-requests, actions read. Bind exact workflow/run/ref/title, PR/base/head, and unchanged package Git scope read-only before any checkout. |
-| `source-validation` | Needs source-identity | contents, pull-requests, actions read; statuses write. Prepare scratch; checkout protected base, or bootstrap head; run source validator; upload evidence. |
-| `regression-tests` | Main push only | Inherits contents read/statuses write; 30-minute timeout. Pending status, exact main export and pinned Arch tests with native vercmp, always report result. |
-
-There are exactly these three jobs. Source jobs declare no timeout. There is no merge job or finalizing source helper. A successful `source-validation` ends the source route.
-
-### Identity before checkout
-
-The inline `source-identity` step checks positive decimal PR number and full 40-character lowercase base/head SHAs. It requires an open same-repository main PR with exact base/head and base equal to current main.
-
-Normal workflow identity is the exact base on `refs/heads/main`. Bootstrap identity is exact head on `refs/tags/source-review-<H>`. The actual run/attempt must match workflow SHA, branch, event `workflow_dispatch`, path `.github/workflows/verification.yml`, and exact display title. Bootstrap also requires a direct commit tag pointing to H. This is checked through read-only Git objects before checkout.
-
-The job compares complete recursive package-scope trees and verifies the regular verification workflow blob. It rejects changed package scope, missing enrollment, missing workflow, or incomplete trees. Same-repository identity is mandatory; this is not an external-fork execution route.
-
-### Validation and evidence
-
-The `source-validation` checkout is `${{ inputs.bootstrap && inputs.expected_head || inputs.expected_base }}`. Stored credentials are disabled. The trusted helper rechecks actual authority and unchanged Git scope, exports exact base/head data, and compares policies, pins, recipe bodies, input/upstream/acceptance data, `.gitmodules`, and enrollment.
-
-The baseline's image must be the pinned official Arch digest. Tests run on the complete exact tracked head snapshot in a credential-free sandbox. Authority is checked again immediately before tests and after tests. Temporary verification trees are removed in `finally`.
-
-On success, the helper writes `source-review-evidence.json` with repository, base/head, bound run/attempt authority, `packages: []`, and unchanged-package proof. It reports:
-
-- `verify`: exact source tests passed.
-- `candidate-build`: unchanged package inputs verified; zero package workers.
-- `recipe-policy`: exact source-only scope verified.
-
-The upload step uses `actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`. Artifact `source-review-evidence-<attempt>` contains that evidence file, retained for 90 days; missing evidence is an error. It is a successful-path upload, not an `always()` failure receipt.
-
-The CLI validates only:
+Clone recipe history with:
 
 ```fish
-python3 -m tools.source_review --pr NUMBER --base BASE_SHA --head HEAD_SHA --directory EVIDENCE_DIRECTORY
+git clone --recurse-submodules https://github.com/vith/arch-packages.git
 ```
 
-Optional `--bootstrap` selects the immutable initial controller. No CLI step finalizes or merges. Failures stop validation; do not fabricate success or infer an automatic retry policy from the later core design.
+Recipe PRs target `pkg/<package>`. The Files changed tab contains the actual `PKGBUILD`, patches, install scripts, and payload. Changed package contents require a version or `pkgrel` bump. Recipe-root branches have no workflows; writers, reconciliation, or humans explicitly dispatch validation.
 
-After successful hosted validation, the human reviews the source PR and uses ordinary protected Merge. Any accepted-main publication is a later workflow, not a child of source validation. Keep explicit operator handling where Actions-token merges elsewhere suppress push events.
+Pending import registration freezes source data without executing a recipe. Pending imports are not routine discovery/publication inputs. Their first conversion builds as an exact recipe PR and waits for human Merge.
 
-### Push regression
+Normal native `makepkg` performs Git checkout with its branch, history, and reachable tags. Planned source locks are detection/classification snapshots, not instructions to rewrite source references or force a different checkout. No source bundle or extra source-submodule scheme is introduced.
 
-`regression-tests` marks exact commit `verify` pending, checks out without stored credentials, reads the pinned image, exports `GITHUB_SHA` with `git archive`, and copies the tracked snapshot into `/verify`. Tests use `/verify/.work/tmp`, not `/tmp`, and native Arch `vercmp`.
+The worker records actual full Git commits from the working copies used by the build, reachable tag/version context, actual generated metadata, and resulting version in a sidecar outside package archives. Keep the original recipe SHA/tree and original `.SRCINFO` declaration. For a recipe with `pkgver()`, actual `pkgver` may differ from the declaration. Do not refresh metadata into another recipe commit and build again.
 
-The container drops capabilities and adds only setup capabilities CHOWN, DAC_OVERRIDE, FOWNER, SETUID, and SETGID, with no-new-privileges. The final `always()` step reports success/failure or error for other outcomes and links the run. Official verification-tool installation is not recipe execution.
+Non-version declarations still have to agree: package names, output set, architecture, epoch, `pkgrel`, sources, and dependencies are not ignored. The actual resulting version must be greater than the accepted predecessor, using native Arch version comparison.
 
-## Old source-update workflow retained
+Manual and human-edited heads use `declared_metadata` mode. Automatic discovery and unedited automation proposals retain their independent derivation checks. Mode selection is not permission to accept inconsistent sources or unsupported recipes.
 
-[`update.yml`](../.github/workflows/update.yml), **Source update proposals**, retains main push, cron `17 */6 * * *` UTC, and manual dispatch. Its jobs remain `reconcile`, `discover`, and `write-proposals`.
+Accepted inputs advance only after accepted recipe merge. Discovery, a queued request, a successful but unmerged build, and a failure leave main's accepted baseline unchanged.
 
-| Input | Type/default | Interim effect |
+## Exact workflow inventory
+
+All supplied checkouts use `persist-credentials: false`. Only `build-package.yml` uses compiler cache and OIDC attestation. Only the publisher's signing step receives private signing credentials. Permission tables below use GitHub scope names; omitted scopes are not grants.
+
+| File and workflow name | Trigger | Jobs |
 | --- | --- | --- |
-| `bootstrap` | Optional boolean, false | Read-only static initial source freeze; no recipes or proposals |
-| `migrate_pr` | Optional string, empty | Convert/backfill one legacy recipe candidate using trusted main |
-| `reconcile_pr` | Optional string, empty | Reconcile one known recipe/bookkeeping PR |
+| `update.yml` — Source update proposals | Main push; cron `17 */6 * * *` UTC; `workflow_dispatch` | `reconcile`, `discover`, `write-proposals` |
+| `candidate-dispatch.yml` — Start candidate validation | Main-target `pull_request_target`: `opened`, `synchronize`, `reopened`, `ready_for_review` | `dispatch` |
+| `candidate.yml` — Exact candidate validation | `workflow_dispatch` | `candidate` |
+| `build-package.yml` — Build one package | `workflow_dispatch` | `package` |
+| `verification.yml` — Trusted main regression tests | Main push only | `regression-tests` |
+| `publish.yml` — Signed package snapshots | Main push; `workflow_dispatch` | `collect`, `rollback`, `publish` |
+| `consumer-proof.yml` — Signed snapshot consumer proof | `workflow_dispatch` | `consumers` |
 
-Modes are mutually exclusive and explicit PR numbers must be positive decimals. Update bootstrap is separate from verification's immutable-controller bootstrap.
+### Source update proposals: `update.yml`
 
-Push runs reconciliation. Schedule/default manual runs reconciliation → discovery → proposal writing. Read-only bootstrap skips reconciliation/writing. Migration/targeted recovery skip discovery/writing and targeted recovery does not redispatch unrelated PRs.
+Workflow default permission is `contents: read`. `ARCH_WORK` is `/home/runner/.local/state/arch-packages/work/arch-packages/<run>/<attempt>` and `TMPDIR` is its `tmp` directory. Concurrency is `source-update`, with `cancel-in-progress: false`.
 
-Reconcile/writer use contents, pull-requests, actions, and statuses write; discovery uses contents read. `source-receipts` carries `source-data.tar` for 2 days. Extraction is bounded and validated before writes. The `source-update` concurrency group disables replacement cancellation.
+| Dispatch input | Type, required/default | Meaning |
+| --- | --- | --- |
+| `bootstrap` | Optional boolean, `false` | Read-only initial static source freeze; no recipe execution or proposals |
+| `migrate_pr` | Optional string, empty | Convert or backfill one legacy PR using trusted main |
+| `reconcile_pr` | Optional string, empty | Reconcile one exact recipe or bookkeeping PR |
 
-Proposals preserve ancestry in owned update branches targeting `pkg/<name>`. Writers/reconciliation explicitly dispatch recipe candidates. Unchanged source receipts without open proposals are no-ops that leave retained branches untouched; writes/refreshes need authenticated watcher ownership. Legacy approvals never transfer to a converted candidate.
+Explicit PR numbers must be positive decimal values. Migration and targeted reconciliation cannot be combined. Neither can be combined with bootstrap. Update bootstrap is not the prerequisite's immutable source-workflow bootstrap.
 
-This prerequisite does not introduce new batching, CAS build requests, exact-producer-only polling, or unchanged-failure retry semantics. Those are not interim deployment claims.
+| Job | Guard/dependency | Permissions and steps |
+| --- | --- | --- |
+| `reconcile` | Main ref; skip only read-only bootstrap without an explicit target | contents, pull-requests, actions, statuses write. Validate mode; prepare scratch and `libarchive-tools`; checkout event SHA; run `migrate-existing --pr` for migration, otherwise `reconcile` with optional `--pr`. |
+| `discover` | Needs reconcile. `always()` admits success or skip; main only; not push; no migration/targeted reconciliation | contents read. Prepare tools; checkout event SHA; run static `bootstrap` or `discover`, then `pack`; upload `source-receipts`. |
+| `write-proposals` | Needs discover; excludes bootstrap and both explicit modes | contents, pull-requests, actions, statuses write. Prepare tools; checkout event SHA; download `source-receipts`; bounded validated extraction; run `write`. |
 
-## Old candidate approval and worker flow retained
+`source-receipts` contains `source-data.tar`, retained for 2 days, with missing files an error. No job declares a timeout.
 
-[`candidate.yml`](../.github/workflows/candidate.yml), **Exact candidate validation**, still uses manual/API dispatch with required string `pr_number` and `expected_head`, exact-head run title, trusted-main tools, and concurrency `candidate-<PR>` without replacement cancellation.
+Push runs reconciliation only. Schedule/default manual runs reconciliation, discovery, then proposal writing. Bootstrap runs discovery only. Targeted reconciliation and migration skip discovery and writing.
 
-The existing job layout remains:
+Reconciliation tracks directly known open, merged, and closed PRs. Same queued/running/successful input is a no-op; the same failure is reported without automatic retry. If upstream moves during a build, wait for the actual result before refreshing the same automation-owned PR. Preserve human edits and one update PR per package. An unchanged source receipt with no open proposal leaves its retained branch untouched. Writes, refreshes, and dispatches require authenticated watcher ownership.
 
-| Job | Existing contract |
+A behind-main captured source base is skipped so other work continues. The controller does not rebase a human branch. Targeted reconciliation does not redispatch unrelated PRs. Legacy migration does not transfer approval authority or salvage failed workers.
+
+### Metadata dispatcher: `candidate-dispatch.yml`
+
+The independent `dispatch` job runs only when the event PR is not a draft. Workflow permissions are contents read, pull-requests read, actions write, and statuses write. There are no dispatch inputs, concurrency group, or explicit timeout.
+
+It checks out `${{ github.sha }}` with credentials disabled and invokes `tools.update.dispatch` with the PR number. This is protected event-base code, never the proposed checkout. It performs metadata routing to candidate validation, not recipe execution. Recipe-root PRs use explicit handoffs because their branches contain no workflows.
+
+### Exact validation: `candidate.yml`
+
+Run title is `Candidate PR <pr_number> head <expected_head>`. Dispatch inputs are:
+
+| Input | Type, required/default | Meaning |
+| --- | --- | --- |
+| `pr_number` | Required string | Exact same-repository PR |
+| `expected_head` | Required string | Exact PR head SHA |
+| `retry` | Optional boolean, `false` | Explicit retry of failed source validation or a failed/unregistered package request |
+
+The workflow defaults to contents read. Its only job is `candidate`, main-only, with a 210-minute timeout and contents/actions/pull-requests/statuses write. Concurrency is `candidate-<PR>`, with replacement cancellation disabled. Scratch uses the same run/attempt path as update.
+
+Sequential steps are:
+
+1. Prepare scratch and trusted archive tools.
+2. Checkout the dispatch controller SHA without stored credentials.
+3. `prepare`: statically prepare the exact PR under `EXPECTED_HEAD`; add `--retry` only when requested.
+4. For `steps.prepare.outputs.kind == 'recipe'`, call `tools.package_runs collect` to reserve/dispatch or reuse the directly recorded worker result. This step does not compile or download package bytes for merge.
+5. Finalize with the prepared base/head and `candidate.json`.
+6. On failure, and only if prepare itself succeeded, run `fail-build` for the prepared record.
+
+These are steps, not separate prepare/build/validate/finalize jobs. There is no environment review job or candidate attestation action.
+
+```mermaid
+flowchart TD
+    P[Static exact preparation] --> K{Recipe or main source route?}
+    K -->|Recipe| R[CAS request reservation or direct successful reuse]
+    R --> W[Poll registered exact worker run and attempt]
+    W --> S{Whole success and durable result?}
+    S -->|No| F[Terminal failure; no automatic redispatch]
+    S -->|Yes| C[Exact-head finalization]
+    C --> A{Merge policy}
+    A -->|Human| H[Wait for normal Merge]
+    A -->|Automatic| M[Protected exact-head merge]
+    K -->|Main source or bookkeeping| T[Credential-free exact source tests; zero workers]
+    T --> C
+    F --> E[Explicit retry with fresh request/evidence]
+```
+
+Required contexts remain `verify`, `recipe-policy`, and `candidate-build`. `recipe-policy` means supported inputs and trusted merge classification, not human approval to execute. Changed heads cannot reuse old checks.
+
+Source verification markers bind base and PR; the status SHA supplies head identity. Terminal source failure needs `retry=true`; an unchanged failed/running/successful source validation is not redispatched. Failures during source preparation are caught and reported only after a fresh identity check. The workflow's last failure step does not cover unsuccessful prepare, so that guarded reporting belongs in preparation code. A stale identity cannot write a failure onto a replacement head.
+
+Main candidates use the sole source helper in this job. It checks allowed scope, executes complete exact tracked-source tests without credentials, and records evidence. Generated bookkeeping is independently reconstructed rather than treated as arbitrary package edits. Human source branches are not rebased by automation.
+
+Finalization rechecks current identity. Human recipe policy leaves the successful PR open; automatic policy uses ordinary exact-head protection. Recipe merges hand off reconciliation. Main merges hand off publication when Actions-token merging would suppress push workflows.
+
+### Independent worker: `build-package.yml`
+
+Run title is `Build <package> / <request_id>`.
+
+| Input | Type, required/default | Meaning |
+| --- | --- | --- |
+| `package` | Required string | Requested package |
+| `pr_number` | Required string | Exact recipe PR |
+| `recipe_sha` | Required string | Exact recipe commit |
+| `request_id` | Required string | Reserved build request |
+
+The sole `package` job is main-only with a 150-minute timeout. Workflow permissions are contents write, actions read, id-token write, and attestations write. Concurrency is `package-request-<request_id>`, with `cancel-in-progress: false`. It has no environment approval.
+
+`WORK` is `/home/runner/.local/state/arch-packages/build-<run>-<attempt>`; `TMPDIR` is its `tmp` directory. `ARCH_BUILD_CACHE` is `/home/runner/.local/state/arch-packages/cache/pr/<package>/<recipe_sha>`.
+
+The worker:
+
+1. Checks out trusted main tools without stored credentials and installs archive transport tools.
+2. `prepare` validates the immutable request and actual workflow identity, registers its exact run/attempt, and exports the exact recipe itself. No parent prepared bundle or approval proof is downloaded.
+3. Restores this head's isolated cache using `cache-key` and `cache-input-prefix`.
+4. If no own-head cache matched and an accepted key exists, restores the accepted producer's cache at its original saved path. `admit_cache` accepts only an exact match of expected and matched key into the current isolated cache.
+5. Runs `tools/build.sh` without credentials.
+6. Repairs cache ownership after an attempted build; saves progress for a noncancelled attempted build when the initial exact cache was not hit. Cache actions and ownership repair are nonfatal.
+7. Packs original output plus `candidate.json` into `unsigned.tar`.
+8. Binds original producer context, attests `unsigned.tar` and `attestation-context.json`, retains the attestation bundle, and persists durable output and the direct result.
+
+A complete successful attempt includes all required steps through persistence. If a later step fails, the whole attempt is failed even if output exists. The manager polls the registered exact run/attempt endpoint and confirms completion/conclusion plus the directly recorded result. No run-list search is permitted. Persistence itself cannot establish final job success because it runs before job conclusion.
+
+### Cache contract
+
+Own-head progress is isolated from other unaccepted heads. It can include failed compilation progress. Only accepted provenance allows cross-head seeding.
+
+`accepted_cache_key` must return the complete actual receipt-based key, including actual `input_digest` and exact original producer run/attempt, **and** the original saved path. Planned lock/version changes or a new producer identity must not be used to guess this key. Accepted restore has no broad restore prefix. Admission requires exact key equality; a miss or nonfatal cache error builds cold.
+
+The own-head restore may use its input prefix as declared in YAML. That does not make it a trusted cross-PR cache. Cache restoration is never proof of successful output, merge eligibility, or inclusion.
+
+### Main regression: `verification.yml`
+
+This workflow is push-only. It has no manual inputs, source-identity job, source-validation job, bootstrap route, or merge job in the core.
+
+Run title is `Trusted main verification <SHA>`. The sole `regression-tests` job has a 30-minute timeout. Permissions are contents read and statuses write. Concurrency is `verification-<ref>`, with replacement cancellation disabled.
+
+It marks exact commit `verify` pending, checks out main without stored credentials, requires the pinned official Arch image syntax, and runs the full tests with native Arch `vercmp`. It exports exact `GITHUB_SHA` with `git archive`, copies the tracked snapshot into `/verify`, and uses `/verify/.work/tmp`. The pinned container drops capabilities, adding only the listed setup capabilities, with no-new-privileges. The final `always()` step reports success/failure, or error for other job outcomes.
+
+Push regression is useful but is not a blind substitute for signing evidence. Publication must prove tests for the accepted tree, including bot merges that do not emit push events.
+
+### Signed snapshots: `publish.yml`
+
+Workflow default permission is contents read. Concurrency is `arch-packages-publication`, shared by publish and rollback, with replacement cancellation disabled. `TMPDIR` includes run and attempt under the persistent work root.
+
+| Input | Type, required/default | Meaning |
+| --- | --- | --- |
+| `accepted_sha` | Optional string, no declared default | Publish exact accepted SHA; use event SHA if empty |
+| `operation` | Choice, default `publish`; options `publish`, `rollback` | Select publication or rollback |
+| `target_tag` | Optional string, no declared default | Retained rollback target |
+| `expected_tag` | Optional string, no declared default | Expected current latest tag |
+| `expected_release_id` | Optional string, no declared default | Expected current latest release ID |
+
+| Job | Guard/dependency | Permissions/environment and contract |
+| --- | --- | --- |
+| `collect` | Main ref and operation not rollback | contents/actions read; 190-minute timeout. Resolve full accepted SHA and require current main; checkout it; install read-only tools; `publish.py plan`; output `accepted_sha`; upload metadata plan. |
+| `rollback` | Main ref and operation rollback | contents write; `publish` environment. Checkout main; install public verification tools; verify retained target and expected current identity; explicitly promote; always upload rollback receipt. |
+| `publish` | Needs successful collect | contents write, actions read; `publish` environment. Rebind current trusted main before checkout; install tools; download metadata plan; validate/materialize/sign/release/read back/activate; always upload publication receipt. |
+
+`publish` has no separate job-level main guard; its prerequisite supplies the main-only gate. Rollback and publication are exclusive through their guards/dependency. Neither signing nor rollback declares an explicit timeout.
+
+Artifacts are `publication-plan-<attempt>` (`publication-plan.json`, 7 days, missing is an error), `publication-receipt-<run>-<attempt>` (`publication-result.json`, always attempted, missing is an error), and `rollback-receipt-<run>-<attempt>` (`publication-result.json`, always attempted, missing warns). Receipts use the action's default retention because YAML declares no retention for them. There is no unsigned-package Actions relay or duplicate plan upload.
+
+Collection is metadata-only. The signing runner directly authenticates and materializes the original durable output once per inclusion operation, before private-key import/use. It confirms whole-worker success, exact producer/request/recipe, asset and attestation bindings, safe extraction, native package identity, and package bytes. Premerge native evidence has no package-byte SHA fields. Inclusion is where package integrity checking belongs.
+
+Signing also requires source-test evidence for the exact accepted controller tree. Tested PR evidence is reusable only after proving the protected merge and identical tested tree; otherwise test exact accepted main before signing. Current-main rebinding rejects stale targets.
+
+Only the signing step has `ARCH_SIGNING_KEY`, `ARCH_SIGNING_PASSPHRASE`, and `ARCH_SIGNING_FINGERPRINT`. Trusted tools are installed before that step. Inside it, verification/materialization precedes key import/use; keys and tokens never enter recipes or consumer execution.
+
+After verified package materialization, sign packages, create and sign databases, and sign the catalog. Existing signed content preserves original bytes, signatures, and producer proof. Snapshot tags are `snapshot-<accepted_sha>-<run_id>-<attempt>`.
+
+```mermaid
+flowchart TD
+    A[Current accepted main] --> P[Metadata-only plan from signed predecessor and direct build references]
+    P --> T[Verify exact accepted source-test evidence]
+    T --> O[Authenticate whole-success original output and materialize once]
+    O --> S[Import key; sign packages, database, and catalog]
+    S --> D[Upload draft snapshot]
+    D --> N[Complete public non-latest release]
+    N --> R[Full public asset/signature/database/catalog readback]
+    R --> C[Compare expected previous latest]
+    C --> L[Promote exact verified snapshot]
+    L --> V[Verify active release ID/tag and signed catalog]
+    X[Retained rollback target] --> Q[Verify target and expected current tag/release ID]
+    Q --> L
+```
+
+Full public readback happens before promotion. After promotion, verify exact active release identity and signed catalog without downloading every asset again. Rollback verifies retained bytes/signatures/catalog and both expected current tag and release ID; it neither deletes history, rebuilds, nor re-signs.
+
+An inclusion failure retries inclusion using the same successful build. Missing or corrupt output blocks inclusion. Publication never dispatches a worker, compiles, salvages failed output, or uses a cache as a replacement.
+
+### Signed consumer proof: `consumer-proof.yml`
+
+Manual dispatch has one required string input, `snapshot_tag`, with no declared default. The sole `consumers` job is main-only, with a 60-minute timeout and contents read. There is no concurrency group or environment approval.
+
+It checks out `main` without stored credentials, installs public verification tools, and runs `tools.consumer` for the exact snapshot. Expectations and enrollment come from that snapshot's accepted commit, not today's package list. `smoke.sh` installs every enrolled target using required database/package signatures in a fresh Arch environment, then runs the retained package-specific consumer proofs.
+
+`PROOF_WORK` is `/home/runner/.local/state/arch-packages/work/consumers-<run>-<attempt>`, with `TMPDIR` below it. `consumer-proof-<run>-<attempt>` uploads evidence under `always()`, retained for 14 days; missing evidence warns.
+
+OMP is installed when enrolled but has no shared CLI/help/addon/PipeWire runtime tests. Recipe-owned checks remain in the build. ApexShot consumer proof covers version/help, native messaging, libraries, desktop assets, and extension files, not interactive live capture or recording.
+
+Publication does not dispatch this workflow. Signed consumer proof is not installation on a client's machine.
+
+## Administration, evidence, and clients
+
+Six step-level entrypoints from five repositories are used. Restore/save share a repository and pin. These are pinned external actions, not local composite actions or reusable workflows. Shell, Python, `gh`, and Docker commands are `run` steps.
+
+| Entrypoint and full pin | Role | Workflow users |
+| --- | --- | --- |
+| `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1` | Checkout | All seven workflows |
+| `actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | Expiring handoff/evidence | update, publish, consumer-proof |
+| `actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c` | Artifact handoff | update, publish |
+| `actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6` | Original worker OIDC archive/context attestation; YAML labels v4.2.2 | build-package |
+| `actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9` | Isolated own-head or exact accepted-producer restore | build-package |
+| `actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9` | Noncancelled attempted-build progress | build-package |
+
+All five declared concurrency groups use `cancel-in-progress: false`: source update, candidate PR, package request, verification ref, and publication. This prevents automatic replacement cancellation of a running job; it does not prevent human cancellation, timeout, or replacement of pending work. It is not dispatch deduplication.
+
+## Trust boundaries
+
+| Boundary | Rule |
 | --- | --- |
-| `prepare` | Static identity/input freeze; independently attest original candidate when fresh provenance is needed |
-| `manual-review` | Exact `recipe-review` environment route for new/non-trivial PKGBUILD code |
-| `automatic-authorization` | Independently reconstructed automatic route for eligible unchanged/literal code |
-| `build` | Needs preparation and selected authorization or authorized reuse; `always()` admits the successful active route despite the inactive route's skip; tests/dispatch/collection |
-| `validate` | Authenticate output after successful build |
-| `report-failure` | Report candidate-build failure for unsuccessful post-prepare build/validation |
-| `finalize` | Recheck required contexts and exact identity; existing protected automatic merge and explicit follow-up |
+| Metadata/static host | Trusted control holds API credentials; does not execute recipes |
+| Package worker | Disposable pinned Arch x86_64 container, unprivileged builder, no inherited tokens |
+| Worker mounts | Only checked, job-owned nonsymlink cache; no host root/home/checkout/credentials or Docker socket |
+| Source tests | Complete exact tracked snapshot in credential-free pinned Arch sandbox; no `.git` or ignored state |
+| Publication | Trusted host verifies output and signs; package staging has sanitized environment and no private-key home, token, or Docker socket |
+| Consumer setup | Fresh copied root with setup-only mount/capability needs; these privileges are not package-build privileges |
+| Consumer execution | Capability-dropped execution with clean environment; public proof isolation remains |
+| Client | Human configures pacman and installs; no automated client administration |
 
-These are old candidate jobs, distinct from the source-only verification jobs above. Source-only main events now avoid this overlapping route when unchanged scope is proven. Other candidate behavior is not altered.
+Official Arch dependencies come first, then signed `vith-gh`, then signed n3t `vith-arch`. Custom databases and packages both require trusted signatures. Worker dependency setup resolves the GitHub latest redirect to a fixed snapshot; consumer proof keeps the explicitly requested snapshot. Neither receives publication signing credentials.
 
-The original exact static candidate and prebuild OIDC provenance remain independently retained. New/non-trivial recipe code needs genuine exact candidate/run/attempt human environment approval **before execution**. Eligible unchanged/enrolled literal transitions are independently authorized; invalid source/metadata fails rather than adding an irrelevant prompt. Exact authorized successful reuse skips another approval/compilation.
+Public keys are in [keys](../keys/). The signing fingerprint is `9C293ABB1F701DA04BA2C0D5711FC9BDDC5AF617`. Private signing files and the OpenTofu passphrase stay in local administrative state.
 
-Post-build validation follows either authorization route. Skipping an inactive review/automatic job does not skip validation. Required contexts remain `verify`, `candidate-build`, and `recipe-policy`. Existing authorized recipe merges use normal exact-head protection without a separate human merge approval.
+## Failure and retry rules
 
-[`build-package.yml`](../.github/workflows/build-package.yml), **Build one package**, retains its independent main-only `package` job, 150-minute timeout, and old `approved-package-<input_digest>` concurrency. Its old dispatch fields remain:
+| Observation | Action |
+| --- | --- |
+| Same queued/running inputs | Poll registered exact producer; no redispatch |
+| Same fully successful inputs | Reuse direct result and original producer |
+| Same failed inputs | Report failure; no periodic retry |
+| Explicit failed/unregistered retry | Reserve fresh request under identity/CAS guards; a failed attempt may compile again |
+| Worker failed after compilation or upload | Whole attempt failed; do not salvage |
+| Missing/ambiguous registration | Fail visibly; do not search history or dispatch repeatedly |
+| Source terminal failure | Retry only explicitly with exact identity |
+| Source preparation exception | Guard current base/head/PR afresh before reporting failure |
+| Captured base behind main | Skip that candidate, continue other work, leave human branch alone |
+| Inclusion failure | Retry original successful output, no compile |
+| Missing/corrupt successful output or invalid provenance | Refuse inclusion |
+| HTTP 403 | Report API failure; do not assume authorization or quota recovery |
 
-| Input | Type/default | Purpose |
-| --- | --- | --- |
-| `package` | Required string | Authorized package |
-| `publication_run` | Required string | Original authorization coordinator run |
-| `publication_attempt` | Required string | Original coordinator attempt |
-| `input_digest` | Required string | Exact authorized compilation identity |
-| `recovery_mode` | Boolean, false | Transport-only recovery |
-| `original_run` | String, empty | Successful original producer |
-| `original_attempt` | String, empty | Original attempt |
-| `original_artifact` | String, empty | Bound original artifact descriptor for recovery |
-| `original_candidate_key` | String, empty | Historical candidate receipt key |
-| `archive_format` | Choice, `native-v2` | Also supports retained `legacy-native-v1` |
+Package reservation is atomic and exact. The first worker registers its producer; a different worker cannot replace it. Manager finalization binds result to the registered attempt and final GitHub conclusion. Polling is bounded (the collection interface uses a 10,800-second default); it uses direct records and exact endpoints, not historical discovery.
 
-A worker authenticates parent workflow/head/run/attempt and durable exact authorization before execution or trusted cache use. Normal preparation downloads prepared input; independent one-root recipe candidates export their owned payload while authenticating the complete roster/pins. Historical harnesses may require full exports.
+Archive digests and attestation subjects authenticate transport. They do not add native package SHA fields or justify repeated premerge downloads. Downloads must handle Actions ZIP and release media types separately and strip API credentials from storage redirects.
 
-The old root-owned `compilation.json` checkpoint starts before recipe execution and distinguishes successful, failed, and not-started compilation. Overall run color is not the old compilation-success authority. Successful original bytes may require recovery after metadata/runtime/copy/upload/attestation/storage failure; they must not be recompiled. Actual authenticated failed compilation may retry. Unknown or unrecoverable successful state refuses rather than inventing output.
+## Operator commands
 
-Old recovery authenticates original checkpoint, artifact ID/digest/size, source/controller declarations, and producer. It runs no recipe and uses no compiler cache. Durable `unsigned.tar`, context, and OIDC bundle are verified before reuse. Literal historical harness/controller manifests are parsed without executing historical Python; missing declared files or unsafe paths fail.
+Examples use fish syntax. Replace `NUMBER`, `PACKAGE`, `SNAPSHOT_TAG`, and expected rollback values with actual identities.
 
-Approved normal workers restore/save compatible package/image/harness dependency/compiler caches, including noncancelled failed compilation progress. Cache failures are nonfatal and ownership is repaired. Unapproved code cannot seed trusted caches. Cache is not successful output.
-
-Old native validation retains `.SRCINFO` consistency, output identity/version/architecture/hashes/source-lock checks and OMP version/help/addon/PipeWire runtime evidence. These checks are not removed by this prerequisite. Recipe-owned tests also remain.
-
-## Old bookkeeping, publication, and consumers retained
-
-Accepted recipe merge bookkeeping verifies exact reviewed head and accepted merge parents/tree, then records gitlink, lock, upstream, and original build provenance. It can activate pending imports. It requires no second recipe approval or package build. Existing main candidate behavior outside the narrowed source-only event route remains unchanged.
-
-[`publish.yml`](../.github/workflows/publish.yml), **Signed package snapshots**, retains main push and manual dispatch:
-
-| Input | Type/default | Effect |
-| --- | --- | --- |
-| `accepted_sha` | Optional string, event SHA when empty | Exact accepted main |
-| `operation` | Choice, publish | Publish or rollback |
-| `target_tag` | Optional string | Retained rollback target |
-| `expected_tag` | Optional string | Expected current latest tag |
-| `expected_release_id` | Optional string | Expected current latest release ID |
-
-Jobs remain `collect` → `publish`, or exclusive `rollback`. Collection uses contents/actions read and a 190-minute timeout. Signing uses contents write/actions read and `publish` environment. Rollback uses the `publish` environment without private signing-key variables. The shared `arch-packages-publication` concurrency group disables replacement cancellation.
-
-The old collector verifies existing signed content or durable unsigned output and retains its existing unsigned Actions relay and publication plans. Publication rebinds accepted main, authenticates original provenance, signs packages/databases/catalog, completes a public non-latest release, performs full public readback, compares previous latest, promotes, and verifies active signed catalog.
-
-Only signing receives `ARCH_SIGNING_KEY`, `ARCH_SIGNING_PASSPHRASE`, and `ARCH_SIGNING_FINGERPRINT`. Trusted tools install before secrets. Publication never dispatches a worker or compiles, including transport recovery. Missing original bytes fail rather than rebuild.
-
-Snapshot tags retain `snapshot-<accepted_sha>-<run>-<attempt>`. Publication result evidence is always attempted; missing publication evidence is an error, missing rollback evidence warns. Rollback independently verifies retained signed output and both expected current tag/release ID, then promotes without deletion, compilation, or re-signing. Preserve older signatures, producer proof, database filenames, source, and licensing assets.
-
-[`consumer-proof.yml`](../.github/workflows/consumer-proof.yml), **Signed snapshot consumer proof**, remains manual with required string `snapshot_tag`. Its independent `consumers` job has a 60-minute timeout and contents read. The old dispatch-ref behavior is unchanged by this prerequisite; do not assume the later core main-only guard has been installed.
-
-It verifies the selected public signed snapshot, derives enrollment from its accepted commit, installs every enrolled output in a fresh Arch environment with required signatures, and runs the existing consumer proofs. `consumer-proof-<run>-<attempt>` evidence is retained for 14 days, attempted on failure too; missing evidence warns. Publication does not dispatch it.
-
-Existing OMP consumer checks remain in this interim system. ApexShot proofs cover version/help, native messaging, shared libraries, desktop assets, and extension files. They do not prove interactive live GNOME/Wayland capture or recording. Extension enablement and client use remain manual.
-
-## Actions and trust boundaries
-
-The interim workflows use six pinned step-level entrypoints from five action repositories: `actions/checkout`, `actions/upload-artifact`, `actions/download-artifact`, `actions/attest`, `actions/cache/restore`, and `actions/cache/save`. They are external actions, not reusable workflows. The prerequisite dispatcher uses checkout; the prerequisite verification uses checkout and upload-artifact. Shell, Python, `gh`, and Docker remain `run` steps.
-
-All checkouts disable persisted credentials. Only approved workers use compiler cache. API credentials/OIDC remain in trusted host tools outside recipe containers. Only publication signing receives the private key.
-
-Workers run unprivileged in disposable pinned Arch x86_64 containers. Only authenticated nonsymlink job-owned package cache can bind; no host root/home/checkout/credential directories or Docker socket. Inputs and trusted harness are copied. Old Git source freezing uses `MAKEPKG_GIT_CONFIG` and matching system configuration with global config disabled, retaining normal configured update discovery rather than permanently pinning updates.
-
-Dependency order is official Arch, signed `vith-gh`, then signed n3t `vith-arch`. Custom packages and databases require signatures. Worker dependency setup freezes latest-release redirects; consumers keep their selected snapshot. Neither receives signing credentials.
-
-Source tests receive complete exact tracked files without credentials or `.git`. Publication staging has sanitized execution and no private-key home/token/socket. Consumer setup has separate mount/capability needs; actual consumer execution drops capabilities and clears environment. These are not workstation installations.
-
-`bsdtar` is required for persistence, recovery, and bookkeeping proof. Provision `libarchive-tools` before approval/recovery archive handling. Actions ZIP transport and release downloads use different media types; storage redirects never receive API tokens.
-
-## Interim failure and recovery caveat
-
-The old route preserves authenticated successful compilation even when a later step fails, and recovers exact original bytes. Actual authenticated failed compilation can retry with compatible trusted cache. Missing successful bytes, uncertain outcomes, invalid provenance/signatures, and stale identity fail closed.
-
-Existing historical lookup can still scan retained candidate keys and historical workers/jobs/artifacts before static approval merely to establish whether completed output exists. That avoidable API work is not fixed by this prerequisite and grants no authority. Recovered output still requires old authorization and provenance verification.
-
-Coordinator failure or movement does not cancel independent children. Inspect child evidence and old checkpoints, not only run color. Collection retains its existing bounded polling. HTTP 403 is API failure, not assumed authorization or quota recovery. Do not make claims about reset times or migration progress without evidence.
-
-Source validation errors stop the source flow. The prerequisite does not add the later core's source-marker/retry lifecycle. A dispatcher behind-base skip is a successful no-dispatch outcome; it does not update the branch or manufacture passing source checks.
-
-## Immutable bootstrap and manual operation
-
-For initial source-workflow installation, freeze accepted main as C and final source-only head as H. Use an owned staging base pinned to C if needed, mark ready while there, then retarget main without changing H. The dispatcher has no edited-event trigger; retargeting is not a substitute for explicit validation. Preserve the exact-PR guard and ordinary protected merge.
-
-Create the exact direct-commit `source-review-<H>` tag under the managed `source-review-immutable` ruleset. It permits creation but forbids update/deletion, without bypass actors. Dispatch verification from that tag with `bootstrap=true`. Actual Git-object and workflow identity are checked before checkout. Successful validation still waits for human normal Merge. Keep this bootstrap contract until the later atomic core installation retires it.
-
-Normal source validation, using fish:
+Start exact validation on trusted main:
 
 ```fish
 set head (env -u GH_TOKEN -u GITHUB_TOKEN gh pr view NUMBER --repo vith/arch-packages --json headRefOid --jq .headRefOid)
-set base (gh api repos/vith/arch-packages/git/ref/heads/main --jq .object.sha)
-env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run verification.yml --repo vith/arch-packages --ref main -f pr_number=NUMBER -f expected_head=$head -f expected_base=$base
-```
-
-Initial immutable-tag validation, only after verifying H and C:
-
-```fish
-set tag source-review-$head
-env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run verification.yml --repo vith/arch-packages --ref $tag -f pr_number=NUMBER -f expected_head=$head -f expected_base=$base -f bootstrap=true
-```
-
-Package-changing/native recipe validation remains:
-
-```fish
 env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run candidate.yml --repo vith/arch-packages --ref main -f pr_number=NUMBER -f expected_head=$head
 ```
 
-Targeted reconciliation, legacy migration, and read-only update bootstrap are separate modes:
+Retry only when intended:
+
+```fish
+env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run candidate.yml --repo vith/arch-packages --ref main -f pr_number=NUMBER -f expected_head=$head -f retry=true
+```
+
+Reconcile one known recipe or bookkeeping PR without unrelated redispatch:
 
 ```fish
 env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run update.yml --repo vith/arch-packages --ref main -f reconcile_pr=NUMBER
-env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run update.yml --repo vith/arch-packages --ref main -f migrate_pr=NUMBER
-env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run update.yml --repo vith/arch-packages --ref main -f bootstrap=true
 ```
 
-Manual signed proof and explicit rollback:
+Run normal discovery/reconciliation, read-only bootstrap, or explicit legacy migration as separate modes:
 
 ```fish
-env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run consumer-proof.yml --repo vith/arch-packages -f snapshot_tag=SNAPSHOT_TAG
+env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run update.yml --repo vith/arch-packages --ref main
+env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run update.yml --repo vith/arch-packages --ref main -f bootstrap=true
+env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run update.yml --repo vith/arch-packages --ref main -f migrate_pr=NUMBER
+```
+
+Run a retained signed install proof:
+
+```fish
+env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run consumer-proof.yml --repo vith/arch-packages --ref main -f snapshot_tag=SNAPSHOT_TAG
+```
+
+Rollback is explicit and compare-and-swap guarded:
+
+```fish
 env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run publish.yml --repo vith/arch-packages --ref main -f operation=rollback -f target_tag=SNAPSHOT_TAG -f expected_tag=CURRENT_TAG -f expected_release_id=CURRENT_RELEASE_ID
 ```
 
-No workstation package compilation:
+Local regression is not a package build:
 
 ```fish
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-## Administration, evidence, and clients
+Inspect candidate identity and merge classification, then open the linked worker for live output. Confirm its exact attempt and full conclusion. For human policy, review actual recipe files and click ordinary Merge only after the required checks pass. Do not treat an internal build step as success.
 
-Repository settings and signing secrets are managed through [OpenTofu](../opentofu/) using canonical encrypted state:
+## Administration and rollout evidence
+
+[OpenTofu](../opentofu/) manages repository settings and signing secrets, not version-controlled workflow files. Use the canonical encrypted state and saved-plan workflow:
 
 ```fish
 tools/tofu.sh init
 tools/tofu.sh plan -out=github.tfplan
 ```
 
-Inspect the saved plan before any authorized apply and verify a later no-change plan. Do not remove old review gates during this prerequisite. The wrapper uses the GitHub CLI login. State/plans stay encrypted and ignored; privately back up `~/.local/state/arch-packages/tofu-passphrase` and `~/.local/state/arch-packages/signing/`. The override variables remain `ARCH_STATE_PASSPHRASE_FILE` and `TF_VAR_signing_directory`.
+Inspect the encrypted saved plan before applying. The currently inspected removal plan must wait for coherent protected code installation. Once authorized and applied, verify a subsequent plan has no changes.
 
-Observed prerequisite evidence is 284 tests in 35.155 seconds, OK with one skip, plus passing shell syntax/diff checks. This is not protected hosted installation acceptance. OpenTofu fmt/validate passed and the encrypted saved removal plan was inspected: 0 add, 0 change, 3 destroy for the `recipe_review` and `code_review` environments and the `source_review` ruleset. It has not been applied and must wait for coherent protected core code, then a no-change plan.
+```fish
+tools/tofu.sh apply github.tfplan
+tools/tofu.sh plan
+```
 
-The selected delivery remains this prerequisite followed by one atomic core PR. No claim here installs its worker/state/cache/signing changes. User-token API access does not prove App quota recovery, and read-only smoke does not prove controller deployment, signing, promotion, or rollback.
+The wrapper uses the existing GitHub CLI login. Back up `~/.local/state/arch-packages/tofu-passphrase` and `~/.local/state/arch-packages/signing/` privately. `ARCH_STATE_PASSPHRASE_FILE` and `TF_VAR_signing_directory` override those paths. Do not print credentials or use copied state from another checkout.
 
-See [README installation](../README.md#install). Verify full fingerprint `9C293ABB1F701DA04BA2C0D5711FC9BDDC5AF617` and keep signature checks enabled. Public keys are in [keys](../keys/). Use `[vith-gh]` for `vith-gh.db`, `[arch-packages]` for historical `arch-packages.db`, and leave separate `[vith-arch]` dependencies alone. Cross-rename rollback requires the matching client section.
+Observed evidence:
 
-Preserve original signed releases and Nasc corresponding-source/license history. Publication integrity, signed consumer installation, and a human's client installation are distinct outcomes.
+| Check | Observed result | Limit |
+| --- | --- | --- |
+| Core full suite | 305 tests, 24.630 seconds, OK | Local tests, not deployment |
+| Later targeted checks | update 40, package runs 14, recipe acceptance 21 passed | After failure-lifecycle/behind fixes and obsolete kind deletion; not a later full-suite claim |
+| Prerequisite full suite | 284 tests, 35.155 seconds, OK, one skip | Interim route only |
+| Shell/diff checks | Passed | No package build |
+| OpenTofu | fmt/validate passed; encrypted saved plan inspected: 0 add, 0 change, 3 destroy (`recipe_review`, `code_review`, `source_review` ruleset resources) | Not applied; only after coherent protected installation, then no-change plan |
+| Real read-only state/PR check | One tip resolution, seven records batched, cached reread zero requests; 31 open PRs via GraphQL | User-token access, not App quota recovery |
+| Hosted read-only smoke | [38081926361](https://github.com/vith/arch-packages/actions/runs/38081926361): both jobs successful; native 57 seconds, historical consumers 2 minutes 40 seconds | No new-controller deployment, state write, or publication |
+
+The new native harness built a public Git fixture with declared version `0-1` and actual version `r104.gf5b1f73-1`. It recorded full commit `f5b1f735737944150331d06e0b05506f5c7d6957` and a reachable-tag context digest. The proof exercised normal branch/history/dynamic `pkgver`, archive identity, and a capability-dropped binary matching the full commit. Native evidence had no package SHA fields.
+
+New consumer code verified and installed the exact original signed snapshot `snapshot-f5b1f735737944150331d06e0b05506f5c7d6957-38059323097-1`. Its seven enrolled targets were `apexshot`, `archive-mounter`, `carapace`, `cloudflare-speed-cli`, `nasctui`, `oh-my-pi-vith-git`, and `python-google-genai`. OMP was installed without shared runtime tests.
+
+This proof used no workstation package build, signing key, state write, or promotion. Live new-controller dispatch/merge behavior, warm accepted-cache admission, inclusion, promotion, and rollback remain pending the human's protected merges. Do not mark the hosted acceptance list complete from unit tests or this read-only proof.
+
+## History, licensing, and clients
+
+Preserve public signed snapshots, original producer provenance, historical database filenames, corresponding source, license assets, and rollback. Failed legacy producers cannot enter the new live route through salvage. Directly known fully successful old output can be considered during controlled migration; unchanged signed snapshots remain readable without a historical worker scan.
+
+Use `[vith-gh]` for snapshots with `vith-gh.db`, `[arch-packages]` for historical `arch-packages.db`, and leave separate `[vith-arch]` dependencies alone. Cross-rename rollback requires the matching client section. Keep signature checks enabled and verify the full signing fingerprint.
+
+The retained Nasc history and GPLv2 corresponding source are linked in [README](../README.md#licensing-and-retained-source). Public integrity, signed consumer proof, and a human's client installation are separate outcomes.
