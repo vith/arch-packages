@@ -1,7 +1,7 @@
 # Maintainer: vith
 pkgname=oh-my-pi-vith-git
 pkgver=18.4.8.vith.r373.g63114eadeaf6
-pkgrel=1
+pkgrel=2
 pkgdesc='Oh My Pi coding agent — vith fork'
 arch=('x86_64')
 url='https://github.com/vith/oh-my-pi'
