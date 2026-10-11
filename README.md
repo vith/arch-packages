@@ -1,5 +1,9 @@
 # vith-gh
 
+> [!WARNING]
+> **AI slop**
+> AI assistants authored substantial project automation and documentation. Source code and tests exist but do not guarantee correctness or security. Independently review the project before trusting or installing it.
+
 Personal x86_64 Arch Linux packages, built on GitHub Actions and distributed as signed GitHub Releases. All executable packages are built from source, not repackaged upstream binaries. Packages appear as `vith-gh/<package>` in pacman and paru. The source project remains at [vith/arch-packages](https://github.com/vith/arch-packages).
 
 ## Packages
