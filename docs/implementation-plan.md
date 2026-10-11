@@ -1,6 +1,6 @@
 # Implementation plan
 
-**Status: core and prerequisite merged; main-only zero-worker path observed. Fresh OMP pkgrel-only validation succeeded; human merges and unproved acceptance boundaries remain open.**
+**Status: publication, signed promotion to `latest`, and hosted installation proof are complete. The remaining operational and external-recipe boundaries are still open; this is not full plan completion.**
 
 The user selected a small prerequisite followed by **one atomic core cutover PR**, with reviewable component commits inside that PR. The earlier instruction to deploy small component PRs is superseded by this sequencing. Do not activate an incomplete combination of old and new worker contracts.
 
@@ -198,8 +198,10 @@ Activation remains protected and human-owned. Manage settings through inspected 
 - Prerequisite full suite: 284 tests in 35.155 seconds, OK, one skip.
 - Shell syntax and diff checks passed. No workstation package build.
 - Canonical encrypted-state OpenTofu apply: 0 added, 0 changed, 3 destroyed, removing only the `code_review` and `recipe_review` environments and the `source_review` ruleset. The next plan reported **No changes**. Canceled 26 old waiting runs; recipe branches and PRs were preserved.
-- Unmerged descriptor-verifier fix: 3 meaningful RED/GREEN boundary regressions; 308 tests passed in 21.713 seconds. The actual CLI with the fix rejects the old schema-2 descriptor with `ValueError: invalid direct build descriptor`. Old OMP worker `37979975267` failed and is not salvaged.
-- Fresh OMP pkgrel 2 [PR #69](https://github.com/vith/arch-packages/pull/69), head `a8be88808739a0a4bbc024e113b88cb075805f80`: [worker 38169157502](https://github.com/vith/arch-packages/actions/runs/38169157502) succeeded through all steps in 15 minutes 29 seconds; [candidate 38168988462](https://github.com/vith/arch-packages/actions/runs/38168988462) succeeded. All three exact-head checks succeeded; the PR remains open.
+- [PR #70](https://github.com/vith/arch-packages/pull/70) and [PR #69](https://github.com/vith/arch-packages/pull/69) merged through normal branch protection. Local verification passed 308 tests in 21.713 seconds, including three boundary tests; the unsupported-descriptor regression was verified RED/GREEN. [Source candidate 38171124912](https://github.com/vith/arch-packages/actions/runs/38171124912) succeeded with zero package workers.
+- [Original worker 38169157502](https://github.com/vith/arch-packages/actions/runs/38169157502) succeeded in 15m29s; its schema-3 receipt and original producer identity were retained by [acceptance PR #71](https://github.com/vith/arch-packages/pull/71), automatically merged as `b77c257a421d14b6f3fd3c362b96290ac8b9a21e`.
+- [Publication 38173038296](https://github.com/vith/arch-packages/actions/runs/38173038296) authenticated the original output archive, attestation, and bytes, and promoted signed snapshot `snapshot-b77c257a421d14b6f3fd3c362b96290ac8b9a21e-38173038296-1` to `latest`.
+- [Hosted consumer 38178456012](https://github.com/vith/arch-packages/actions/runs/38178456012) succeeded: every enrolled package installed with required signatures in a disposable Arch root.
 - Real read-only state/PR check: state tip resolved once, seven records batched, cached reread made zero requests, PR GraphQL observed 31 open PRs. This used user-token access and does not prove App quota recovery.
 - Hosted read-only smoke [38081926361](https://github.com/vith/arch-packages/actions/runs/38081926361): both jobs passed; native fixture 57 seconds, historical consumers 2 minutes 40 seconds.
 
@@ -220,16 +222,16 @@ Keep every approved acceptance boundary. The following checks remain open for pr
 - [ ] Concurrent manager activity does not duplicate builds.
 - [ ] Failed post-build jobs are not salvaged; explicit retry builds anew.
 - [ ] Inclusion retries do not rebuild.
-- [ ] Actual Git commits and dynamic versions are recorded without checkout changes through live acceptance/bookkeeping. The isolated native smoke already covers normal build semantics.
+- [x] Actual Git commits and dynamic versions are recorded without checkout changes through live acceptance/bookkeeping: the original worker and acceptance PR #71 retained OMP version `18.4.8.vith.r373.g63114eadeaf6-2`, full source `63114eadeaf66924cd1256f3fa79ef94a4f701d2`, and reachable `v18.4.8` context.
 - [ ] Missing or corrupt output prevents inclusion.
 - [x] Main-only changes select zero package workers: README-only [PR #68](https://github.com/vith/arch-packages/pull/68) auto-merged after [candidate 38147850295](https://github.com/vith/arch-packages/actions/runs/38147850295) succeeded with the package-worker step skipped.
-- [ ] Signed installation, historical enrollment, promotion, and rollback work end to end. Read-only historical signed installation has passed; new publication/promotion/rollback remain pending.
+- [ ] Signed installation, historical enrollment, promotion, and rollback work end to end. Signed installation passed in [hosted consumer 38178456012](https://github.com/vith/arch-packages/actions/runs/38178456012), and promotion to `latest` passed in [publication 38173038296](https://github.com/vith/arch-packages/actions/runs/38173038296); live rollback remains pending.
 
 Also verify exact accepted-cache admission and original saved path in a live warm-cache run, source retry/fresh-identity failures, and behind-main skips without blocking unrelated work. These are part of the approved observable boundaries, not replacements for the list above.
 
 Retain regressions for those boundaries plus static parser, container, credential, cache, native metadata, and signature safety. Unit tests must not substitute for live acceptance.
 
-[PR #69](https://github.com/vith/arch-packages/pull/69) is pkgrel-only but human-classified and remains open. Its successful checks do not establish testing of a non-trivial executable recipe change. Source-verifier fix [PR #70](https://github.com/vith/arch-packages/pull/70) requires exact hosted validation followed by a human protected Merge. Do not approve or merge on the user's behalf.
+Not yet demonstrated: live rollback, warm-cache behavior, retry/concurrency, changed-head handling, corrupt-output handling, and an external non-trivial recipe scenario. Keep these open. Human-classified [PR #69](https://github.com/vith/arch-packages/pull/69) changed only `pkgrel`; its normal merge does not prove review of an external executable recipe. Authorized internal changes may proceed through ordinary protected Merge; external PKGBUILD changes require user approval.
 
 ### Documentation and final checkpoint
 
@@ -245,4 +247,4 @@ After hosted protected acceptance, update the same files slowly with the observe
 - No unrelated action-policy hardening.
 - No ARM builders, local package builds, external-fork support, laptop package changes, or changes to the OMP fork or n3t infrastructure.
 
-**End state:** one build-before-merge route, direct records of whole-worker-success output, efficient updates, human normal Merge for non-trivial code, and signing/database inclusion without rebuilds or failed-job recovery. No new publication, signed installation, promotion, rollback, or warm-cache proof. Human merge gates and all unproved acceptance boundaries remain open.
+**End state:** one build-before-merge route, direct records of whole-worker-success output, efficient updates, ordinary protected Merge with user approval for external PKGBUILD changes, and signing/database inclusion without rebuilds or failed-job recovery. Retain the successful publication and hosted signed-install evidence without rebuilding. Continue verification of the open boundaries; do not mark the plan complete until the remaining criteria are demonstrated.

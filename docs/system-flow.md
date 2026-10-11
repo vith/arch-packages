@@ -4,7 +4,7 @@
 
 ## Status and how to read this guide
 
-Core PR #67 merged on protected main; signing and protected merges are unchanged. Live acceptance and publication remain incomplete.
+Signed snapshot promotion and hosted installation verification have passed; live rollback and the remaining operational scenarios are still open.
 
 Read the lifecycle first, then the workflow contracts and failure rules. [Implementation plan](implementation-plan.md) records scope, evidence, and unfinished live acceptance. [README](../README.md) contains client installation instructions.
 
@@ -86,7 +86,7 @@ A successful internal compile step, uploaded archive, passing candidate status, 
 
 After recipe merge, reconciliation verifies the exact head/merge relationship and generates main bookkeeping. It records the gitlink, actual source/version data, upstream information, and original build reference. Pending imports can activate at this point. Bookkeeping selects zero workers and requires no second recipe approval or build.
 
-All main documentation, source, controller, image, and bookkeeping candidates use one source-test route with zero package workers. Executable main code requires human normal Merge; generated exact bookkeeping can merge automatically after validation. No alternative manual source-review workflow remains in the core.
+All main documentation, source, controller, image, and bookkeeping candidates use one source-test route with zero package workers. A human-classified PR stays open until ordinary protected Merge, which the assistant may perform for authorized internal changes. External PKGBUILD changes require user approval. Generated exact bookkeeping can merge automatically after validation. No alternative manual source-review workflow remains in the core.
 
 ## Recipes and actual metadata
 
