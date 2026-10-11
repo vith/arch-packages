@@ -622,7 +622,8 @@ def migrate_existing(number=3):
         recipe = u.api(u.route('/git/commits/' + recipe_head))
         if not recipe['parents'] or recipe['parents'][0]['sha'] != B:
             raise ValueError('legacy recipe predecessor diverged')
-        proposal_branch = 'recipe-updates/' + name + '/' + watcher
+        original = recipe_state.load_optional('proposal', recipe_head)
+        proposal_branch = original['head_branch'] if original else u.recipe_update_branch(name)
         receipt = {'schema': 1, 'repository': u.repository(), 'base': C, 'pkgbase': name,
                    'head_branch': proposal_branch, 'proposal_origin': 'watcher', 'watcher_ids': [watcher],
                    'watcher_id': watcher, 'recipe_commit': B, 'lock': lock, 'provenance': provenance,
@@ -636,7 +637,6 @@ def migrate_existing(number=3):
             verify_legacy_adoption(receipt, C, current, currentpins, require_attestation=False)
         receipt['receipt_id'] = digest(receipt)
         # Original proposal remains immutable and supplies no approval authority.
-        original = recipe_state.load_optional('proposal', recipe_head)
         if original:
             fields = ('pkgbase', 'watcher_id', 'watcher_ids', 'head_branch', 'proposal_origin', 'recipe_base', 'recipe_head', 'recipe_tree', 'lock', 'provenance')
             if merged_legacy:

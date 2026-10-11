@@ -256,7 +256,12 @@ class AcceptanceInvariants(unittest.TestCase):
                     writes = [(path, body) for path, method, body in calls if method != 'GET']
                     self.assertEqual([path for path, body in writes], [update.route('/pulls')])
                     self.assertEqual((writes[0][1]['head'], writes[0][1]['base']),
-                                     ('recipe-updates/demo/release', 'pkg/demo'))
+                                     ('recipe-updates/demo/candidate', 'pkg/demo'))
+                    historical = {**frozen, 'head_branch': 'recipe-updates/demo/release'}
+                    with patch.object(recipe_state, 'load_optional', return_value=historical):
+                        acceptance.migrate_existing(3)
+                    writes = [(path, body) for path, method, body in calls if method != 'GET']
+                    self.assertEqual(writes[-1][1]['head'], 'recipe-updates/demo/release')
                     # A moving enrolled git branch may change the recipe lock
                     # while the enrollment provenance remains exactly unchanged.
                     provenance = oldpro

@@ -1253,12 +1253,16 @@ def dispatch(number, pr=None, pending=None, retry=False):
     return True
 
 
+def recipe_update_branch(name):
+    return 'recipe-updates/'+name+'/candidate'
+
+
 def owned_proposal(existing,name,watcher_id):
     from tools import recipe_state
     oldhead=existing['head']['sha']
     receipt=recipe_state.load('proposal',oldhead)
     oldcommit=api(route('/git/commits/'+oldhead))
-    if receipt.get('proposal_origin')!='watcher' or receipt.get('repository')!=repository() or receipt['head_branch']!='recipe-updates/'+name or receipt['pkgbase']!=name or receipt.get('watcher_ids')!=[receipt['watcher_id']] or receipt['recipe_head']!=oldhead or oldcommit['tree']['sha']!=receipt['recipe_tree'] or not oldcommit['parents'] or oldcommit['parents'][0]['sha']!=receipt['recipe_base']:
+    if receipt.get('proposal_origin')!='watcher' or receipt.get('repository')!=repository() or receipt['head_branch']!=recipe_update_branch(name) or receipt['pkgbase']!=name or receipt.get('watcher_ids')!=[receipt['watcher_id']] or receipt['recipe_head']!=oldhead or oldcommit['tree']['sha']!=receipt['recipe_tree'] or not oldcommit['parents'] or oldcommit['parents'][0]['sha']!=receipt['recipe_base']:
         raise ValueError('user-edited proposal; refusing overwrite')
     recipe_state.require_attestation('proposal',oldhead,receipt,oldhead)
     return oldcommit,receipt['base']
@@ -1295,7 +1299,7 @@ def write_proposals(directory):
             raise ValueError('accepted recipe branch awaits bookkeeping or has divergent work')
         provenance=load(ROOT/'upstream'/f'{name}.json')
         watcher=next(w for w in provenance['watchers'] if w['id']==watcher_id)
-        branch='recipe-updates/'+name
+        branch=recipe_update_branch(name)
         package_prs = [pr for pr in pulls if pr['base']['ref'] == 'pkg/' + name]
         if any(not pr['head']['ref'].startswith('recipe-updates/') for pr in package_prs):
             continue
@@ -1395,7 +1399,7 @@ def write_proposals(directory):
             parents.append(aur_parent)
         recipe_sha=None
         proposal_message = f'Update {name} via {watcher_id}\n\nArch-Source-Target: ' + recipe_state.digest({'lock': lock, 'provenance': receipt['provenance']})
-        recipe_branch='recipe-updates/'+name
+        recipe_branch=branch
         recipe_tip=ref_head(recipe_branch)
         if recipe_tip!=retained_tip:
             raise ValueError('recipe proposal ref moved after ownership validation')
