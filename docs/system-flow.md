@@ -424,7 +424,7 @@ tools/tofu.sh init
 tools/tofu.sh plan -out=github.tfplan
 ```
 
-Inspect the encrypted saved plan before applying. The currently inspected removal plan must wait for coherent protected code installation. Once authorized and applied, verify a subsequent plan has no changes.
+Inspect the encrypted saved plan before applying. After applying, verify a subsequent plan has no changes.
 
 ```fish
 tools/tofu.sh apply github.tfplan
@@ -441,7 +441,7 @@ Observed evidence:
 | Later targeted checks | update 40, package runs 14, recipe acceptance 21 passed | After failure-lifecycle/behind fixes and obsolete kind deletion; not a later full-suite claim |
 | Prerequisite full suite | 284 tests, 35.155 seconds, OK, one skip | Interim route only |
 | Shell/diff checks | Passed | No package build |
-| OpenTofu | fmt/validate passed; encrypted saved plan inspected: 0 add, 0 change, 3 destroy (`recipe_review`, `code_review`, `source_review` ruleset resources) | Not applied; only after coherent protected installation, then no-change plan |
+| OpenTofu | fmt/validate passed; inspected plan applied using canonical encrypted state: 0 added, 0 changed, 3 destroyed (`recipe_review` and `code_review` environments; `source_review` ruleset) | Subsequent plan: No changes (exit 0); signing/publish environment and main protection unchanged |
 | Real read-only state/PR check | One tip resolution, seven records batched, cached reread zero requests; 31 open PRs via GraphQL | User-token access, not App quota recovery |
 | Hosted read-only smoke | [38081926361](https://github.com/vith/arch-packages/actions/runs/38081926361): both jobs successful; native 57 seconds, historical consumers 2 minutes 40 seconds | No new-controller deployment, state write, or publication |
 
@@ -449,7 +449,7 @@ The new native harness built a public Git fixture with declared version `0-1` an
 
 New consumer code verified and installed the exact original signed snapshot `snapshot-f5b1f735737944150331d06e0b05506f5c7d6957-38059323097-1`. Its seven enrolled targets were `apexshot`, `archive-mounter`, `carapace`, `cloudflare-speed-cli`, `nasctui`, `oh-my-pi-vith-git`, and `python-google-genai`. OMP was installed without shared runtime tests.
 
-This proof used no workstation package build, signing key, state write, or promotion. Live new-controller dispatch/merge behavior, warm accepted-cache admission, inclusion, promotion, and rollback remain pending the human's protected merges. Do not mark the hosted acceptance list complete from unit tests or this read-only proof.
+The historical read-only smoke used no workstation package build, signing key, state write, or promotion. Subsequent [publication 38173038296](https://github.com/vith/arch-packages/actions/runs/38173038296) succeeded through original-output authentication, signing, public readback, and latest promotion. [Hosted consumer 38178456012](https://github.com/vith/arch-packages/actions/runs/38178456012) verified the signed snapshot, installed every package, and exercised consumers. No workstation builds were performed. Warm-cache admission, rollback, retry/concurrency, changed-head, corrupt-output, and external non-trivial recipe live scenarios remain unproved; hosted acceptance is not complete.
 
 ## History, licensing, and clients
 

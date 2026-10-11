@@ -56,7 +56,7 @@ This is the standalone `vith/arch-packages` repository. Signed snapshot promotio
 
 ## Main tests, signing, and history
 
-- Main documentation, source, controller, image, and bookkeeping PRs use the single candidate source-test route with zero package workers. Executable main code still needs human normal Merge. Generated exact bookkeeping can merge automatically after validation.
+- Main documentation, source, controller, image, and bookkeeping PRs use the single candidate source-test route with zero package workers. Generated exact bookkeeping can merge automatically after validation.
 - Source tests receive the complete exact tracked snapshot, including workflow/control files, with no `.git`, ignored state, or credentials. Run in the pinned Arch sandbox. Main regression uses `git archive` for the exact SHA and `/verify/.work/tmp` for fixtures, with native Arch `vercmp`.
 - Signing requires exact accepted-controller source evidence. Reuse tested PR evidence only after proving its protected merge and identical tested tree; otherwise test exact accepted main. Do not assume an Actions-token merge triggers push workflows.
 - Publication selects no workers and compiles nothing. Collection is metadata-only. On the signing runner, directly authenticate and materialize original output once before private-key import/use. Then sign packages, build and sign databases, and sign the catalog.
