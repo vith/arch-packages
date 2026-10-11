@@ -17,7 +17,7 @@ on:
         type: string
         default: ''
       reconcile_pr:
-        description: Recover only this existing recipe or bookkeeping pull request using trusted main
+        description: Reconcile this exact recipe or bookkeeping pull request using trusted main
         required: false
         type: string
         default: ''
@@ -39,7 +39,7 @@ jobs:
       actions: write
       statuses: write
     steps:
-      - name: Validate explicit recovery mode
+      - name: Validate explicit reconciliation target
         env:
           BOOTSTRAP: ${{ inputs.bootstrap }}
           MIGRATE_PR: ${{ inputs.migrate_pr }}
@@ -52,11 +52,11 @@ jobs:
           target="$MIGRATE_PR$RECONCILE_PR"
           if [ -n "$target" ]; then
             if [ "$BOOTSTRAP" = true ]; then
-              echo "::error::bootstrap and explicit recovery cannot be requested together"
+              echo "::error::bootstrap and explicit reconciliation cannot be requested together"
               exit 1
             fi
             if [[ ! "$target" =~ ^[0-9]+$ || ! "$target" =~ [1-9] ]]; then
-              echo "::error::recovery target must be a positive decimal pull request number"
+              echo "::error::reconciliation target must be a positive decimal pull request number"
               exit 1
             fi
           fi
@@ -75,7 +75,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MIGRATE_PR: ${{ inputs.migrate_pr }}
         run: python3 -m tools.update migrate-existing --pr "$MIGRATE_PR"
-      - name: Recover exact open and accepted recipe candidates
+      - name: Reconcile directly recorded open and accepted recipes
         if: inputs.migrate_pr == ''
         env:
           GITHUB_TOKEN: ${{ github.token }}

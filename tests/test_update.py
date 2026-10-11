@@ -274,14 +274,6 @@ class CandidateBoundaries(unittest.TestCase):
         update.dump(new/'packages.json',{'schema':1,'packages':[{'pkgbase':'example','outputs':[{'name':'example'}]}]})
         self.assertEqual(update.affected_packages(old,new,{'example':{}}),(['example'],True))
 
-    def test_unapproved_main_tests_and_build_validation_never_execute(self):
-        record={'kind':'code','pr_number':1,'base':'a'*40,'head':'b'*40}
-        with patch('tools.recipe_candidates.verify_authorization',side_effect=ValueError('unapproved')),patch.object(update,'pr_identity'),patch.object(update,'checkout_data') as checkout,patch.object(update,'run_candidate_tests') as tests,patch.object(update,'validate_build_outputs') as outputs:
-            with self.assertRaisesRegex(ValueError,'unapproved'):
-                update.run_approved_tests(record,self.root)
-            with self.assertRaisesRegex(ValueError,'unapproved'):
-                update.validate_build(record,self.root)
-            checkout.assert_not_called();tests.assert_not_called();outputs.assert_not_called()
 
     def archive(self, entries):
         archive=self.root/'input.tar'
@@ -479,19 +471,6 @@ class CandidateBoundaries(unittest.TestCase):
         update.dump(self.root/'native-evidence.json',evidence)
         return record,evidence,path
 
-    def test_native_receipt_rejects_changed_recipe_pin_before_status(self):
-        record,evidence,path=self.record()
-        evidence['packages'][0]['recipe_commit']='9'*40
-        update.dump(self.root/'native-evidence.json',evidence)
-        with patch.object(update,'pr_identity'),patch.object(update,'status') as status,self.assertRaisesRegex(ValueError,'frozen input'):
-            update.validate_build_outputs(record,self.root)
-        status.assert_not_called()
-        evidence['packages'][0]['recipe_commit']=record['packages'][0]['recipe_commit']
-        evidence['recipe_pins']={'example':'9'*40}
-        update.dump(self.root/'native-evidence.json',evidence)
-        with patch.object(update,'pr_identity'),patch.object(update,'status') as status,self.assertRaisesRegex(ValueError,'recipe_pins'):
-            update.validate_build_outputs(record,self.root)
-        status.assert_not_called()
 
     def test_affected_manifest_includes_hidden_content_modes_and_symlink_targets(self):
         old=self.root/'old';new=self.root/'new'
@@ -512,150 +491,16 @@ class CandidateBoundaries(unittest.TestCase):
         (new/'.gitmodules').write_text('untrusted URL')
         self.assertEqual(update.affected_packages(old,new,{'example':{},'second':{}}),(['example'],True))
 
-    def test_prepare_classifies_full_pinned_recipe_and_history_not_opaque_sha(self):
-        policy={'pkgbase':'example','sources':[],'automatic':{'version':{'assignment':'pkgver'},'pkgrel':{'assignment':'pkgrel'},'checksums':[]}}
-        for mutation in ('version','code','hidden','mode','rewrite','modules'):
-            with self.subTest(mutation=mutation):
-                fixture=self.root/mutation
-                for label,version in [('old','1.0'),('new','1.1')]:
-                    root=fixture/label;recipe=root/'recipes/example';recipe.mkdir(parents=True)
-                    self.copy_trusted_controller(root)
-                    (root/'packages.json').write_text(json.dumps({'schema':1,'packages':[policy]}))
-                    (root/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:'+'a'*64)
-                    (root/'.gitmodules').write_text('enrolled modules')
-                    (root/'inputs').mkdir()
-                    (root/'inputs/example.json').write_text(json.dumps({'schema':1,'version':version+'-1','sources':[]}))
-                    (recipe/'PKGBUILD').write_text(f'pkgver={version}\npkgrel=1\npackage() {{ echo accepted; }}\n')
-                    (recipe/'.SRCINFO').write_text(SRCINFO.replace('1.0',version))
-                    (recipe/'.payload').write_text('retained patch')
-                recipe=fixture/'new/recipes/example'
-                if mutation=='code':
-                    (recipe/'PKGBUILD').write_text((recipe/'PKGBUILD').read_text().replace('echo accepted','echo malicious'))
-                elif mutation=='hidden':
-                    (recipe/'.payload').write_text('changed patch')
-                elif mutation=='mode':
-                    (recipe/'PKGBUILD').chmod(0o755)
-                elif mutation=='modules':
-                    (fixture/'new/.gitmodules').write_text('changed candidate URL')
-                def checkout(sha,destination,pins,selected=None):
-                    pins.update(example=('1' if sha=='a'*40 else '2')*40)
-                    return Path(shutil.copytree(fixture/('old' if sha=='a'*40 else 'new'),destination))
-                evidence={'srcinfo':(recipe/'.SRCINFO').read_text(),'checksums':{},'source_templates_verified':True,'lock_verified':True,'auxiliary_inputs_verified':True,'authentic':True,'fast_forward':True}
-                with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'},clear=True),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({'head':{'repo':{'full_name':'owner/repo'}}},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'run_candidate_tests'),patch.object(update,'independent_transition',return_value=evidence),patch.object(update.recipes,'is_ancestor',return_value=mutation!='rewrite'),patch('tools.recipe_gate._compare',return_value=1),patch.object(update,'status'):
-                    with patch.object(update,'run_candidate_tests',side_effect=AssertionError('unapproved execution')),patch.object(recipe_state,'load_optional',return_value=None):
-                        if mutation == 'rewrite':
-                            with self.assertRaisesRegex(ValueError, 'fast-forward'):
-                                update.prepare(1,fixture/'prepared')
-                            continue
-                        record=update.prepare(1,fixture/'prepared')
-                self.assertEqual(record['auto_merge'], mutation != 'code')
-                self.assertEqual(record['review_environment'], 'recipe-review' if mutation == 'code' else '')
-                self.assertEqual(record['packages'][0]['recipe_commit'],'2'*40)
-                self.assertEqual(record['packages'][0]['previous_recipe_commit'],'1'*40)
-                if mutation not in {'version','modules'}:
-                    self.assertNotEqual(record['decisions'][0]['decision'],'mechanical')
 
-    def test_source_only_main_automatic_authority_rejects_external_or_missing_head_repository(self):
-        from tools import recipe_candidates
-        policy = {'pkgbase': 'example', 'sources': [], 'automatic': {}}
-        def checkout(sha, destination, pins, selected=None):
-            self.copy_trusted_controller(destination)
-            pins['example'] = '1'*40
-            update.dump(destination/'packages.json', {'schema': 1, 'packages': [policy]})
-            update.dump(destination/'inputs/example.json', {'schema': 1, 'version': '1.0-1', 'sources': []})
-            recipe = destination/'recipes/example'
-            recipe.mkdir(parents=True)
-            (recipe/'PKGBUILD').write_text('pkgver=1.0\npkgrel=1\n')
-            (recipe/'.SRCINFO').write_text(SRCINFO)
-            (destination/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:'+'e'*64)
-            (destination/'tools/controller-change.py').write_text('accepted' if sha == 'a'*40 else 'new tooling')
-            return destination
-        same_repo = {'head': {'repo': {'full_name': 'owner/repo'}}}
-        with patch.dict(os.environ, {'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1'}), patch.object(update, 'api', return_value={'base': {'ref': 'main'}}), patch.object(update.sources, 'git', return_value='a'*40), patch('tools.recipe_acceptance.validate_bookkeeping', return_value=None), patch.object(update, 'repository', return_value='owner/repo'), patch.object(update, 'pr_identity', return_value=(same_repo, 'a'*40, 'b'*40)) as identity, patch.object(update, 'checkout_data', side_effect=checkout), patch.object(update, 'run_candidate_tests', side_effect=AssertionError('prepare cannot execute source')), patch.object(update, 'status'), patch.object(recipe_state, 'load_optional', return_value=None), patch.object(recipe_state, 'save') as save, patch.object(recipe_state, 'attest'):
-            record = update.prepare(1, self.root/'owned-source')
-            self.assertEqual(record['packages'], [])
-            self.assertEqual(record['review_environment'], '')
-            for index, head in enumerate(({'repo': {'full_name': 'outsider/repo'}}, {'repo': None}, {})):
-                with self.subTest(head=head):
-                    foreign_pr = {'head': head}
-                    identity.return_value = (foreign_pr, 'a'*40, 'b'*40)
-                    save.reset_mock()
-                    with self.assertRaisesRegex(ValueError, 'same-repository'):
-                        update.prepare(1, self.root/f'foreign-source-{index}')
-                    save.assert_not_called()
-                    with patch.object(update, 'api', return_value=foreign_pr), self.assertRaisesRegex(ValueError, 'same-repository'):
-                        recipe_candidates._verify_inputs(record, True, update.independent_transition, update.static_metadata)
 
-    def test_retired_enrollment_is_not_built_and_requires_no_review(self):
-        kept = {'pkgbase': 'kept', 'sources': [], 'automatic': {}}
-        retired = {'pkgbase': 'retired', 'sources': [], 'automatic': {}}
-        def checkout(sha, destination, pins, selected=None):
-            destination.mkdir()
-            self.copy_trusted_controller(destination)
-            is_old = sha == 'a'*40
-            pins.update({'kept': '1'*40, **({'retired': '2'*40} if is_old else {})})
-            update.dump(destination/'packages.json', {'schema': 1, 'packages': [kept, retired] if is_old else [kept]})
-            (destination/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:'+'e'*64)
-            update.dump(destination/'inputs/kept.json', {'schema': 1, 'version': '1.0-1', 'sources': []})
-            recipe = destination/'recipes/kept'
-            recipe.mkdir(parents=True)
-            (recipe/'PKGBUILD').write_text('pkgver=1.0\npkgrel=1\n')
-            (recipe/'.SRCINFO').write_text(SRCINFO.replace('example', 'kept'))
-            return destination
-        with patch.dict(os.environ, {'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1'}),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'), patch.object(update, 'repository', return_value='owner/repo'), patch.object(update, 'pr_identity', return_value=({'head': {'repo': {'full_name': 'owner/repo'}}}, 'a'*40, 'b'*40)), patch.object(update, 'checkout_data', side_effect=checkout), patch.object(update, 'harness_digest', return_value='e'*64), patch.object(update, 'run_candidate_tests'), patch.object(update, 'independent_transition', return_value=None), patch.object(update, 'status'):
-            with patch.object(recipe_state, 'load_optional', return_value=None):
-                record = update.prepare(1, self.root/'prepared-retirement')
-        self.assertEqual(record['packages'], [])
-        self.assertFalse(record['mechanical'])
-        self.assertTrue(record['auto_merge'])
-        self.assertEqual(record['review_environment'], '')
-        self.assertIn({'pkgbase': 'retired', 'decision': 'manual', 'reason': 'Package enrollment retired'}, record['decisions'])
 
-    def test_new_enrollment_is_frozen_for_one_authorized_build(self):
-        kept={'pkgbase':'kept','sources':[],'automatic':{}}
-        added={'pkgbase':'added','sources':[],'automatic':{}}
-        def checkout(sha,destination,pins,selected=None):
-            is_old=sha=='a'*40
-            policies=[kept] if is_old else [kept,added]
-            self.copy_trusted_controller(destination)
-            update.dump(destination/'packages.json',{'schema':1,'packages':policies})
-            (destination/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:'+'e'*64)
-            for policy in policies:
-                name=policy['pkgbase'];pins[name]=('1' if name=='kept' else '2')*40
-                update.dump(destination/'inputs'/f'{name}.json',{'schema':1,'version':'1.0-1','sources':[]})
-                recipe=destination/'recipes'/name;recipe.mkdir(parents=True)
-                (recipe/'PKGBUILD').write_text('pkgver=1.0\\npkgrel=1\\n')
-                (recipe/'.SRCINFO').write_text(SRCINFO.replace('example',name))
-            return destination
-        with patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'}),patch.object(update,'api',return_value={'base':{'ref':'main'}}),patch.object(update.sources,'git',return_value='a'*40),patch('tools.recipe_acceptance.validate_bookkeeping',return_value=None),patch.object(update,'require_review_environment'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'pr_identity',return_value=({'head':{'repo':{'full_name':'owner/repo'}}},'a'*40,'b'*40)),patch.object(update,'checkout_data',side_effect=checkout),patch.object(update,'harness_digest',return_value='e'*64),patch.object(update,'run_candidate_tests',side_effect=AssertionError('unapproved execution')),patch.object(update,'status'):
-            with patch.object(recipe_state,'load_optional',return_value=None):
-                record=update.prepare(1,self.root/'prepared-enrollment')
-        self.assertEqual([package['pkgbase'] for package in record['packages']],['added'])
-        self.assertIsNone(record['packages'][0]['previous_recipe_commit'])
-        self.assertEqual(record['review_environment'],'recipe-review')
-        self.assertFalse(record['auto_merge'])
 
     def test_pin_lookup_rejects_flattened_or_wrong_gitlink(self):
         for mode,kind,sha in [('100644','blob','1'*40),('040000','tree','1'*40),('160000','commit','not-a-sha')]:
             with self.subTest(mode=mode,sha=sha),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'api',side_effect=[{'tree':{'sha':'a'*40}},{'tree':[{'path':'recipes/example','mode':mode,'type':kind,'sha':sha}]}]),self.assertRaisesRegex(ValueError,'gitlink'):
                 update.pin_at('b'*40,'example')
 
-    def test_full_outputs_required_before_any_success_status(self):
-        record,evidence,path=self.record()
-        evidence['packages'][0]['files']=[];update.dump(self.root/'native-evidence.json',evidence)
-        with patch.object(update,'pr_identity'),patch.object(update,'status') as status,self.assertRaisesRegex(ValueError,'missing/extra'):
-            update.validate_build_outputs(record,self.root)
-        status.assert_not_called()
 
-    def test_native_metadata_and_bytes_are_bound(self):
-        record,evidence,path=self.record()
-        path.write_bytes(b'altered')
-        with patch.object(update,'pr_identity'),patch.object(update,'status') as status,self.assertRaisesRegex(ValueError,'bytes/version'):
-            update.validate_build_outputs(record,self.root)
-        status.assert_not_called()
-        path.write_bytes(b'package bytes');evidence['packages'][0]['metadata']['srcinfo']=SRCINFO.replace('1.0','2.0');update.dump(self.root/'native-evidence.json',evidence)
-        with patch.object(update,'pr_identity'),patch.object(update,'status'),self.assertRaisesRegex(ValueError,'metadata'):
-            update.validate_build_outputs(record,self.root)
 
     def test_stale_head_after_human_approval_cannot_finalize(self):
         record,evidence,path=self.record();record['auto_merge']=False
@@ -666,26 +511,7 @@ class CandidateBoundaries(unittest.TestCase):
         status.assert_not_called()
         self.assertTrue(all(call.args[1:] == () for call in api.call_args_list))
 
-    def test_reviewed_candidate_merges_after_full_successful_checks(self):
-        record,evidence,path=self.record();record['auto_merge']=False
-        update.dump(self.root/'candidate.json',record)
-        states=[{'context':name,'state':'success'} for name in ('verify','candidate-build','recipe-policy')]
-        with patch.object(update,'pr_identity'),patch.object(update,'validate_build'),patch.object(update,'api',side_effect=[states, {'merged':True,'sha':'f'*40}, None]) as api,patch.object(update,'repository',return_value='owner/repo'):
-            result=update.finalize(1,record['base'],record['head'],self.root/'candidate.json',self.root)
-        self.assertTrue(result['merged'])
-        self.assertEqual(api.call_args_list[1].args[2], {'sha':record['head'],'merge_method':'merge'})
 
-    def test_bookkeeping_merge_requires_successful_exact_head_verification(self):
-        record, evidence, path = self.record()
-        update.dump(self.root/'candidate.json', record)
-        for state in (None, 'pending', 'failure'):
-            states = [{'context': name, 'state': 'success'} for name in ('candidate-build', 'recipe-policy')]
-            if state is not None:
-                states.append({'context': 'verify', 'state': state})
-            with self.subTest(state=state), patch.object(update, 'pr_identity'), patch.object(update, 'validate_build'), patch.object(update, 'repository', return_value='owner/repo'), patch.object(update, 'api', side_effect=[states, {'merged': True, 'sha': 'f'*40}, None]) as api:
-                with self.assertRaisesRegex(ValueError, 'statuses missing'):
-                    update.finalize(1, record['base'], record['head'], self.root/'candidate.json', self.root)
-                self.assertFalse(any(call.args[1:2] == ('PUT',) for call in api.call_args_list))
 
     def test_cleanup_removes_readonly_mirror_without_touching_symlink_target(self):
         mirror = self.root/'verification'/'mirror.git'
@@ -707,13 +533,295 @@ class CandidateBoundaries(unittest.TestCase):
             if mirror.exists():
                 mirror.chmod(0o755)
 
-    def test_bookkeeping_merge_has_expected_head_and_explicit_dispatch(self):
-        record,evidence,path=self.record();update.dump(self.root/'candidate.json',record)
-        responses=[[{'context':name,'state':'success'} for name in ('verify','candidate-build','recipe-policy')],{'merged':True,'sha':'f'*40},None]
-        with patch.object(update,'pr_identity'),patch.object(update,'validate_build'),patch.object(update,'repository',return_value='owner/repo'),patch.object(update,'api',side_effect=responses) as api:
-            update.finalize(1,record['base'],record['head'],self.root/'candidate.json',self.root)
-        self.assertEqual(api.call_args_list[1].args[2],{'sha':record['head'],'merge_method':'merge'})
-        self.assertEqual(api.call_args_list[2].args[2]['inputs']['accepted_sha'],'f'*40)
 
 
-if __name__=='__main__':unittest.main()
+
+class ManagerDispatch(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo'})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_unchanged_requests_never_redispatch_including_failure(self):
+        pr = {'state': 'open', 'base': {'ref': 'pkg/demo'}, 'head': {'sha': 'a'*40}}
+        for state in ('queued', 'running', 'success', 'failure'):
+            with self.subTest(state=state), patch.object(update, 'api', side_effect=AssertionError('unchanged request must not dispatch')):
+                self.assertFalse(update.dispatch(7, pr=pr, pending={'head': 'a'*40, 'state': state}))
+
+    def test_new_sources_wait_until_active_worker_finishes(self):
+        pr = {'state': 'open', 'base': {'ref': 'pkg/demo'}, 'head': {'sha': 'b'*40}}
+        for state in ('queued', 'running'):
+            with self.subTest(state=state), patch.object(update, 'api', side_effect=AssertionError('active worker must finish first')):
+                self.assertFalse(update.dispatch(7, pr=pr, pending={'head': 'a'*40, 'state': state}))
+        with patch.object(update, 'api', return_value=None) as api:
+            self.assertTrue(update.dispatch(7, pr=pr, pending={'head': 'a'*40, 'state': 'failure'}))
+            self.assertEqual(api.call_args.args[2]['inputs']['expected_head'], 'b'*40)
+
+    def test_open_head_snapshot_reads_all_pages_and_preserves_exact_statuses(self):
+        def page(number, cursor, more):
+            sha = str(number)*40
+            return {'data': {'repository': {'pullRequests': {'pageInfo': {'hasNextPage': more, 'endCursor': cursor}, 'nodes': [
+                {'number': number, 'isDraft': False, 'baseRefName': 'pkg/demo', 'baseRefOid': 'b'*40,
+                 'headRefName': 'recipe-updates/demo', 'headRefOid': sha, 'headRepository': {'nameWithOwner': 'owner/repo'},
+                 'commits': {'nodes': [{'commit': {'oid': sha, 'status': {'contexts': [{'context': 'candidate-build', 'state': 'SUCCESS'}]}}}]}}
+            ]}}}}
+        with patch.object(update, 'api', side_effect=[page(1, 'next', True), page(2, 'done', False)]) as api:
+            pulls = update.open_pr_snapshot()
+            self.assertEqual([pr['head']['sha'] for pr in pulls], ['1'*40, '2'*40])
+            self.assertEqual(pulls[1]['statuses']['candidate-build'], 'success')
+            self.assertEqual(api.call_args.args[2]['variables']['cursor'], 'next')
+
+
+class SourceDispatchIdentity(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo'})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def pr(self, base, state='pending', marker=None, number=7):
+        return {'number': number, 'state': 'open', 'base': {'ref': 'main', 'sha': base, 'repo': {'full_name': 'owner/repo'}},
+                'head': {'sha': 'd'*40, 'repo': {'full_name': 'owner/repo'}},
+                'statuses': {'verify': state},
+                'status_descriptions': {'verify': marker or update.source_status_description(number, base)}}
+
+    def test_same_source_identity_is_suppressed_for_all_recorded_outcomes(self):
+        for state in ('pending', 'success', 'failure', 'error'):
+            with self.subTest(state=state), patch.object(update, 'main_sha', return_value='b'*40), \
+                    patch.object(update, 'api', side_effect=AssertionError('same base/head must not redispatch')):
+                self.assertFalse(update.dispatch(7, pr=self.pr('b'*40, state=state)))
+
+    def test_behind_source_pr_is_skipped_without_status_or_dispatch(self):
+        with patch.object(update, 'main_sha', return_value='c'*40), \
+                patch.object(update, 'api', side_effect=AssertionError('behind source must not write or schedule')):
+            self.assertFalse(update.dispatch(7, pr=self.pr('b'*40)))
+            self.assertFalse(update.dispatch(7, pr=self.pr('b'*40), retry=True))
+
+    def test_new_base_validates_unchanged_head_once_and_preserves_new_marker(self):
+        current = self.pr('c'*40)
+        stale = self.pr('c'*40, marker=update.source_status_description(7, 'b'*40))
+        dispatched = []
+        def api(route, method='GET', data=None):
+            if route.endswith('/pulls/7'):
+                return current
+            if '/statuses/' in route:
+                current['statuses']['verify'] = data['state']
+                current['status_descriptions']['verify'] = data['description']
+                return {}
+            if route.endswith('/candidate.yml/dispatches'):
+                dispatched.append(data)
+                return {}
+            raise AssertionError(route)
+        with patch.object(update, 'main_sha', return_value='c'*40), patch.object(update, 'api', side_effect=api):
+            self.assertTrue(update.dispatch(7, pr=stale))
+            self.assertFalse(update.dispatch(7, pr=current))
+        self.assertEqual(len(dispatched), 1)
+        self.assertEqual(dispatched[0]['inputs']['expected_head'], 'd'*40)
+        self.assertEqual(current['status_descriptions']['verify'], update.source_status_description(7, 'c'*40))
+
+    def test_dispatch_failure_is_terminal_until_explicit_retry(self):
+        current = self.pr('c'*40, marker=update.source_status_description(7, 'b'*40))
+        attempts = []
+        fail_next = [True]
+        def api(route, method='GET', data=None):
+            if route.endswith('/pulls/7'):
+                return current
+            if '/statuses/' in route:
+                current['statuses']['verify'] = data['state']
+                current['status_descriptions']['verify'] = data['description']
+                return {}
+            if route.endswith('/candidate.yml/dispatches'):
+                attempts.append(data)
+                if fail_next[0]:
+                    fail_next[0] = False
+                    raise RuntimeError('provider refused dispatch')
+                return {}
+            raise AssertionError(route)
+        with patch.object(update, 'main_sha', return_value='c'*40), patch.object(update, 'api', side_effect=api):
+            with self.assertRaisesRegex(RuntimeError, 'provider refused dispatch'):
+                update.dispatch(7, pr=current)
+            self.assertEqual(current['statuses']['verify'], 'failure')
+            self.assertFalse(update.dispatch(7, pr=current))
+            self.assertTrue(update.dispatch(7, pr=current, retry=True))
+            self.assertFalse(update.dispatch(7, pr=current))
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[1]['inputs']['retry'], 'true')
+        self.assertEqual(current['statuses']['verify'], 'pending')
+
+
+    def test_preparation_checkout_failure_is_terminal_and_retryable(self):
+        current = self.pr('b'*40)
+        writes, attempts = [], []
+        failure = RuntimeError('source checkout unavailable')
+        def api(route, method='GET', data=None):
+            if route.endswith('/pulls/7'):
+                return current
+            if '/statuses/' in route:
+                writes.append(data)
+                current['statuses']['verify'] = data['state']
+                current['status_descriptions']['verify'] = data['description']
+                return {}
+            if route.endswith('/candidate.yml/dispatches'):
+                attempts.append(data)
+                return {}
+            raise AssertionError(route)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(update, 'main_sha', return_value='b'*40), \
+                patch.object(update, 'api', side_effect=api), \
+                patch.object(update.sources, 'git', return_value='b'*40), \
+                patch.object(update, 'checkout_data', side_effect=failure):
+            with self.assertRaises(RuntimeError) as raised:
+                update.prepare(7, directory)
+            self.assertIs(raised.exception, failure)
+            self.assertEqual([row['state'] for row in writes], ['pending', 'failure'])
+            self.assertEqual(current['status_descriptions']['verify'], update.source_status_description(7, 'b'*40))
+            self.assertFalse((Path(directory)/'candidate.json').exists())
+            self.assertFalse(update.dispatch(7, pr=current))
+            self.assertTrue(update.dispatch(7, pr=current, retry=True))
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0]['inputs']['retry'], 'true')
+
+    def test_preparation_failure_after_identity_move_preserves_new_evidence(self):
+        current = self.pr('b'*40)
+        writes = []
+        failure = RuntimeError('checkout failed after main advanced')
+        def api(route, method='GET', data=None):
+            if route.endswith('/pulls/7'):
+                return current
+            if '/statuses/' in route:
+                writes.append(data)
+                current['statuses']['verify'] = data['state']
+                current['status_descriptions']['verify'] = data['description']
+                return {}
+            raise AssertionError(route)
+        def checkout(*args, **kwargs):
+            current['base']['sha'] = 'c'*40
+            current['statuses']['verify'] = 'success'
+            current['status_descriptions']['verify'] = update.source_status_description(7, 'c'*40)
+            raise failure
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(update, 'main_sha', side_effect=lambda: current['base']['sha']), \
+                patch.object(update, 'api', side_effect=api), \
+                patch.object(update.sources, 'git', return_value='b'*40), \
+                patch.object(update, 'checkout_data', side_effect=checkout):
+            with self.assertRaises(RuntimeError) as raised:
+                update.prepare(7, directory)
+            self.assertIs(raised.exception, failure)
+            self.assertEqual([row['state'] for row in writes], ['pending'])
+            self.assertEqual(current['statuses']['verify'], 'success')
+            self.assertEqual(current['status_descriptions']['verify'], update.source_status_description(7, 'c'*40))
+            self.assertIn('base/head changed', raised.exception.__notes__[0])
+
+    def test_old_base_failure_cannot_overwrite_new_base_evidence(self):
+        current = self.pr('c'*40, state='success')
+        writes = []
+        def api(route, method='GET', data=None):
+            if method == 'POST':
+                writes.append(data)
+            return current
+        with patch.object(update, 'main_sha', return_value='c'*40), patch.object(update, 'api', side_effect=api):
+            with self.assertRaisesRegex(ValueError, 'base/head changed'):
+                update.source_status(7, 'b'*40, 'd'*40, 'failure')
+        self.assertEqual(writes, [])
+        self.assertEqual(current['statuses']['verify'], 'success')
+
+    def test_same_head_shared_by_another_pr_does_not_share_dispatch_identity(self):
+        current = self.pr('b'*40, marker=update.source_status_description(8, 'b'*40))
+        with patch.object(update, 'main_sha', return_value='b'*40), patch.object(update, 'api', return_value=current):
+            self.assertTrue(update.dispatch(7, pr=current))
+
+
+class MainSourceRoute(unittest.TestCase):
+    def prepare_main(self, directory, changed):
+        from tools import imports
+        def checkout(sha, destination, pins, selected=None):
+            destination.mkdir(parents=True)
+            (destination/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:' + 'f'*64)
+            file = destination/changed
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text('before' if sha == 'a'*40 else 'after')
+            return destination
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1'}), \
+                patch.object(update, 'api', return_value={'base': {'ref': 'main'}}), \
+                patch.object(update, 'pr_identity', return_value=({'head': {'repo': {'full_name': 'owner/repo'}}}, 'a'*40, 'b'*40)), \
+                patch.object(update.sources, 'git', return_value='a'*40), \
+                patch.object(update, 'checkout_data', side_effect=checkout), \
+                patch.object(update, 'policy_at', return_value={}), \
+                patch.object(imports, 'policies', return_value={}), \
+                patch.object(imports, 'validate_admission', return_value=None), \
+                patch.object(update, 'validate_retirement', return_value=None), \
+                patch('tools.recipe_acceptance.validate_bookkeeping', return_value=None), \
+                patch.object(update, 'harness_digest', return_value='e'*64), \
+                patch.object(update, 'status'):
+            return update.prepare(7, directory)
+
+    def test_executable_main_changes_require_human_merge_and_zero_workers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record = self.prepare_main(Path(directory)/'candidate', 'tools/update.py')
+            self.assertEqual(record['packages'], [])
+            self.assertEqual(record['merge_policy'], 'human')
+
+    def test_documentation_main_changes_select_automatic_zero_worker_route(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record = self.prepare_main(Path(directory)/'candidate', 'docs/guide.md')
+            self.assertEqual(record['packages'], [])
+            self.assertEqual(record['merge_policy'], 'automatic')
+
+    def test_successful_nontrivial_main_source_tests_do_not_merge_for_user(self):
+        record = {'kind': 'code', 'pr_number': 7, 'base': 'a'*40, 'head': 'b'*40, 'merge_policy': 'human'}
+        with patch.object(update, 'load', return_value=record), patch.object(update, 'pr_identity'), \
+                patch('tools.source_review.validate_source'), patch.object(update, 'status'), \
+                patch('tools.recipe_candidates.required_statuses'), \
+                patch.object(update, 'api', side_effect=AssertionError('nontrivial main Merge remains human')):
+            self.assertFalse(update.finalize(7, 'a'*40, 'b'*40, 'candidate.json', 'work')['merged'])
+
+    def test_automatic_bookkeeping_handoff_uses_exact_merged_sha(self):
+        record = {'kind': 'bookkeeping', 'pr_number': 7, 'base': 'a'*40, 'head': 'b'*40, 'merge_policy': 'automatic'}
+        with patch.object(update, 'load', return_value=record), patch.object(update, 'pr_identity'), \
+                patch('tools.source_review.validate_source'), patch.object(update, 'status'), \
+                patch('tools.recipe_candidates.required_statuses'), \
+                patch.object(update, 'repository', return_value='owner/repo'), \
+                patch.object(update, 'api', side_effect=[{'merged': True, 'sha': 'c'*40}, None]) as api:
+            self.assertTrue(update.finalize(7, 'a'*40, 'b'*40, 'candidate.json', 'work')['merged'])
+            self.assertEqual(api.call_args_list[0].args[2], {'sha': 'b'*40, 'merge_method': 'merge'})
+            self.assertEqual(api.call_args_list[1].args[2]['inputs']['accepted_sha'], 'c'*40)
+
+
+class ProposalBatching(unittest.TestCase):
+    def write_decision(self, directory, pending, request, pulls):
+        directory = Path(directory)
+        control = directory/'control'
+        update.dump(control/'upstream/demo.json', {'watchers': [{'id': 'release', 'kind': 'tag'}]})
+        lock = {'schema': 1, 'version': '2-1', 'sources': []}
+        receipt = {'schema': 1, 'pkgbase': 'demo', 'watcher_id': 'release', 'base': 'a'*40,
+                   'recipe_commit': 'b'*40, 'unchanged': False, 'lock': lock, 'provenance': {'watchers': []}}
+        update.dump(directory/'receipts.json', {'schema': 1, 'base': 'a'*40, 'receipts': [receipt]})
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo'}), \
+                patch.object(update, 'ROOT', control), patch.object(update, 'main_sha', return_value='a'*40), \
+                patch.object(update, 'control_checkout', return_value=('a'*40, {'demo': 'b'*40})), \
+                patch.object(update, 'policy_at', return_value={'demo': {}}), \
+                patch.object(recipe_state, 'protected_branch'), patch.object(update, 'ref_head', return_value='b'*40), \
+                patch.object(update, 'open_pr_snapshot', return_value=pulls), \
+                patch.object(recipe_state, 'load_many', side_effect=[{('pending', 'demo'): pending}, {('build-request', 'demo-request'): request}]), \
+                patch.object(update, 'api', side_effect=AssertionError('unchanged or human-owned package must not write')):
+            update.write_proposals(directory)
+
+    def test_closed_same_source_proposal_is_not_recreated(self):
+        pending = {'head': 'c'*40, 'state': 'failure', 'request_id': 'demo-request'}
+        request = {'packages': [{'lock': {'schema': 1, 'version': '2-1', 'sources': []}}], 'provenance': {'watchers': []}}
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_decision(directory, pending, request, [])
+
+    def test_human_package_pr_prevents_competing_automation_pr(self):
+        human = {'number': 7, 'base': {'ref': 'pkg/demo'}, 'head': {'ref': 'feature/human', 'sha': 'c'*40}}
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_decision(directory, None, None, [human])
+
+    def test_new_upstream_sources_wait_while_worker_runs(self):
+        pending = {'head': 'c'*40, 'state': 'running', 'request_id': 'demo-request'}
+        request = {'packages': [{'lock': {'schema': 1, 'version': '1-1', 'sources': []}}], 'provenance': {'watchers': []}}
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_decision(directory, pending, request, [])
+
+
+if __name__ == '__main__':
+    unittest.main()

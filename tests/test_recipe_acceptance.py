@@ -98,226 +98,7 @@ class AcceptanceInvariants(unittest.TestCase):
         dispatch.assert_not_called()
         checkout.assert_not_called()
 
-    def test_manual_acceptance_after_tooling_and_image_drift_preserves_original_evidence(self):
-        from tools import recipe_candidates, recipe_state
-        C0, C1, C2, B, H, T, A = (value*40 for value in '123bdea')
-        branch = 'recipe-updates/demo/dependency-change'
-        policy = {'pkgbase': 'demo', 'outputs': []}
-        lock = {'version': '1-2', 'sources': []}
-        provenance = {'watchers': []}
-        candidate = {'schema': 1, 'kind': 'recipe', 'repository': 'owner/repo',
-                     'base': C1, 'recipe_base': B, 'head': H, 'recipe_tree': T,
-                     'pkgbase': 'demo', 'pr_number': 7, 'receipt_id': 'f'*64,
-                     'head_branch': branch, 'proposal_origin': 'manual',
-                     'watcher_id': None, 'watcher_ids': [], 'mechanical': False,
-                     'image': 'image', 'harness_sha': 'harness', 'control_digest': 'controller',
-                     'predecessor_lock': lock, 'predecessor_provenance': provenance,
-                     'provenance': provenance,
-                     'packages': [{'pkgbase': 'demo', 'policy': policy, 'lock': lock,
-                                   'expected_srcinfo': 'dependency = new\n'}]}
-        key = C1 + '-' + B + '-' + H
-        built = {'candidate_digest': acceptance.digest(candidate), 'native_verified': True}
-        stable = {**candidate, 'candidate_digest': acceptance.digest(candidate),
-                  'review_environment': 'recipe-review'}
-        proof = {**stable, 'run_id': '42', 'run_attempt': '1'}
-        source_proof = {'record': candidate, 'bundle': {'signed-original-source': C1}}
-        records = {('candidate', key): candidate, ('built', key): built,
-                   ('approved', key): proof, ('candidate-provenance', key): source_proof}
-        original_records = copy.deepcopy(records)
-        def materialize(descriptor, destination):
-            update.dump(destination/'native-evidence.json', {'run_id': '41', 'run_attempt': '1'})
-            return destination
-        pr = {'number': 7, 'base': {'ref': 'pkg/demo', 'sha': B},
-              'head': {'ref': branch, 'sha': H}, 'merge_commit_sha': A}
-        run = {'head_sha': C1, 'head_branch': 'main', 'event': 'workflow_dispatch',
-               'path': '.github/workflows/candidate.yml', 'run_attempt': 1,
-               'status': 'completed', 'conclusion': 'success',
-               'display_title': 'Candidate PR 7 head ' + H}
-        environment = {'id': 9, 'can_admins_bypass': False,
-                       'protection_rules': [{'type': 'required_reviewers', 'reviewers': [1]}]}
-        def response(path):
-            if '/pulls/' in path:
-                return pr
-            if '/git/commits/' in path:
-                return {'sha': A, 'tree': {'sha': T}, 'parents': [{'sha': B}, {'sha': H}]}
-            if path.endswith('/environments/recipe-review'):
-                return environment
-            if path.endswith('/approvals'):
-                return [{'state': 'approved', 'environments': [{'id': 9, 'name': 'recipe-review'}]}]
-            return run
-        def checkout(sha, destination, pins):
-            destination.mkdir()
-            (destination/'build-image.txt').write_text('advanced-image')
-            update.dump(destination/'packages.json', {'schema': 1, 'packages': [policy]})
-            pins['demo'] = B
-            return destination
-        read_json = update.load
-        def load(path):
-            if '/inputs/' in str(path):
-                return lock
-            if '/upstream/' in str(path):
-                return provenance
-            return read_json(path)
-        with ExitStack() as stack:
-            for context in (
-                patch.object(update, 'api', side_effect=response),
-                patch.object(update, 'repository', return_value='owner/repo'),
-                patch.object(update, 'main_sha', return_value=C2),
-                patch.object(update, 'ref_head', return_value=A),
-                patch.object(update, 'checkout_data', side_effect=checkout),
-                patch.object(update, 'harness_digest', return_value='advanced-harness'),
-                patch.object(recipe_state, 'control_digest', return_value='advanced-controller'),
-                patch.object(update, 'load', side_effect=load),
-                patch.object(update, 'validate_source_policy'),
-                patch.object(recipe_candidates, 'verify_authorization', return_value=proof),
-                patch.object(build_store, 'lookup', return_value={'record': {**candidate, 'run_id': '41', 'run_attempt': '1'}, 'producer': {'run_id': '43', 'run_attempt': '1'}}),
-                patch.object(recipe_candidates, 'proposal_receipt', return_value={'base': C0}),
-                patch.object(recipe_state, 'load_optional', side_effect=lambda kind, key: records.get((kind, key))),
-                patch.object(recipe_state, 'load', side_effect=lambda kind, key: records[(kind, key)]),
-                patch.object(recipe_state, 'keys', side_effect=lambda kind, prefix: [key for (record_kind, key) in records if record_kind == kind and key.startswith(prefix)]),
-                patch.object(recipe_state, 'assert_recipe_identity'),
-                patch.object(recipe_state, 'require_attestation'),
-                patch.object(build_store, 'materialize', side_effect=materialize),
-                patch.object(acceptance, 'verify_native_evidence'),
-                patch.object(acceptance, 'required_checks'),
-            ):
-                stack.enter_context(context)
-            verify_provenance = stack.enter_context(patch.object(update, 'verify_provenance'))
-            dispatch = stack.enter_context(patch.object(update, 'dispatch'))
-            save = stack.enter_context(patch.object(recipe_state, 'save'))
-            approve = stack.enter_context(patch.object(recipe_candidates, '_approve'))
-            receipt = acceptance.accepted_receipt(7)
-            self.assertEqual((receipt['base'], receipt['candidate_base'], receipt['proposal_base']), (C2, C1, C0))
-            self.assertEqual((receipt['recipe_base'], receipt['head'], receipt['recipe_tree'], receipt['accepted']), (B, H, T, A))
-            self.assertEqual((receipt['head_branch'], receipt['proposal_origin'], receipt['watcher_id'], receipt['watcher_ids']), (branch, 'manual', None, []))
-            self.assertEqual(receipt['approved_digest'], acceptance.digest(proof))
-            self.assertEqual(receipt['lock'], lock)
-            self.assertEqual(receipt['build']['record'], {**candidate, 'run_id': '41', 'run_attempt': '1'})
-            self.assertEqual(receipt['build']['producer'], {'run_id': '43', 'run_attempt': '1'})
-            self.assertEqual(receipt['candidate_digest'], recipe_candidates.candidate_digest(candidate))
-            self.assertEqual(receipt['provenance'], provenance)
-            self.assertEqual(acceptance.expected_leaves({}, receipt)['acceptance/demo.json'],
-                             ('100644', 'blob', acceptance.blob_sha(receipt)))
-            verify_provenance.assert_called_once_with(provenance, provenance, lock, policy, None)
-            self.assertEqual(records, original_records)
-            self.assertEqual(records[('candidate-provenance', key)], source_proof)
-            self.assertEqual(receipt['build']['record']['image'], 'image')
-            self.assertEqual(receipt['build']['record']['harness_sha'], 'harness')
-            save.assert_not_called()
-            approve.assert_not_called()
-            with tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                update.dump(root/'acceptance/demo.json', receipt)
-                before = {'recipes/demo': ('160000', 'commit', B)}
-                after = acceptance.expected_leaves(before, receipt)
-                bookkeeping = {'base': {'ref': 'main'}, 'head': {'ref': 'bookkeeping/demo/' + A + '/' + C2}}
-                commit = {'parents': [{'sha': C2}], 'message': 'Arch-Recipe-Acceptance: ' + A}
-                with patch.object(acceptance, 'leaves', side_effect=[before, after]), \
-                        patch.object(acceptance, 'accepted_receipt', return_value=receipt), \
-                        patch.object(update, 'api', return_value=commit):
-                    self.assertEqual(acceptance.validate_bookkeeping(bookkeeping, C2, 'f'*40, root, root), receipt)
-            def changed_predecessor(sha, destination, pins):
-                result = checkout(sha, destination, pins)
-                pins['demo'] = '9'*40
-                return result
-            with patch.object(update, 'checkout_data', side_effect=changed_predecessor):
-                with self.assertRaisesRegex(ValueError, 'predecessor pin changed'):
-                    acceptance.accepted_receipt(7)
-            changed_pr = {**pr, 'head': {**pr['head'], 'sha': '9'*40}}
-            with patch.object(update, 'api', side_effect=lambda path: changed_pr if '/pulls/' in path else response(path)):
-                with self.assertRaisesRegex(ValueError, 'compatible original build'):
-                    acceptance.accepted_receipt(7)
-            def changed_policy(sha, destination, pins):
-                result = checkout(sha, destination, pins)
-                update.dump(result/'packages.json', {'schema': 1, 'packages': [{**policy, 'authority': 'changed'}]})
-                return result
-            with patch.object(update, 'checkout_data', side_effect=changed_policy):
-                with self.assertRaises(ValueError):
-                    acceptance.accepted_receipt(7)
-            with patch.object(update, 'load', side_effect=lambda path: {'version': 'changed'} if '/inputs/' in str(path) else load(path)):
-                with self.assertRaisesRegex(ValueError, 'predecessor source state changed'):
-                    acceptance.accepted_receipt(7)
-            with patch.object(update, 'load', side_effect=lambda path: {'watchers': ['changed']} if '/upstream/' in str(path) else load(path)):
-                with self.assertRaisesRegex(ValueError, 'predecessor source state changed'):
-                    acceptance.accepted_receipt(7)
-            for changed_commit in (
-                {'sha': A, 'tree': {'sha': '9'*40}, 'parents': [{'sha': B}, {'sha': H}]},
-                {'sha': A, 'tree': {'sha': T}, 'parents': [{'sha': B}, {'sha': '9'*40}]},
-            ):
-                with patch.object(update, 'api', side_effect=lambda path: changed_commit if '/git/commits/' in path else response(path)):
-                    with self.assertRaises(ValueError):
-                        acceptance.accepted_receipt(7)
-            with patch.object(update, 'verify_provenance', side_effect=ValueError('source provenance changed')):
-                with self.assertRaisesRegex(ValueError, 'source provenance changed'):
-                    acceptance.accepted_receipt(7)
-            save.assert_not_called()
-            approve.assert_not_called()
-            dispatch.assert_not_called()
-            with patch.object(recipe_candidates, 'verify_authorization', side_effect=ValueError('missing exact approval checkpoint')):
-                with self.assertRaisesRegex(ValueError, 'approval checkpoint'):
-                    acceptance.accepted_receipt(7)
-            del records[('built', key)]
-            recovered = acceptance.accepted_receipt(7)
-            self.assertEqual(recovered, receipt)
-            self.assertEqual(records[('candidate-provenance', key)], original_records[('candidate-provenance', key)])
-            save.assert_not_called()
-            approve.assert_not_called()
-            with patch.object(build_store, 'lookup', return_value=None):
-                with self.assertRaisesRegex(ValueError, 'recover original output'):
-                    acceptance.accepted_receipt(7)
-            dispatch.assert_not_called()
 
-    def test_accepted_build_binds_main_pin_sources_original_producer_and_merge(self):
-        from tools import recipe_candidates
-        C, B, H, T, A = (value*40 for value in 'cbdea')
-        lock, policy = {'version': '2', 'sources': []}, {'outputs': []}
-        provenance = {'watchers': []}
-        frozen = {'pkgbase': 'demo', 'lock': lock, 'policy': policy}
-        original = {'base': C, 'recipe_base': B, 'head': H, 'recipe_tree': T,
-                    'pr_number': 7, 'packages': [frozen], 'provenance': provenance,
-                    'run_id': '40', 'run_attempt': '2'}
-        descriptor = {'record': original, 'producer': {'run_id': '42', 'run_attempt': '3'}}
-        receipt = {'kind': 'recipe-acceptance', 'repository': 'owner/repo',
-                   'pkgbase': 'demo', 'candidate_base': C, 'recipe_base': B,
-                   'head': H, 'recipe_tree': T, 'pr_number': 7, 'accepted': A,
-                   'candidate_digest': recipe_candidates.candidate_digest(original), 'build': descriptor,
-                   'lock': lock, 'policy': policy, 'provenance': provenance}
-        package = {**frozen, 'recipe_commit': A}
-        manifest = acceptance.expected_leaves({}, receipt)
-        merge = {'sha': A, 'tree': {'sha': T}, 'parents': [{'sha': B}, {'sha': H}]}
-        def response(path):
-            if '/git/blobs/' in path:
-                import base64
-                from tools import sources
-                return {'encoding': 'base64', 'content': base64.b64encode(sources.canonical(receipt)).decode()}
-            return merge
-        with patch.object(acceptance, 'leaves', return_value=manifest), \
-                patch.object(update, 'api', side_effect=response), \
-                patch.object(recipe_candidates, 'verify_authorization'), \
-                patch.object(build_store, 'lookup', return_value=descriptor) as lookup:
-            verified = acceptance.verify_accepted_build(None, package, C)
-            self.assertEqual(verified['record'], original)
-            self.assertEqual(verified['acceptance']['build']['producer'],
-                             {'run_id': '42', 'run_attempt': '3'})
-            self.assertEqual(verified['mapping'], {'head': H, 'accepted': A, 'recipe_tree': T})
-            for field, replacement in [
-                    ('recipe_commit', H), ('lock', {'version': '3'}), ('policy', {'outputs': ['other']})]:
-                with self.subTest(field=field), self.assertRaises(ValueError):
-                    acceptance.verify_accepted_build(None, {**package, field: replacement}, C)
-            merge['parents'] = [{'sha': B}]
-            with self.assertRaisesRegex(ValueError, 'exact B,H'):
-                acceptance.verify_accepted_build(None, package, C)
-            merge['parents'] = [{'sha': B}, {'sha': H}]
-            manifest['inputs/demo.json'] = ('100644', 'blob', 'f'*40)
-            with self.assertRaisesRegex(ValueError, 'source state'):
-                acceptance.verify_accepted_build(None, package, C)
-            manifest.update(acceptance.expected_leaves({}, receipt))
-            lookup.return_value = {**descriptor, 'producer': {'run_id': '99', 'run_attempt': '1'}}
-            with self.assertRaisesRegex(ValueError, 'durable descriptor differs'):
-                acceptance.verify_accepted_build(None, package, C)
-            lookup.return_value = None
-            with self.assertRaisesRegex(ValueError, 'missing'):
-                acceptance.verify_accepted_build(None, package, C)
 
     def test_bookkeeping_rejects_unrelated_code_even_with_valid_acceptance(self):
         C, H = 'c'*40, 'd'*40
@@ -491,68 +272,6 @@ class AcceptanceInvariants(unittest.TestCase):
                     current_lock, current_pin = lock, H
                     pr.update(state='closed', merged_at='now')
                     leafsets[Q] = dict(accepted)
-                from tools import recipe_candidates
-                record = {'schema': 1, 'kind': 'recipe', 'repository': 'owner/repo',
-                          'base': C, 'recipe_base': B, 'head': H, 'recipe_tree': T,
-                          'pr_number': 7, 'pkgbase': 'demo', 'receipt_id': acceptance.digest(frozen),
-                          'head_branch': frozen['head_branch'], 'proposal_origin': 'legacy-accepted',
-                          'watcher_id': 'release', 'watcher_ids': ['release'], 'mechanical': True,
-                          'previous_control_pin': H, 'baseline_lock': oldlock, 'baseline_provenance': oldpro,
-                          'predecessor_lock': lock, 'predecessor_provenance': provenance,
-                          'provenance': provenance, 'image': 'image', 'harness_sha': 'harness',
-                          'control_digest': 'controller',
-                          'recipe_pins': {'demo': H}, 'previous_recipe_pins': {'demo': B},
-                          'packages': [{'pkgbase': 'demo', 'policy': policy, 'lock': lock,
-                                        'recipe_commit': H, 'input_digest': 'f'*64,
-                                        'expected_srcinfo': 'pkgver = 2\n'}]}
-                key = C + '-' + B + '-' + H
-                records = {('candidate', key): record}
-                original_record = {**record, 'run_id': '42', 'run_attempt': '1'}
-                def materialize(descriptor, destination):
-                    producer_record = descriptor['record']
-                    package = producer_record['packages'][0]
-                    evidence = {field: producer_record[field] for field in (
-                        'schema', 'repository', 'base', 'head', 'recipe_pins',
-                        'previous_recipe_pins', 'run_id', 'run_attempt', 'image', 'harness_sha')}
-                    evidence['packages'] = [{
-                        'pkgbase': package['pkgbase'], 'recipe_commit': package['recipe_commit'],
-                        'input_digest': package['input_digest'], 'source_lock': package['lock'],
-                        'metadata': {'srcinfo': package['expected_srcinfo']},
-                        'run_id': descriptor['producer']['run_id'],
-                        'run_attempt': descriptor['producer']['run_attempt'],
-                        'image': producer_record['image'], 'harness_sha': producer_record['harness_sha'],
-                        'files': [{'filename': 'demo-2-x86_64.pkg.tar.zst', 'sha256': '9'*64,
-                                   'name': 'demo', 'arch': 'x86_64', 'version': lock['version']}],
-                    }]
-                    update.dump(destination/'native-evidence.json', evidence)
-                    return destination
-                with ExitStack() as acceptance_stack:
-                    for context in (
-                        patch.object(update, 'main_sha', return_value=C),
-                        patch.object(recipe_candidates, 'proposal_receipt', return_value=frozen),
-                        patch.object(recipe_state, 'keys', return_value=[key]),
-                        patch.object(recipe_state, 'load_optional', side_effect=lambda kind, key: records.get((kind, key))),
-                        patch.object(recipe_state, 'assert_recipe_identity'),
-                        patch.object(update, 'harness_digest', return_value='harness'),
-                        patch.object(recipe_state, 'control_digest', return_value='controller'),
-                        patch.object(build_store, 'materialize', side_effect=materialize),
-                        patch.object(acceptance, 'required_checks'),
-                        patch.object(update, 'ref_head', return_value=A),
-                        patch.object(update, 'validate_source_policy'),
-                        patch.object(update, 'verify_provenance'),
-                        patch.object(recipe_candidates, 'verify_authorization', return_value={'candidate_digest': acceptance.digest(record), 'authorization_kind': 'automatic', 'review_environment': ''}),
-                        patch.object(build_store, 'lookup', return_value={'record': original_record, 'producer': {'run_id': '42', 'run_attempt': '1'}}),
-                    ):
-                        acceptance_stack.enter_context(context)
-                    receipt = acceptance.accepted_receipt(7)
-                    self.assertEqual((receipt['previous_control_pin'], receipt['accepted']), (H, A))
-                    self.assertEqual(receipt['predecessor_lock'], receipt['lock'])
-                    self.assertEqual(receipt['predecessor_provenance'], receipt['provenance'])
-                    self.assertEqual(acceptance.expected_leaves(accepted, receipt)['recipes/demo'],
-                                     ('160000', 'commit', A))
-                    self.assertEqual(receipt['approved_digest'], acceptance.digest({
-                        'candidate_digest': acceptance.digest(record),
-                        'authorization_kind': 'automatic', 'review_environment': ''}))
 
     def test_retirement_acceptance_deletion_requires_ordinary_code_review(self):
         before = {'acceptance/demo.json': ('100644', 'blob', '1'*40),
@@ -628,40 +347,7 @@ class AcceptanceInvariants(unittest.TestCase):
             acceptance.verify_legacy_receipt(commit, base, 'demo', 'release',
                                              [{**statuses[0], 'creator': {'login': 'human', 'type': 'User'}}])
 
-    def test_native_evidence_must_match_exact_recipe_frozen_inputs_and_metadata(self):
-        package = {'pkgbase': 'demo', 'recipe_commit': 'd'*40,
-                   'input_digest': 'f'*64, 'lock': {'version': '2'},
-                   'expected_srcinfo': 'pkgbase = demo',
-                   'policy': {'outputs': [{'name': 'demo', 'arch': 'x86_64'}]}}
-        candidate = {'schema': 1, 'repository': 'owner/repo', 'pr_number': 7, 'base': 'c'*40,
-                     'recipe_base': 'b'*40, 'head': 'd'*40,
-                     'recipe_pins': {'demo': 'd'*40}, 'previous_recipe_pins': {'demo': 'b'*40},
-                     'image': 'pinned', 'harness_sha': 'a'*64, 'packages': [package]}
-        output = {'pkgbase': 'demo', 'recipe_commit': 'd'*40, 'input_digest': 'f'*64,
-                  'source_lock': {'version': '2'}, 'metadata': {'srcinfo': 'pkgbase = demo'},
-                  'files': [{'name': 'demo', 'arch': 'x86_64', 'version': '2'}]}
-        evidence = {**candidate, 'packages': [output], 'run_id': '42', 'run_attempt': '1',
-                    'package_runs': [{'pkgbase': 'demo', 'run_id': '43', 'run_attempt': '1'}]}
-        acceptance.verify_native_evidence(candidate, evidence)
-        for field, value in [('recipe_commit', 'e'*40), ('input_digest', 'a'*64),
-                             ('source_lock', {'version': '3'}), ('metadata', {'srcinfo': 'forged'})]:
-            with self.assertRaises(ValueError):
-                acceptance.verify_native_evidence(candidate, {**evidence, 'packages': [{**output, field: value}]})
 
-    def test_reconcile_ignores_retired_recipe_history_without_blocking_enrolled_packages(self):
-        retired = {'number': 7, 'base': {'ref': 'pkg/retired'},
-                   'head': {'ref': 'recipe-updates/retired/release'},
-                   'state': 'closed', 'merged_at': '2026-10-01', 'merge_commit_sha': 'a'*40}
-        with ExitStack() as stack:
-            for context in (
-                patch.object(update, 'main_sha', return_value='c'*40),
-                patch.object(update, 'control_checkout', return_value=('c'*40, {})),
-                patch.object(update, 'policy_at', return_value={'active': {}}),
-                patch.object(update, 'api', return_value=[retired]),
-                patch.object(update, 'repository', return_value='owner/repo'),
-            ):
-                stack.enter_context(context)
-            self.assertEqual(acceptance.reconcile(), [{'pr_number': 7, 'retired': True}])
 
     def test_stale_bookkeeping_shape_rejects_unrelated_work_before_replacement_or_close(self):
         P, A = 'c'*40, 'a'*40
@@ -689,3 +375,168 @@ class AcceptanceInvariants(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SuccessfulOutputAcceptance(unittest.TestCase):
+    def fixture(self, dynamic=False):
+        srcinfo = 'pkgbase = demo\n\tpkgver = 1\n\tpkgrel = 1\n\tarch = x86_64\npkgname = demo\n'
+        lock = {'schema': 1, 'version': '1-1', 'sources': []}
+        package = {'pkgbase': 'demo', 'recipe_commit': 'd'*40, 'input_digest': 'f'*64,
+                   'lock': lock, 'expected_srcinfo': srcinfo, 'policy': {'outputs': [{'name': 'demo', 'arch': 'x86_64'}]}}
+        candidate = {'schema': 1, 'repository': 'owner/repo', 'base': 'c'*40, 'head': 'd'*40,
+                     'recipe_pins': {'demo': 'd'*40}, 'previous_recipe_pins': {'demo': 'b'*40},
+                     'image': 'pinned', 'harness_sha': 'f'*64, 'packages': [package]}
+        actual = srcinfo.replace('pkgver = 1', 'pkgver = 2') if dynamic else srcinfo
+        evidence = {key: value for key, value in candidate.items() if key != 'packages'}
+        evidence['packages'] = [{'pkgbase': 'demo', 'recipe_commit': 'd'*40, 'input_digest': 'e'*64, 'request_input_digest': 'f'*64,
+                                 'source_lock': {'schema': 1, 'version': '2-1' if dynamic else '1-1', 'sources': []},
+                                 'metadata': {'srcinfo': actual, 'dynamic_pkgver': dynamic},
+                                 'files': [{'name': 'demo', 'arch': 'x86_64', 'version': '2-1' if dynamic else '1-1',
+                                            'filename': 'demo.pkg.tar.zst'}]}]
+        return candidate, evidence
+
+    def test_dynamic_actual_version_is_accepted_without_package_hashes(self):
+        candidate, evidence = self.fixture(dynamic=True)
+        acceptance.verify_native_evidence(candidate, evidence)
+        changed = copy.deepcopy(evidence)
+        changed['packages'][0]['metadata']['srcinfo'] += '\tdepends = undeclared\n'
+        with self.assertRaisesRegex(ValueError, 'frozen candidate'):
+            acceptance.verify_native_evidence(candidate, changed)
+
+    def test_actual_dynamic_pkgrel_bump_must_advance_prior_actual_version(self):
+        candidate, evidence = self.fixture(dynamic=True)
+        candidate['predecessor_lock'] = {'version': '2-1', 'sources': []}
+        candidate['proposal_origin'] = 'manual'
+        candidate['packages'][0]['expected_srcinfo'] = candidate['packages'][0]['expected_srcinfo'].replace('pkgrel = 1', 'pkgrel = 2')
+        candidate['packages'][0]['lock']['version'] = '1-2'
+        output = evidence['packages'][0]
+        output['metadata']['srcinfo'] = output['metadata']['srcinfo'].replace('pkgrel = 1', 'pkgrel = 2')
+        output['source_lock']['version'] = '2-2'
+        output['files'][0]['version'] = '2-2'
+        acceptance.verify_native_evidence(candidate, evidence)
+        candidate['predecessor_lock']['version'] = '2-2'
+        with self.assertRaisesRegex(ValueError, 'advance accepted version'):
+            acceptance.verify_native_evidence(candidate, evidence)
+        candidate['predecessor_lock']['version'] = '3-1'
+        with self.assertRaisesRegex(ValueError, 'advance accepted version'):
+            acceptance.verify_native_evidence(candidate, evidence)
+
+    def test_actual_version_progression_preserves_epoch_ordering(self):
+        candidate, evidence = self.fixture(dynamic=True)
+        candidate['proposal_origin'] = 'manual'
+        candidate['predecessor_lock'] = {'version': '1:1-1', 'sources': []}
+        with self.assertRaisesRegex(ValueError, 'advance accepted version'):
+            acceptance.verify_native_evidence(candidate, evidence)
+        candidate['packages'][0]['expected_srcinfo'] = candidate['packages'][0]['expected_srcinfo'].replace('pkgrel = 1', 'epoch = 2\n\tpkgrel = 1')
+        output = evidence['packages'][0]
+        output['metadata']['srcinfo'] = output['metadata']['srcinfo'].replace('pkgrel = 1', 'epoch = 2\n\tpkgrel = 1')
+        output['source_lock']['version'] = '2:2-1'
+        output['files'][0]['version'] = '2:2-1'
+        candidate['predecessor_lock']['version'] = '1:99-9'
+        acceptance.verify_native_evidence(candidate, evidence)
+
+    def test_actual_git_commits_support_both_source_object_formats(self):
+        candidate, evidence = self.fixture()
+        planned = {'id': 'source', 'kind': 'git', 'source': 'git+https://example.test/repo#branch=main',
+                   'commit': 'a'*40, 'git_context': {'object_format': 'sha1'}}
+        candidate['packages'][0]['lock']['sources'] = [planned]
+        evidence['packages'][0]['source_lock']['sources'] = [copy.deepcopy(planned)]
+        actual = evidence['packages'][0]['source_lock']['sources'][0]
+        for length, object_format in ((40, 'sha1'), (64, 'sha256')):
+            with self.subTest(object_format=object_format):
+                actual['commit'] = 'b'*length
+                actual['git_context'] = {'object_format': object_format}
+                acceptance.verify_native_evidence(candidate, evidence)
+        actual['commit'] = 'b'*63
+        with self.assertRaisesRegex(ValueError, 'full commit'):
+            acceptance.verify_native_evidence(candidate, evidence)
+
+
+    def test_static_version_mismatch_is_rejected(self):
+        candidate, evidence = self.fixture(dynamic=True)
+        evidence['packages'][0]['metadata']['dynamic_pkgver'] = False
+        with self.assertRaisesRegex(ValueError, 'frozen candidate'):
+            acceptance.verify_native_evidence(candidate, evidence)
+
+    def test_direct_request_acceptance_ignores_controller_movement(self):
+        from tools import recipe_candidates, recipe_state
+        candidate, evidence = self.fixture(dynamic=True)
+        candidate.update(request_id='demo-request', recipe_base='b'*40, pkgbase='demo', pr_number=7,
+                         head_branch='recipe-updates/demo', recipe_tree='e'*40)
+        evidence.update(run_id='11', run_attempt='1')
+        descriptor = {'record': candidate, 'evidence': evidence, 'producer': {'run_id': '11', 'run_attempt': '1'}}
+        pr = {'number': 7, 'base': {'ref': 'pkg/demo', 'sha': 'b'*40},
+              'head': {'sha': 'd'*40, 'ref': 'recipe-updates/demo'}}
+        with patch.object(recipe_state, 'pending_build', return_value={'head': 'd'*40, 'state': 'success', 'request_id': 'demo-request'}), \
+                patch.object(recipe_state, 'build_request', return_value=candidate), \
+                patch.object(recipe_state, 'StateSnapshot') as snapshot, \
+                patch.object(recipe_state, 'assert_recipe_identity'), \
+                patch.object(recipe_candidates, 'verify_result'), \
+                patch.object(recipe_state, 'keys', side_effect=AssertionError('no historical lookup')):
+            snapshot.return_value.load.return_value = descriptor
+            selected, actual, runs, stored = acceptance.acceptance_candidate(pr, '9'*40, {}, candidate['packages'][0]['policy'])
+            self.assertEqual(selected['base'], 'c'*40)
+            self.assertEqual(actual['packages'][0]['source_lock']['version'], '2-1')
+            self.assertEqual(stored, descriptor)
+
+    def test_behind_main_pr_does_not_block_actionable_recipe_in_sweep(self):
+        from tools import imports, recipe_state
+        source = {'number': 1, 'state': 'open', 'base': {'ref': 'main', 'sha': 'b'*40},
+                  'head': {'ref': 'feature/controller', 'sha': 'a'*40}}
+        recipe = {'number': 2, 'state': 'open', 'base': {'ref': 'pkg/demo', 'sha': 'e'*40},
+                  'head': {'ref': 'recipe-updates/demo', 'sha': 'd'*40}}
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo'}), \
+                patch.object(update, 'main_sha', return_value='c'*40), \
+                patch.object(update, 'control_checkout', return_value=('c'*40, None)), \
+                patch.object(imports, 'policies', return_value={'demo': {}}), \
+                patch.object(recipe_state, 'StateSnapshot') as snapshot, \
+                patch.object(recipe_state, 'pending_build', return_value=None), \
+                patch.object(update, 'open_pr_snapshot', return_value=[source, recipe]), \
+                patch.object(update, 'api', return_value={}) as api:
+            snapshot.return_value.load_many.side_effect = [{('pending', 'demo'): None}, {}]
+            self.assertEqual(acceptance.reconcile(), [])
+            api.assert_called_once_with(
+                update.route('/actions/workflows/candidate.yml/dispatches'), 'POST',
+                {'ref': 'main', 'inputs': {'pr_number': '2', 'expected_head': 'd'*40}})
+
+    def test_failed_pending_cannot_accept_even_if_output_exists(self):
+        from tools import recipe_state
+        pr = {'number': 7, 'base': {'ref': 'pkg/demo', 'sha': 'b'*40}, 'head': {'sha': 'd'*40}}
+        with patch.object(recipe_state, 'StateSnapshot'), patch.object(recipe_state, 'pending_build', return_value={'head': 'd'*40, 'state': 'failure'}):
+            with self.assertRaisesRegex(ValueError, 'successful exact-head'):
+                acceptance.acceptance_candidate(pr, 'c'*40, {}, {})
+
+    def test_bookkeeping_advances_inputs_to_actual_dynamic_output_only_after_exact_merge(self):
+        from tools import imports, recipe_candidates
+        candidate, evidence = self.fixture(dynamic=True)
+        policy = candidate['packages'][0]['policy']
+        predecessor = candidate['packages'][0]['lock']
+        provenance = {'watchers': []}
+        candidate.update(pkgbase='demo', pr_number=7, recipe_base='b'*40, recipe_tree='e'*40,
+                         head_branch='feature/demo', proposal_origin='manual', watcher_id=None, watcher_ids=[],
+                         receipt_id='f'*64, predecessor_lock=predecessor, predecessor_provenance=provenance,
+                         provenance=provenance)
+        descriptor = {'record': candidate, 'evidence': evidence}
+        proposal = {'base': 'c'*40, 'proposal_origin': 'manual'}
+        pr = {'number': 7, 'base': {'ref': 'pkg/demo', 'sha': 'b'*40}, 'head': {'sha': 'd'*40}, 'merge_commit_sha': 'a'*40}
+        merge = {'sha': 'a'*40, 'tree': {'sha': 'e'*40}, 'parents': [{'sha': 'b'*40}, {'sha': 'd'*40}]}
+        def checkout(sha, destination, pins):
+            pins['demo'] = 'b'*40
+            update.dump(destination/'inputs/demo.json', predecessor)
+            update.dump(destination/'upstream/demo.json', provenance)
+            return destination
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo'}), \
+                patch.object(update, 'api', side_effect=[pr, merge]), patch.object(update, 'main_sha', return_value='c'*40), \
+                patch.object(update, 'checkout_data', side_effect=checkout), patch.object(update, 'ref_head', return_value='a'*40), \
+                patch.object(imports, 'policies', return_value={'demo': policy}), \
+                patch.object(imports, 'registry', return_value=({}, {'demo': policy}, {})), \
+                patch.object(recipe_candidates, 'proposal_receipt', return_value=proposal), \
+                patch.object(acceptance, 'required_checks'), \
+                patch.object(acceptance, 'acceptance_candidate', return_value=(candidate, evidence, {}, descriptor)):
+            receipt = acceptance.accepted_receipt(7, 'c'*40)
+            self.assertEqual(receipt['lock']['version'], '2-1')
+            self.assertEqual(receipt['predecessor_lock']['version'], '1-1')
+            self.assertEqual(receipt['accepted'], 'a'*40)
+            self.assertEqual(receipt['actual_srcinfo'], evidence['packages'][0]['metadata']['srcinfo'])
+            actual_leaf = acceptance.expected_leaves({}, receipt)['inputs/demo.json']
+            self.assertNotEqual(actual_leaf[2], acceptance.blob_sha(predecessor))

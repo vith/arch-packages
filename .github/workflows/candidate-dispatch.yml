@@ -7,46 +7,25 @@ permissions:
   contents: read
   actions: write
   pull-requests: read
+  statuses: write
 jobs:
   dispatch:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      # Only main-targeting PRs use this metadata event. Recipe-root branches
-      # contain no workflows: the trusted writer explicitly dispatches them,
-      # and the scheduled/main update reconciliation recovers missed events.
-      # Only the protected event base is checked out; candidate code is never
-      # executed here. Unchanged package scope uses source-only validation.
+      # Only protected-main tools execute here, never the proposed PR checkout.
+      # Recipe-root branches have no workflows and use explicit manager handoffs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - env:
-          GH_TOKEN: ${{ github.token }}
+
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           python3 - <<'PY'
-          import json, os, subprocess
-          from tools.source_review import unchanged_git_scope
-          repository = os.environ['GITHUB_REPOSITORY']
-          number = str(int(os.environ['PR_NUMBER']))
-          current = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/pulls/{number}']))
-          if (current['state'] != 'open' or current['draft'] or current['base']['ref'] != 'main'
-              or current['head']['repo']['full_name'] != repository):
-              raise SystemExit('Not an open same-repository main candidate')
-          main = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/git/ref/heads/main']))['object']['sha']
-          if current['base']['sha'] != main:
-              print('Update the PR branch to current main before validation; no workflow dispatched')
-              raise SystemExit(0)
-          arguments = ['--repo', repository, '--ref', 'main',
-                       '-f', 'pr_number=' + number, '-f', 'expected_head=' + current['head']['sha']]
-          try:
-              unchanged_git_scope(current['base']['sha'], current['head']['sha'])
-          except ValueError:
-              workflow = 'candidate.yml'
-          else:
-              workflow = 'verification.yml'
-              arguments += ['-f', 'expected_base=' + current['base']['sha']]
-          subprocess.run(['gh', 'workflow', 'run', workflow, *arguments], check=True)
+          import os
+          from tools.update import dispatch
+          dispatch(int(os.environ['PR_NUMBER']))
           PY
