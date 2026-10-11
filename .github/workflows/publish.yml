@@ -77,14 +77,6 @@ jobs:
           path: ~/.local/state/arch-packages/work/publication-${{ github.run_id }}-${{ github.run_attempt }}/publication-plan.json
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: unsigned-publication-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ~/.local/state/arch-packages/work/publication-${{ github.run_id }}-${{ github.run_attempt }}/unsigned.tar
-            ~/.local/state/arch-packages/work/publication-${{ github.run_id }}-${{ github.run_attempt }}/publication-plan.json
-          if-no-files-found: error
-          retention-days: 7
   rollback:
     if: github.ref == 'refs/heads/main' && inputs.operation == 'rollback'
     runs-on: ubuntu-latest
@@ -144,7 +136,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gnupg libarchive-tools
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: unsigned-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          name: publication-plan-${{ github.run_attempt }}
           path: ~/.local/state/arch-packages/work/publication-input-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Validate sign release readback then activate
         env:
@@ -154,7 +146,7 @@ jobs:
           ARCH_SIGNING_FINGERPRINT: ${{ vars.ARCH_SIGNING_FINGERPRINT }}
           ACCEPTED_SHA: ${{ needs.collect.outputs.accepted_sha }}
         run: |
-          python3 tools/publish.py publish --accepted-sha "$ACCEPTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --plan "$HOME/.local/state/arch-packages/work/publication-input-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/publication-plan.json" --artifact "$HOME/.local/state/arch-packages/work/publication-input-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/unsigned.tar" --work-dir "$HOME/.local/state/arch-packages/work/signed-publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python3 tools/publish.py publish --accepted-sha "$ACCEPTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --plan "$HOME/.local/state/arch-packages/work/publication-input-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/publication-plan.json" --work-dir "$HOME/.local/state/arch-packages/work/signed-publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Record public verification and rollback evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

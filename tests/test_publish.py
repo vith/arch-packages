@@ -1,7 +1,6 @@
 import copy
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import io
 import json
 from pathlib import Path
 import tarfile
@@ -123,7 +122,7 @@ class PublicationBoundaries(unittest.TestCase):
         def lost_response(*args, **kwargs):
             state[0] = target
             raise TimeoutError('response lost after commit')
-        with patch.object(publish,'latest_release',side_effect=lambda:state[0]), patch.object(publish.github_api,'api',side_effect=lost_response) as api, patch.object(publish,'verified_snapshot',return_value=catalog), patch.object(publish,'latest_catalog',return_value=catalog):
+        with patch.object(publish,'latest_release',side_effect=lambda:state[0]), patch.object(publish.github_api,'api',side_effect=lost_response) as api, patch.object(publish,'validate_catalog',return_value=catalog), patch.object(publish,'latest_catalog',return_value=catalog):
             publish.promote(target,old,catalog,self.root/'ring',self.root/'observed')
         self.assertEqual(state[0],target)
         self.assertEqual(api.call_count,1)
@@ -140,7 +139,7 @@ class PublicationBoundaries(unittest.TestCase):
         old = {'id': 1, 'tag': 'snapshot-old'}
         target = {'id': 2, 'tag': 'snapshot-new'}
         catalog = {'snapshot': 'snapshot-new'}
-        with patch.object(publish, 'latest_release', side_effect=[old, old, target, target]), patch.object(publish.github_api, 'api'), patch.object(publish, 'verified_snapshot', return_value=catalog), patch.object(publish, 'latest_catalog', return_value=catalog), patch.object(publish.time, 'sleep') as sleep:
+        with patch.object(publish, 'latest_release', side_effect=[old, old, target, target]), patch.object(publish.github_api, 'api'), patch.object(publish, 'validate_catalog', return_value=catalog), patch.object(publish, 'latest_catalog', return_value=catalog), patch.object(publish.time, 'sleep') as sleep:
             publish.promote(target, old, catalog, self.root / 'ring', self.root / 'observed')
         sleep.assert_called_once_with(5)
 
@@ -177,7 +176,7 @@ class PublicationBoundaries(unittest.TestCase):
         old = {'id':1,'tag':'snapshot-old'}
         target = {'id':2,'tag':'snapshot-new'}
         catalog = {'snapshot':'snapshot-new'}
-        with patch.object(publish,'latest_release',side_effect=[old,target,target]), patch.object(publish.github_api,'api') as api, patch.object(publish,'verified_snapshot',return_value=catalog), patch.object(publish,'latest_catalog',return_value={'snapshot':'snapshot-other'}), self.assertRaisesRegex(ValueError,'active catalog'):
+        with patch.object(publish,'latest_release',side_effect=[old,target,target]), patch.object(publish.github_api,'api') as api, patch.object(publish,'validate_catalog',return_value=catalog), patch.object(publish,'latest_catalog',return_value={'snapshot':'snapshot-other'}), self.assertRaisesRegex(ValueError,'active catalog'):
             publish.promote(target,old,catalog,self.root/'ring',self.root/'observed')
         self.assertEqual(api.call_count,1)
 
@@ -237,28 +236,28 @@ class PublicationBoundaries(unittest.TestCase):
     def test_epoch_preserved_in_metadata_not_filename(self):
         package={'lock':{'version':'2:1.4-3'},'policy':{'outputs':[{'name':'example','arch':'any'}]}}
         self.assertEqual(publish.filenames(package),{'example-1.4-3-any.pkg.tar.zst':{'pkgname':'example','pkgver':'2:1.4-3','arch':'any'}})
-    def test_artifact_rejects_traversal_links_duplicates_and_extras(self):
-        for kind in ('traversal','symlink','duplicate'):
-            path=self.root/(kind+'.tar')
-            with tarfile.open(path,'w') as archive:
-                member=tarfile.TarInfo('../escape' if kind=='traversal' else 'package')
-                if kind=='symlink': member.type=tarfile.SYMTYPE; member.linkname='/etc/passwd'
+    def test_original_archive_rejects_traversal_links_and_duplicates(self):
+        for kind in ('traversal', 'symlink', 'duplicate'):
+            path = self.root / (kind + '.tar')
+            with tarfile.open(path, 'w') as archive:
+                member = tarfile.TarInfo('../escape' if kind == 'traversal' else 'package')
+                if kind == 'symlink':
+                    member.type = tarfile.SYMTYPE
+                    member.linkname = '/etc/passwd'
                 archive.addfile(member)
-                if kind=='duplicate': archive.addfile(member)
-            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError,'unsafe'):
-                publish.safe_extract(path,self.root/kind)
-        output=self.root/'unsigned'; output.mkdir()
-        (output/'surprise.pkg.tar.zst').write_bytes(b'extra')
-        with self.assertRaisesRegex(ValueError,'extra/missing'):
-            publish.validate_unsigned(output,{'packages':[]})
-    def test_artifact_member_bound_rejects_before_extracting_any_bytes(self):
+                if kind == 'duplicate':
+                    archive.addfile(member)
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, 'unsafe'):
+                publish.safe_extract(path, self.root / kind)
+
+    def test_original_archive_member_bound_precedes_extraction(self):
         archive_path = self.root / 'many-members.tar'
-        with tarfile.open(archive_path,'w') as archive:
+        with tarfile.open(archive_path, 'w') as archive:
             for index in range(1001):
                 archive.addfile(tarfile.TarInfo('member-' + str(index)))
         destination = self.root / 'bounded-output'
-        with self.assertRaisesRegex(ValueError,'too many'):
-            publish.safe_extract(archive_path,destination)
+        with self.assertRaisesRegex(ValueError, 'too many'):
+            publish.safe_extract(archive_path, destination)
         self.assertEqual(list(destination.iterdir()), [])
 
     def test_shell_shaped_and_duplicate_pkginfo_keys_rejected(self):
@@ -338,82 +337,40 @@ class PublicationBoundaries(unittest.TestCase):
                    'input_digest':package['input_digest'],'tree_sha':package['tree_sha'],
                    'metadata':metadata | {'srcinfo':text},
                    **{k:original_record[k] for k in ('run_id','run_attempt','image','harness_sha')},
-                   'files':[{'filename':filename,'sha256':publish.sha(output/filename),
-                             'name':pkgbase,'version':version,'arch':'any'}]}
+                   'files':[{'filename':filename, 'name':pkgbase,'version':version,'arch':'any'}]}
         native = {'head':'d'*40,'run_id':'1','run_attempt':'2','packages':[receipt]}
         def materialize(descriptor, destination):
             destination.mkdir()
             (destination / filename).write_bytes(b'original bytes')
             (destination / 'native-evidence.json').write_text(json.dumps(native))
             return destination
-        (output / 'native-evidence.json').write_text(json.dumps({'schema':2,'builds':{pkgbase:descriptor}}))
+        (output / 'native-evidence.json').write_text(json.dumps(native))
         return output, plan, native, materialize
 
-    def test_publication_keeps_original_proof_across_control_and_transport_changes(self):
+    def test_collection_carries_only_bound_metadata(self):
+        plan = {'packages':[{'pkgbase':'example', 'reuse':False, 'build':{'request_id':'request-1'}}]}
+        destination = self.root / 'collection'
+        with patch.object(publish, 'current_main'), patch.object(publish.recipes, 'materialize', return_value={}), patch.object(publish, 'keyring'), patch.object(publish, 'latest_release', return_value=None), patch.object(publish, 'previous_catalog', return_value=None), patch.object(publish, 'expectations', return_value=plan), patch.object(publish, 'bind_accepted_builds'):
+            publish.prepare('a' * 40, 1, 1, destination)
+        self.assertEqual({p.name for p in destination.iterdir()}, {'publication-plan.json'})
+        self.assertEqual(json.loads((destination / 'publication-plan.json').read_text())['expected'], plan)
+
+    def test_inclusion_keeps_original_evidence_and_fetches_once(self):
         output, plan, native, materialize = self.approved_output()
         from tools import build_store, recipe_acceptance
         mapping = plan['packages'][0]['acceptance']
-        with patch.object(build_store,'materialize',side_effect=materialize), patch.object(recipe_acceptance,'verify_accepted_build',return_value={'mapping':mapping}), patch.object(publish,'pkginfo',return_value={'pkgname':'example','pkgver':'1-1','arch':'any'}):
-            proof = publish.validate_unsigned(output,plan)
-        self.assertEqual(proof['example'],native)
-        self.assertEqual(proof['example']['run_id'],'1')
-        self.assertEqual(proof['example']['run_attempt'],'2')
+        with patch.object(build_store, 'materialize', side_effect=materialize) as fetch, patch.object(recipe_acceptance, 'verify_accepted_build', return_value={'mapping':mapping}):
+            proof = publish.materialize_builds(self.root / 'inclusion', plan)
+        self.assertEqual(proof['example'], native)
+        self.assertEqual((self.root / 'inclusion/example-1-1-any.pkg.tar.zst').read_bytes(), b'original bytes')
+        fetch.assert_called_once_with(plan['packages'][0]['build'], self.root / 'original-example')
 
-    def test_publication_rejects_approved_bytes_with_wrong_metadata_source_or_receipt_hash(self):
+    def test_inclusion_rejects_changed_acceptance_before_fetching(self):
         output, plan, native, materialize = self.approved_output()
         from tools import build_store, recipe_acceptance
-        mapping = plan['packages'][0]['acceptance']
-        receipt = native['packages'][0]
-        cases = [
-            ('source_lock', {'version':'wrong','sources':[]}),
-            ('tree_sha', 'f'*64),
-            ('run_attempt', '3'),
-            ('metadata', receipt['metadata'] | {'version':'wrong'}),
-            ('files', [receipt['files'][0] | {'sha256':'f'*64}]),
-        ]
-        for field, bad in cases:
-            saved = receipt[field]
-            receipt[field] = bad
-            with self.subTest(field=field), patch.object(build_store,'materialize',side_effect=materialize), patch.object(recipe_acceptance,'verify_accepted_build',return_value={'mapping':mapping}), patch.object(publish,'pkginfo',return_value={'pkgname':'example','pkgver':'1-1','arch':'any'}), self.assertRaises(ValueError):
-                publish.validate_unsigned(output,plan)
-            receipt[field] = saved
-
-    def test_publication_rejects_replaced_original_transport_and_accepted_mapping(self):
-        output, plan, native, materialize = self.approved_output()
-        from tools import build_store, recipe_acceptance
-        mapping = plan['packages'][0]['acceptance']
-        with patch.object(build_store,'materialize',side_effect=materialize), patch.object(recipe_acceptance,'verify_accepted_build',return_value={'mapping':mapping}):
-            filename = next(iter(publish.filenames(plan['packages'][0])))
-            (output / filename).write_bytes(b'replacement')
-            with self.assertRaisesRegex(ValueError,'original approved package bytes'):
-                publish.validate_unsigned(output,plan)
-        with patch.object(recipe_acceptance,'verify_accepted_build',return_value={'mapping':{}}), self.assertRaisesRegex(ValueError,'merge mapping'):
-            publish.validate_unsigned(output,plan)
-
-    def test_publication_rejects_relabelled_or_missing_original_descriptor(self):
-        output, plan, native, materialize = self.approved_output()
-        envelope = json.loads((output/'native-evidence.json').read_text())
-        envelope['builds']['example']['producer']['run_attempt'] = '3'
-        (output/'native-evidence.json').write_text(json.dumps(envelope))
-        with self.assertRaisesRegex(ValueError,'original build identity'):
-            publish.validate_unsigned(output,plan)
-        envelope['builds'].clear()
-        (output/'native-evidence.json').write_text(json.dumps(envelope))
-        with self.assertRaisesRegex(ValueError,'original build identity'):
-            publish.validate_unsigned(output,plan)
-
-    def test_unsigned_omp_rejects_wrong_cli_addon_or_pipewire_proof(self):
-        output, plan, native, materialize = self.approved_output('oh-my-pi-vith-git','365.vith.r4.gabcdef123456-1')
-        from tools import build_store, recipe_acceptance
-        mapping = plan['packages'][0]['acceptance']
-        proof = {'runtime_identity':'365+vith-fork.4.abcdef123456',
-                 'cli_version':'omp/365+vith-fork.4.abcdef123456',
-                 'dynamic':'libpipewire-0.3.so.0','addon_sha256':'a'*64,'help':'usage'}
-        native['packages'][0]['runtime'] = proof
-        for field, bad in [('runtime_identity','wrong'),('cli_version','omp/wrong'),('dynamic',''),('addon_sha256','bad'),('help','')]:
-            native['packages'][0]['runtime'] = proof | {field:bad}
-            with self.subTest(field=field), patch.object(build_store,'materialize',side_effect=materialize), patch.object(recipe_acceptance,'verify_accepted_build',return_value={'mapping':mapping}), self.assertRaisesRegex(ValueError,'OMP runtime'):
-                publish.validate_unsigned(output,plan)
+        with patch.object(build_store, 'materialize') as fetch, patch.object(recipe_acceptance, 'verify_accepted_build', return_value={'mapping':{}}), self.assertRaisesRegex(ValueError, 'merge mapping'):
+            publish.materialize_builds(self.root / 'inclusion', plan)
+        fetch.assert_not_called()
 
     def test_signed_catalog_rejects_original_producer_source_and_package_hash_laundering(self):
         catalog = self.catalog_fixture('vith-gh')
@@ -432,6 +389,18 @@ class PublicationBoundaries(unittest.TestCase):
             'build_provenance':{'pkgbase':'example','input_digest':'c'*64,'record':record},
             'native_evidence':native,
         }
+        moved = copy.deepcopy(catalog)
+        recipe = moved['recipes']['example']
+        evidence = recipe['native_evidence']
+        evidence['harness_sha'] = 'a' * 64
+        evidence['packages'][0]['request_input_digest'] = 'c' * 64
+        evidence['packages'][0]['input_digest'] = 'd' * 64
+        recipe['input_digest'] = 'd' * 64
+        recipe['build_provenance'].update({'schema':3, 'producer':{'run_id':'4', 'run_attempt':'2', 'head_sha':'e' * 40}, 'evidence':copy.deepcopy(evidence)})
+        publish.validate_catalog(moved, publish.REPOSITORY, 'A' * 40)
+        recipe['native_evidence']['harness_sha'] = 'b' * 64
+        with self.assertRaisesRegex(ValueError, 'changes original native evidence'):
+            publish.validate_catalog(moved, publish.REPOSITORY, 'A' * 40)
         publish.validate_catalog(catalog,publish.REPOSITORY,'A'*40)
         for field, bad in [('recipe_commit','e'*40),('input_digest','a'*64),('sources',[{}])]:
             broken = copy.deepcopy(catalog)
