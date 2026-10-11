@@ -1,6 +1,6 @@
 # Implementation plan
 
-**Status: approved scope; core implemented locally; protected production rollout and live acceptance are pending.**
+**Status: core and prerequisite merged; main-only zero-worker path observed. Fresh OMP pkgrel-only validation succeeded; human merges and unproved acceptance boundaries remain open.**
 
 The user selected a small prerequisite followed by **one atomic core cutover PR**, with reviewable component commits inside that PR. The earlier instruction to deploy small component PRs is superseded by this sequencing. Do not activate an incomplete combination of old and new worker contracts.
 
@@ -71,7 +71,7 @@ The exact immutable `source-review-<H>` bootstrap tag and protection remain for 
 
 ### Atomic core PR
 
-Land one coherent protected PR after the prerequisite, with component commits A–F below for review. Local implementation is integrated, but human protected merges and live acceptance remain outstanding. Component commits are review units, not separately deployed partial routes.
+Core PR #67 merged on protected main after prerequisite PR #66. Component commits are review units, not separately deployed partial routes. Live acceptance remains incomplete.
 
 Before activation, inventory old active runs and directly known fully successful outputs. Settle or stop old managers/workers. Migrate directly known successful records where valid or reuse existing signed snapshots. Never admit failed-worker output through a legacy exception.
 
@@ -191,13 +191,15 @@ Activation remains protected and human-owned. Manage settings through inspected 
 
 ## 4. Observed checks and remaining acceptance
 
-### Completed local and read-only evidence
+### Completed evidence
 
 - Core full suite: 305 tests in 24.630 seconds, OK.
 - Later targeted checks after failure-lifecycle/behind-base fixes and obsolete kind deletion: update 40, package runs 14, recipe acceptance 21, all passed.
 - Prerequisite full suite: 284 tests in 35.155 seconds, OK, one skip.
 - Shell syntax and diff checks passed. No workstation package build.
-- OpenTofu fmt/validate passed. The encrypted saved plan was inspected: 0 additions, 0 changes, 3 destructions, for the `recipe_review` and `code_review` environments and the `source_review` ruleset. **Not applied.** Apply only after coherent protected installation; then verify a no-change plan.
+- Canonical encrypted-state OpenTofu apply: 0 added, 0 changed, 3 destroyed, removing only the `code_review` and `recipe_review` environments and the `source_review` ruleset. The next plan reported **No changes**. Canceled 26 old waiting runs; recipe branches and PRs were preserved.
+- Unmerged descriptor-verifier fix: 3 meaningful RED/GREEN boundary regressions; 308 tests passed in 21.713 seconds. The actual CLI with the fix rejects the old schema-2 descriptor with `ValueError: invalid direct build descriptor`. Old OMP worker `37979975267` failed and is not salvaged.
+- Fresh OMP pkgrel 2 [PR #69](https://github.com/vith/arch-packages/pull/69), head `a8be88808739a0a4bbc024e113b88cb075805f80`: [worker 38169157502](https://github.com/vith/arch-packages/actions/runs/38169157502) succeeded through all steps in 15 minutes 29 seconds; [candidate 38168988462](https://github.com/vith/arch-packages/actions/runs/38168988462) succeeded. All three exact-head checks succeeded; the PR remains open.
 - Real read-only state/PR check: state tip resolved once, seven records batched, cached reread made zero requests, PR GraphQL observed 31 open PRs. This used user-token access and does not prove App quota recovery.
 - Hosted read-only smoke [38081926361](https://github.com/vith/arch-packages/actions/runs/38081926361): both jobs passed; native fixture 57 seconds, historical consumers 2 minutes 40 seconds.
 
@@ -220,16 +222,18 @@ Keep every approved acceptance boundary. The following checks remain open for pr
 - [ ] Inclusion retries do not rebuild.
 - [ ] Actual Git commits and dynamic versions are recorded without checkout changes through live acceptance/bookkeeping. The isolated native smoke already covers normal build semantics.
 - [ ] Missing or corrupt output prevents inclusion.
-- [ ] Main-only changes select zero package workers.
+- [x] Main-only changes select zero package workers: README-only [PR #68](https://github.com/vith/arch-packages/pull/68) auto-merged after [candidate 38147850295](https://github.com/vith/arch-packages/actions/runs/38147850295) succeeded with the package-worker step skipped.
 - [ ] Signed installation, historical enrollment, promotion, and rollback work end to end. Read-only historical signed installation has passed; new publication/promotion/rollback remain pending.
 
 Also verify exact accepted-cache admission and original saved path in a live warm-cache run, source retry/fresh-identity failures, and behind-main skips without blocking unrelated work. These are part of the approved observable boundaries, not replacements for the list above.
 
-Retain regressions for those boundaries plus static parser, container, credential, cache, native metadata, and signature safety. Unit tests must not substitute for live acceptance. Human protected prerequisite/core merges are the remaining deployment boundary; do not approve or merge on the user's behalf.
+Retain regressions for those boundaries plus static parser, container, credential, cache, native metadata, and signature safety. Unit tests must not substitute for live acceptance.
+
+[PR #69](https://github.com/vith/arch-packages/pull/69) is pkgrel-only but human-classified and remains open. Its successful checks do not establish testing of a non-trivial executable recipe change. Source-verifier fix [PR #70](https://github.com/vith/arch-packages/pull/70) requires exact hosted validation followed by a human protected Merge. Do not approve or merge on the user's behalf.
 
 ### Documentation and final checkpoint
 
-The existing README is user-facing: packages, installation, guide link, and licensing. The guide describes the exact seven YAML workflows, their triggers/jobs/inputs/actions, credentials, and retry rules. AGENTS records operational constraints. These replacements are grounded in source and explicitly mark rollout pending.
+The existing README is user-facing: packages, installation, guide link, and licensing. The guide describes the exact seven YAML workflows, their triggers/jobs/inputs/actions, credentials, and retry rules. AGENTS records operational constraints. These replacements are grounded in source and observed evidence.
 
 After hosted protected acceptance, update the same files slowly with the observed result and checkpoint. Do not retain stale dated observations or claim all acceptance checks passed merely because local tests did. Do not add docs/changelog.
 
@@ -241,4 +245,4 @@ After hosted protected acceptance, update the same files slowly with the observe
 - No unrelated action-policy hardening.
 - No ARM builders, local package builds, external-fork support, laptop package changes, or changes to the OMP fork or n3t infrastructure.
 
-**End state:** one build-before-merge route, direct records of whole-worker-success output, efficient updates, human normal Merge for non-trivial code, and signing/database inclusion without rebuilds or failed-job recovery. Implementation is ready for protected rollout; that rollout and its live acceptance are not yet complete.
+**End state:** one build-before-merge route, direct records of whole-worker-success output, efficient updates, human normal Merge for non-trivial code, and signing/database inclusion without rebuilds or failed-job recovery. No new publication, signed installation, promotion, rollback, or warm-cache proof. Human merge gates and all unproved acceptance boundaries remain open.

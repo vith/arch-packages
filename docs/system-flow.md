@@ -4,7 +4,7 @@
 
 ## Status and how to read this guide
 
-The core implementation is complete locally. Protected production rollout is pending. This guide describes the coherent core route supplied with this PR, not a claim that deployed main already uses it. The selected delivery is a small source-routing prerequisite followed by one atomic core cutover PR with reviewable component commits. Until that cutover, the prerequisite retains the old approval and worker behavior.
+Core PR #67 merged on protected main; signing and protected merges are unchanged. Live acceptance and publication remain incomplete.
 
 Read the lifecycle first, then the workflow contracts and failure rules. [Implementation plan](implementation-plan.md) records scope, evidence, and unfinished live acceptance. [README](../README.md) contains client installation instructions.
 
@@ -271,7 +271,7 @@ Workflow default permission is contents read. Concurrency is `arch-packages-publ
 
 Artifacts are `publication-plan-<attempt>` (`publication-plan.json`, 7 days, missing is an error), `publication-receipt-<run>-<attempt>` (`publication-result.json`, always attempted, missing is an error), and `rollback-receipt-<run>-<attempt>` (`publication-result.json`, always attempted, missing warns). Receipts use the action's default retention because YAML declares no retention for them. There is no unsigned-package Actions relay or duplicate plan upload.
 
-Collection is metadata-only. The signing runner directly authenticates and materializes the original durable output once per inclusion operation, before private-key import/use. It confirms whole-worker success, exact producer/request/recipe, asset and attestation bindings, safe extraction, native package identity, and package bytes. Premerge native evidence has no package-byte SHA fields. Inclusion is where package integrity checking belongs.
+Metadata-only planning verifies a supported descriptor and the whole successful worker before consuming evidence. Bytes and attestation remain inclusion-step checks. The signing runner directly authenticates and materializes the original durable output once per inclusion operation, before private-key import/use. It confirms whole-worker success, exact producer/request/recipe, asset and attestation bindings, safe extraction, native package identity, and package bytes. Premerge native evidence has no package-byte SHA fields. Inclusion is where package integrity checking belongs.
 
 Signing also requires source-test evidence for the exact accepted controller tree. Tested PR evidence is reusable only after proving the protected merge and identical tested tree; otherwise test exact accepted main before signing. Current-main rebinding rejects stale targets.
 
