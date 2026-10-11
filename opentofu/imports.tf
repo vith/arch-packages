@@ -19,10 +19,6 @@ import {
   id = "arch-packages:publish"
 }
 import {
-  to = github_repository_environment.recipe_review
-  id = "arch-packages:recipe-review"
-}
-import {
   to = github_repository_environment_deployment_policy.publish_main
   id = "arch-packages:publish:61780424"
 }
