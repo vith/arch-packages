@@ -1,13 +1,13 @@
 # Maintainer: vith
 pkgname=oh-my-pi-vith-git
 pkgver=18.9.1.vith.r375.gf86f24026197
-pkgrel=1
+pkgrel=2
 pkgdesc='Oh My Pi coding agent — vith fork'
 arch=('x86_64')
 url='https://github.com/vith/oh-my-pi'
 license=('MIT')
 depends=('glibc' 'gcc-libs' 'alsa-lib' 'libpulse' 'libpipewire' 'oniguruma' 'opus' 'pcre2' 'zstd')
-makedepends=('git' 'bun' 'rustup' 'clang' 'pkgconf')
+makedepends=('git' 'bun' 'rustup' 'clang' 'cmake' 'pkgconf')
 optdepends=('git: Git repository operations' 'tmux: background terminal sessions'
             'xdg-desktop-portal: Wayland screen sharing permissions')
 provides=('omp' 'oh-my-pi')

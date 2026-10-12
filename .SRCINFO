@@ -1,7 +1,7 @@
 pkgbase = oh-my-pi-vith-git
 	pkgdesc = Oh My Pi coding agent — vith fork
 	pkgver = 18.9.1.vith.r375.gf86f24026197
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/vith/oh-my-pi
 	arch = x86_64
 	license = MIT
@@ -9,6 +9,7 @@ pkgbase = oh-my-pi-vith-git
 	makedepends = bun
 	makedepends = rustup
 	makedepends = clang
+	makedepends = cmake
 	makedepends = pkgconf
 	depends = glibc
 	depends = gcc-libs
