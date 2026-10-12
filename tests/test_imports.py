@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -103,6 +104,14 @@ class PendingImports(unittest.TestCase):
         (self.new/'.gitmodules').write_text('[submodule "recipes/example"]\npath = recipes/example\nurl = https://github.com/other/repo.git\nbranch = pkg/example\n')
         with self.assertRaises(ValueError):
             self.admit()
+
+    def test_native_b2_pending_checksum_preserves_upstream_algorithm(self):
+        self.policy['sources'][0]['checksum_algorithm'] = 'b2'
+        self.lock['sources'][0]['checksums'] = {'b2': hashlib.blake2b(b'native patch').hexdigest()}
+        update.dump(self.new/'packages.json', {'schema': 1, 'packages': [], 'imports': [self.item]})
+        update.dump(self.new/'inputs'/'example.json', self.lock)
+        self.assertEqual(self.admit(), ['example'])
+        self.assertFalse((self.root/'EXECUTED').exists())
 
     def test_source_identity_preserves_case_without_allowing_workspace_escape(self):
         identity = 'example-Cargo.lock'
@@ -207,13 +216,94 @@ class PendingImports(unittest.TestCase):
         with self.assertRaises(ValueError):
             imports.validate_admission(self.old, self.new, {}, {}, self.root/'proof')
 
-    def test_existing_pending_pin_policy_and_lock_cannot_be_changed_on_main(self):
+    def stage_aur_revision(self):
         shutil.rmtree(self.old); shutil.copytree(self.new, self.old)
-        changed = copy.deepcopy(self.item); changed['policy']['outputs'][0]['arch'] = 'any'
+        aur = self.root/'aur'; aur.mkdir()
+        (aur/'PKGBUILD').write_text('pkgname=example\npkgver=1\npkgrel=2\ntouch "'+str(self.root/'AUR_EXECUTED')+'"\n')
+        (aur/'fix.patch').write_bytes(b'native patch')
+        checksum = hashlib.sha512(b'native patch').hexdigest()
+        (aur/'.SRCINFO').write_text('pkgbase = example\n\tpkgver = 1\n\tpkgrel = 2\n\tarch = any\n\tsource = fix.patch\n\tsha512sums = '+checksum+'\npkgname = example\n')
+        sources.git('init', aur)
+        sources.git('add', '.', cwd=aur)
+        sources.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'upstream', cwd=aur)
+        commit = sources.git('rev-parse', 'HEAD', cwd=aur)
+        changed = copy.deepcopy(self.item)
+        changed['policy']['authority'] = 'aur'
+        changed['policy']['outputs'][0]['arch'] = 'any'
+        changed['policy']['sources'][0]['checksum_algorithm'] = 'sha512'
+        lock = copy.deepcopy(self.lock)
+        lock['sources'][0]['checksums'] = {'sha512': checksum}
+        identity = {'url': 'https://github.com/archlinux/aur.git', 'package': 'example', 'ref': 'refs/heads/example', 'commit': commit}
+        provenance = {'schema': 1, 'pkgbase': 'example', 'aur': identity,
+                      'watchers': [{'id': 'aur-recipe', 'kind': 'aur',
+                                    **{k: v for k, v in identity.items() if k != 'commit'},
+                                    'baseline_commit': commit, 'mode': 'authoritative-import'}]}
         update.dump(self.new/'packages.json', {'schema': 1, 'packages': [], 'imports': [changed]})
-        with self.assertRaises(ValueError):
-            imports.validate_admission(self.old, self.new, {'example': self.commit}, {'example': self.commit}, self.root/'proof')
-        update.dump(self.new/'packages.json', imports.registry(self.old)[0])
+        update.dump(self.new/'inputs'/'example.json', lock)
+        update.dump(self.new/'upstream'/'example.json', provenance)
+        git = sources.git
+        def aur_git(*args, **kwargs):
+            return git(*(aur.as_uri() if a == identity['url'] else a for a in args), **kwargs)
+        mapped = patch.object(sources, 'git', side_effect=aur_git)
+        mapped.start(); self.addCleanup(mapped.stop)
+
+    def test_pending_aur_revision_preserves_origin_and_does_not_activate_or_execute(self):
+        self.stage_aur_revision()
+        result = imports.validate_admission(self.old, self.new, {'example': self.commit}, {'example': self.commit}, self.root/'proof')
+        self.assertEqual(result, ['example'])
+        self.assertEqual(imports.registry(self.new)[2]['example']['origin'], self.item['origin'])
+        self.assertEqual(update.policy_at(self.new), {})
+        self.assertFalse((self.root/'EXECUTED').exists())
+        self.assertFalse((self.root/'AUR_EXECUTED').exists())
+
+    def test_pending_aur_revision_cannot_replace_origin_pin_or_unrelated_code(self):
+        for change in ('origin', 'pin', 'code', 'accepted'):
+            with self.subTest(change=change):
+                if not (self.root/'aur').exists():
+                    self.stage_aur_revision()
+                value = imports.registry(self.new)[0]
+                pins = {'example': self.commit}
+                if change == 'origin':
+                    value['imports'][0]['origin']['commit'] = '0'*40
+                elif change == 'pin':
+                    pins['example'] = '0'*40
+                elif change == 'code':
+                    (self.new/'tools').mkdir()
+                    (self.new/'tools'/'untrusted.py').write_text('raise RuntimeError()')
+                else:
+                    value['packages'] = [{'pkgbase': 'other'}]
+                update.dump(self.new/'packages.json', value)
+                with self.assertRaises(ValueError):
+                    imports.validate_admission(self.old, self.new, {'example': self.commit}, pins, self.root/('proof-'+change))
+                value['imports'][0]['origin'] = copy.deepcopy(self.item['origin'])
+                value['packages'] = []
+                update.dump(self.new/'packages.json', value)
+                if (self.new/'tools').exists():
+                    shutil.rmtree(self.new/'tools')
+
+    def test_pending_aur_revision_requires_authentic_canonical_baseline(self):
+        self.stage_aur_revision()
+        original = update.load(self.new/'upstream'/'example.json')
+        for change in ('missing', 'foreign', 'wrong-commit', 'wrong-baseline'):
+            with self.subTest(change=change):
+                provenance = copy.deepcopy(original)
+                if change == 'missing':
+                    provenance['aur'] = None
+                    provenance['watchers'] = copy.deepcopy(self.provenance['watchers'])
+                elif change == 'foreign':
+                    provenance['aur']['url'] = 'https://example.test/aur.git'
+                    provenance['watchers'][0]['url'] = provenance['aur']['url']
+                elif change == 'wrong-commit':
+                    provenance['aur']['commit'] = '0'*40
+                    provenance['watchers'][0]['baseline_commit'] = '0'*40
+                else:
+                    provenance['watchers'][0]['baseline_commit'] = '0'*40
+                update.dump(self.new/'upstream'/'example.json', provenance)
+                with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                    imports.validate_admission(self.old, self.new, {'example': self.commit}, {'example': self.commit}, self.root/('proof-'+change))
+
+    def test_non_aur_pending_intent_and_pin_cannot_be_rewritten(self):
+        shutil.rmtree(self.old); shutil.copytree(self.new, self.old)
         with self.assertRaises(ValueError):
             imports.validate_admission(self.old, self.new, {'example': self.commit}, {'example': '0'*40}, self.root/'proof')
         update.dump(self.new/'inputs'/'example.json', {**self.lock, 'version': '9-1'})

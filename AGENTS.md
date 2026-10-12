@@ -4,13 +4,15 @@ This is the standalone `vith/arch-packages` repository. Signed snapshot promotio
 
 ## Ownership and work discipline
 
-- Limit changes to this repository. The OMP fork, n3t infrastructure, other software repositories, and client machines have separate owners.
+- Limit changes to this repository. Other repositories, external infrastructure, and client machines have separate owners.
 - Use the assigned worktree. Do not switch, reset, or edit the user-owned primary checkout.
 - Persistent task scratch belongs under `~/.local/state/omp/work/`, not `/tmp`. Keep administrative recovery files under their established `~/.local/state/arch-packages/` paths, outside Git. Workflow scratch follows the paths declared in YAML.
 - Never build packages or run package consumers on the workstation. Local Python tests, shell syntax checks, diff checks, and applicable OpenTofu checks are allowed. Task agents skip builds, lint, tests, and formatters mid-flight; the parent integrates changes and runs checks afterward.
 - Task agents do not commit, push, mutate remotes, dispatch workflows, approve environments, or apply infrastructure. The assistant may make and merge authorized internal repository changes through ordinary protected Merge. Only external PKGBUILD changes require user approval. Never fabricate statuses, impersonate the Actions bot with a human token, or approve external reviews on the user's behalf.
-- Author documentation slowly and check each statement against source and evidence. Update the existing README, guide, plan, and operational instructions; do not add a changelog or parallel live explanation.
+- Check documentation against source and evidence. Update existing documentation rather than adding a changelog or parallel explanation.
 - All Git fetches disable recursive submodules. Do not turn source dependencies into new submodules or rewrite source references merely for tracking.
+- Keep PR descriptions specific to their changes. Omit personal setup details, unrelated migration plans, and agent/model narration.
+- Use and track AUR upstream recipes. Carry only demonstrably necessary patches; exceptions should be rare. Use official Arch dependency packages rather than rebuilding them without a demonstrated need.
 
 ## Core execution and merge contract
 
@@ -30,6 +32,7 @@ This is the standalone `vith/arch-packages` repository. Signed snapshot promotio
 - Metadata equivalence may allow the dynamic `pkgver` difference only where the recipe actually provides `pkgver()`. Do not ignore `pkgrel`, epoch, package names, architectures, sources, or dependencies. The actual resulting version must be greater than the accepted predecessor.
 - Manual and human-edited heads use `declared_metadata` mode. Automatic discovery and unedited automation proposals retain independent derivation checks. Preserve human edits; do not repair classification by overwriting them.
 - Accepted `inputs/`, gitlinks, source locks, upstream records, and acceptance references advance only after accepted recipe merge. Discovery, pending builds, and failures do not move the accepted baseline.
+- Pending intended policy, locks, and provenance may be revised against an authenticated pinned AUR baseline, without changing imported origins, recipe gitlinks, or accepted packages. Metadata admission does not approve the external recipe.
 - Verify the normal merge's exact reviewed-head/parents/tree relationship before automatic main bookkeeping. Bookkeeping can activate pending imports and selects zero package workers. Pending imports remain outside routine discovery and publication until accepted.
 
 ## Efficient state and dispatch
@@ -64,32 +67,13 @@ This is the standalone `vith/arch-packages` repository. Signed snapshot promotio
 - Verify all public snapshot assets before promotion. After promotion, verify the exact active release identity and signed catalog without repeating every asset download. Rollback verifies its target and expected current tag/release ID and neither rebuilds nor re-signs.
 - Manual `consumer-proof.yml` installs the selected signed snapshot using enrollment at that snapshot's accepted commit. It is separate from publication and client installation. OMP installation does not imply shared runtime probes.
 
-## Infrastructure and delivery checkpoint
+## Infrastructure
 
 Manage repository settings and signing secrets through `opentofu/`. Use the canonical encrypted state, never a copied state from another checkout. The wrapper uses the existing GitHub CLI login; never print credentials. State, saved plans, signing keys, and the passphrase remain encrypted/gitignored or outside Git as appropriate.
 
-Delivery is the selected small prerequisite, then **one atomic core PR** containing reviewable component commits. Do not deploy the components as partially active PRs. Install coherent protected code before removing old environment gates. Settle old work and inventory directly known fully successful outputs; never migrate failed-worker output through an exception.
-
-Observed evidence:
-
-- Core: 305 tests passed in 24.630 seconds. Later targeted suites passed: update 40, package runs 14, recipe acceptance 21, after failure-lifecycle/behind-base fixes and deletion of the obsolete kind parameter.
-- Prerequisite: 284 tests passed in 35.155 seconds with one skip. Shell syntax and diff checks passed.
-- Canonical encrypted-state OpenTofu apply: 0 added, 0 changed, 3 destroyed, removing only the `code_review` and `recipe_review` environments and the `source_review` ruleset. The next plan reported **No changes**. Canceled 26 old waiting runs; recipe branches and PRs were preserved.
-- A real read-only state check resolved the tip once, batch-read seven records, and made zero requests on cached reread. PR GraphQL observed 31 open PRs. This used user-token access, not proof that the App quota recovered.
-- Hosted read-only smoke [38081926361](https://github.com/vith/arch-packages/actions/runs/38081926361) passed both jobs: native fixture 57 seconds, historical consumers 2 minutes 40 seconds. It did not deploy the controller or publish anything.
-
-- [Prerequisite PR #66](https://github.com/vith/arch-packages/pull/66) and [core PR #67](https://github.com/vith/arch-packages/pull/67) were human-merged. README-only [PR #68](https://github.com/vith/arch-packages/pull/68) auto-merged: [candidate 38147850295](https://github.com/vith/arch-packages/actions/runs/38147850295) succeeded; the package-worker step was skipped.
-- [PR #70](https://github.com/vith/arch-packages/pull/70) and [PR #69](https://github.com/vith/arch-packages/pull/69) merged through normal branch protection.
-- [Original worker 38169157502](https://github.com/vith/arch-packages/actions/runs/38169157502) succeeded in 15m29s; its schema-3 receipt and original producer identity were retained.
-- [Generated acceptance PR #71](https://github.com/vith/arch-packages/pull/71) automatically merged as `b77c257a421d14b6f3fd3c362b96290ac8b9a21e`. Local verification passed 308 tests in 21.713 seconds, including three boundary tests; the unsupported-descriptor regression was verified RED/GREEN. [Source candidate 38171124912](https://github.com/vith/arch-packages/actions/runs/38171124912) succeeded with zero package workers.
-- [Publication 38173038296](https://github.com/vith/arch-packages/actions/runs/38173038296) authenticated the original output archive, attestation, and bytes, and promoted signed snapshot `snapshot-b77c257a421d14b6f3fd3c362b96290ac8b9a21e-38173038296-1` to `latest`.
-- [Hosted consumer 38178456012](https://github.com/vith/arch-packages/actions/runs/38178456012) succeeded: every enrolled package installed with required signatures in a disposable Arch root.
-
-Not yet demonstrated: live rollback, warm-cache behavior, retry/concurrency, changed-head handling, corrupt-output handling, and an external non-trivial recipe scenario. PR #69 changed only `pkgrel`; its normal merge does not prove review of an external executable recipe. Keep these boundaries open.
+Record verification and remaining acceptance work in [the implementation plan](docs/implementation-plan.md).
 
 
-## Repository setup safety
+## Client safety
 
-Write documentation slowly and carefully. Describe the recorded client setup, not a freshly verified current laptop state. The setup record used `/etc/pacman.conf`, the `[arch-packages]` database name, and the latest-release URL, with `Required` trusted signatures for both packages and databases. The recorded fingerprint is `9C293ABB1F701DA04BA2C0D5711FC9BDDC5AF617`. Newer snapshots may use `vith-gh` per the README; preserve the historical database name when documenting the older setup.
-
-Other existing repositories supply more packages. Never remove them or assume this repository replaces them. Never downgrade installed packages to match this repository. Adding it does not authorize upgrading, downgrading, or removing laptop packages. The recorded setup synced only this repository and changed no installed packages. The original configuration and inventory backup is recorded at `~/.local/state/arch-packages/laptop-setup/`. Do not present this older record as a fresh workstation check.
+Adding this repository does not authorize changing installed packages or removing other repositories. Never downgrade installed packages to match a snapshot. Use the database name and signing requirements documented for the selected snapshot.

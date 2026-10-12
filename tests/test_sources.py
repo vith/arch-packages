@@ -171,6 +171,19 @@ class SourceContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'authentic tag'):
             sources.ancestry_version(frozen,self.root/'freeze/freeze.git',template)
 
+    def test_native_b2_archive_checksums_reject_changed_transport_bytes(self):
+        archive = self.root/'release.tar'
+        archive.write_bytes(b'abc')
+        checksum = 'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923'
+        spec = {'id': 'archive', 'kind': 'archive', 'source': 'release.tar',
+                'url': archive.as_uri(), 'checksums': {'b2': checksum}}
+        with patch.object(sources, 'public_url', lambda value: value):
+            frozen = sources.freeze_source(spec)
+            self.assertEqual(frozen['checksums'], {'b2': checksum})
+            archive.write_bytes(b'abd')
+            with self.assertRaises(ValueError):
+                sources.freeze_source(frozen)
+
     def test_frozen_archive_rejects_changed_transport_bytes(self):
         archive=self.root/'release.tar'
         archive.write_bytes(b'original immutable archive')

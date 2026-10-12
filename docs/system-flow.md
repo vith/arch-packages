@@ -1,6 +1,6 @@
 # System flow
 
-`arch-packages` turns source changes into real recipe PRs, retained builds, and signed Arch snapshots. This repository owns its controller, workflows, policy, recipes, and tests. The OMP fork supplies source and n3t supplies signed dependencies. This pipeline administers neither and does not install packages on client machines.
+`arch-packages` turns source changes into recipe PRs, retained builds, and signed Arch snapshots.
 
 ## Status and how to read this guide
 
@@ -340,6 +340,8 @@ All five declared concurrency groups use `cancel-in-progress: false`: source upd
 | Consumer setup | Fresh copied root with setup-only mount/capability needs; these privileges are not package-build privileges |
 | Consumer execution | Capability-dropped execution with clean environment; public proof isolation remains |
 | Client | Human configures pacman and installs; no automated client administration |
+
+Pending imports can revise intended policy, source locks, and upstream provenance against a pinned AUR baseline authenticated from canonical AUR Git or its Arch GitHub mirror. Admission preserves imported origins and recipe pins, leaves accepted packages unchanged, and selects no package workers. External recipe changes still require their separate candidate build and review; metadata admission is not recipe acceptance.
 
 Official Arch dependencies come first, then signed `vith-gh`, then signed n3t `vith-arch`. Custom databases and packages both require trusted signatures. Worker dependency setup resolves the GitHub latest redirect to a fixed snapshot; consumer proof keeps the explicitly requested snapshot. Neither receives publication signing credentials.
 

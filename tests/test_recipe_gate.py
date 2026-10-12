@@ -25,11 +25,24 @@ pkgname = example-tools
 depends = example=1:r10.abcdef-2
 """
 
+    def test_split_architecture_override_preserves_native_output_comparison(self):
+        declared = self.metadata.replace('pkgname = example-tools', 'pkgname = example-tools\narch = any')
+        info = parse_srcinfo(declared)
+        self.assertEqual(info['arch'], ['x86_64'])
+        self.assertEqual(info['scopes']['example-tools']['arch'], ['any'])
+        actual = declared.replace('pkgver = r10.abcdef', 'pkgver = r11.123456')
+        self.assertTrue(metadata_equivalent(declared, actual, dynamic=True))
+        self.assertFalse(metadata_equivalent(declared, actual.replace('arch = any', 'arch = x86_64'), dynamic=True))
+
+    def test_invalid_split_architecture_is_rejected(self):
+        declared = self.metadata.replace('pkgname = example-tools', 'pkgname = example-tools\narch = any;execute')
+        with self.assertRaises(ValueError):
+            parse_srcinfo(declared)
+
     def test_only_pkgver_can_change(self):
         actual = self.metadata.replace('pkgver = r10.abcdef', 'pkgver = r11.123456')
         self.assertFalse(metadata_equivalent(self.metadata, actual))
         self.assertTrue(metadata_equivalent(self.metadata, actual, dynamic=True))
-        self.assertTrue(metadata_equivalent(self.metadata, self.metadata))
 
     def test_all_other_fields_scopes_and_order_remain_bound(self):
         for old, new in (

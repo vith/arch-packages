@@ -1,7 +1,6 @@
 """Non-executable imported roots and narrowly authenticated metadata admission."""
 from pathlib import Path
 import copy
-import hashlib
 import json
 import re
 
@@ -98,11 +97,16 @@ def activate(value, item):
 
 
 def validate_admission(old, new, oldpins, newpins, work):
-    """Return added import names, or None for the ordinary non-admission route."""
+    """Return admitted/revised pending names, or None for the ordinary route."""
     from tools import update as u
     before, accepted, pending = registry(old)
     after, newaccepted, newpending = registry(new)
-    if pending == newpending:
+    revised = {name for name, item in pending.items() if name in newpending and (
+        item != newpending[name] or any(
+            not (Path(old)/relative).is_file() or not (Path(new)/relative).is_file()
+            or (Path(old)/relative).read_bytes() != (Path(new)/relative).read_bytes()
+            for relative in ('inputs/'+name+'.json', 'upstream/'+name+'.json')))}
+    if pending == newpending and not revised:
         if before.get('imports', []) != after.get('imports', []):
             raise ValueError('ordinary main route cannot rewrite pending registrations')
         for name in pending:
@@ -120,10 +124,14 @@ def validate_admission(old, new, oldpins, newpins, work):
     from tools import recipes
     recipes._modules(Path(old), u.repository())
     recipes._modules(Path(new), u.repository())
-    if not added or accepted != newaccepted or any(newpending.get(n) != item for n, item in pending.items()):
-        raise ValueError('admission may only add new pending imports')
+    if not (added or revised) or accepted != newaccepted or not set(pending) <= set(newpending):
+        raise ValueError('admission may only add or revise pending imports')
+    if any(newpending[name]['origin'] != item['origin'] for name, item in pending.items()):
+        raise ValueError('pending revision cannot change imported origin')
+    intended = added | revised
     expected = copy.deepcopy(before)
-    expected['imports'] = list(before.get('imports', [])) + [item for item in after.get('imports', []) if item['pkgbase'] in added]
+    expected['imports'] = [newpending[item['pkgbase']] for item in before.get('imports', [])] + [
+        item for item in after.get('imports', []) if item['pkgbase'] in added]
     if after != expected:
         raise ValueError('admission changed unrelated registry data')
     if set(newpins) != set(accepted)|set(newpending) or any(newpins.get(n) != pin for n, pin in oldpins.items()):
@@ -132,11 +140,11 @@ def validate_admission(old, new, oldpins, newpins, work):
     b = {row['path']: row for row in tree_manifest(new)}
     changed = {p for p in a.keys()|b.keys() if a.get(p) != b.get(p)}
     allowed = {'packages.json', '.gitmodules', 'README.md'}
-    for name in added:
+    for name in intended:
         allowed.update({'inputs/'+name+'.json', 'upstream/'+name+'.json'})
     if any(path not in allowed and not any(path.startswith('recipes/'+n+'/') for n in added) for path in changed):
         raise ValueError('admission contains non-metadata or existing package changes')
-    for name in sorted(added):
+    for name in sorted(intended):
         item = verify_predecessor(new, name, newpins, Path(work)/name)
         policy = item['policy']
         if policy.get('native_verification') != 'pending-github-native-probe' or not isinstance(policy.get('automatic'), dict) or not isinstance(policy.get('outputs'), list) or not policy['outputs']:
@@ -157,7 +165,7 @@ def validate_admission(old, new, oldpins, newpins, work):
                 if checksum == 'SKIP' and source['kind'] == 'git':
                     continue
                 try:
-                    length = hashlib.new(algorithm).digest_size * 2
+                    length = sources.new_hash(algorithm).digest_size * 2
                 except ValueError as error:
                     raise ValueError('invalid intended checksum algorithm') from error
                 if not isinstance(checksum, str) or not re.fullmatch('[0-9a-fA-F]{'+str(length)+'}', checksum):
@@ -167,6 +175,20 @@ def validate_admission(old, new, oldpins, newpins, work):
         provenance = u.load(Path(new)/'upstream'/f'{name}.json')
         if provenance.get('schema') != 1 or provenance.get('pkgbase') != name or 'aur' not in provenance or not isinstance(provenance.get('watchers'), list) or not provenance['watchers']:
             raise ValueError('incomplete intended upstream provenance')
+        if name in revised:
+            aur = provenance['aur']
+            watchers = provenance['watchers']
+            if policy.get('authority') not in {'aur', 'maintained'} or not isinstance(aur, dict) or len(watchers) != 1 or watchers[0].get('kind') != 'aur':
+                raise ValueError('pending revision requires AUR recipe authority')
+            package = aur.get('package')
+            if not isinstance(package, str) or not NAME.fullmatch(package):
+                raise ValueError('invalid revision AUR package')
+            canonical = {
+                ('https://github.com/archlinux/aur.git', 'refs/heads/'+package),
+                ('https://aur.archlinux.org/'+package+'.git', 'refs/heads/master'),
+            }
+            if (aur.get('url'), aur.get('ref')) not in canonical or watchers[0].get('baseline_commit') != aur.get('commit'):
+                raise ValueError('pending revision requires canonical pinned AUR baseline')
         identities = set()
         source_ids = {s['id'] for s in lock['sources']}
         for watcher in provenance['watchers']:
@@ -212,10 +234,14 @@ def validate_admission(old, new, oldpins, newpins, work):
                     raise ValueError('missing intended AUR identity')
                 if any(provenance['aur'].get(k) != watcher.get(k) for k in ('url', 'package', 'ref')):
                     raise ValueError('intended AUR watcher differs from provenance')
-                sources.frozen_aur({**watcher, 'work_dir': str(Path(work)/(name+'-aur'))}, provenance['aur'], provenance['aur'])
+                snapshot = sources.frozen_aur({**watcher, 'work_dir': str(Path(work)/(name+'-aur'))}, provenance['aur'], provenance['aur'])
+                if name in revised:
+                    metadata = next((f['content'] for f in snapshot['files'] if f['path'] == '.SRCINFO' and f['mode'] == '100644'), None)
+                    if metadata is None or parse_srcinfo(metadata)['pkgbase'] != watcher['package']:
+                        raise ValueError('pending revision AUR snapshot has wrong package identity')
         for source in lock['sources']:
             if source['kind'] == 'git':
                 sources.materialize_sources({'schema': 1, 'version': lock['version'], 'sources': [source]}, Path(work)/(name+'-'+source['id']))
             elif source['kind'] != 'local':
                 sources.freeze_source(source)
-    return sorted(added)
+    return sorted(intended)
