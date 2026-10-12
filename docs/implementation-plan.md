@@ -215,10 +215,10 @@ The hosted proof used no signing keys, state writes, promotion, or workstation p
 
 Keep every approved acceptance boundary. The following checks remain open for protected hosted proof even where unit tests or read-only smoke cover parts:
 
-- [ ] Non-trivial PR builds without approval and waits for human normal Merge.
+- [x] Non-trivial PR builds without approval and waits for human normal Merge: external executable asleap [PR #33](https://github.com/vith/arch-packages/pull/33) built through [candidate 38180726261](https://github.com/vith/arch-packages/actions/runs/38180726261) and successful whole [worker 38180781154](https://github.com/vith/arch-packages/actions/runs/38180781154), then remained open awaiting user approval.
 - [ ] Trivial PR auto-merges only after whole-worker success and durable output.
 - [ ] Changed heads cannot use old successful checks.
-- [ ] Repeated unchanged sweeps dispatch zero workers.
+- [x] Repeated unchanged sweeps dispatch zero workers: completed targeted runs [38181088323](https://github.com/vith/arch-packages/actions/runs/38181088323) and [38181599263](https://github.com/vith/arch-packages/actions/runs/38181599263) retained asleap's request `f09c87fc1a54078efc4e5b3551eef0d1c70bb34f904b88b145d041b9ae342ba3` and original worker `38180781154`.
 - [ ] Concurrent manager activity does not duplicate builds.
 - [ ] Failed post-build jobs are not salvaged; explicit retry builds anew.
 - [ ] Inclusion retries do not rebuild.
@@ -231,7 +231,9 @@ Also verify exact accepted-cache admission and original saved path in a live war
 
 Retain regressions for those boundaries plus static parser, container, credential, cache, native metadata, and signature safety. Unit tests must not substitute for live acceptance.
 
-Not yet demonstrated: live rollback, warm-cache behavior, retry/concurrency, changed-head handling, corrupt-output handling, and an external non-trivial recipe scenario. Keep these open. Human-classified [PR #69](https://github.com/vith/arch-packages/pull/69) changed only `pkgrel`; its normal merge does not prove review of an external executable recipe. Authorized internal changes may proceed through ordinary protected Merge; external PKGBUILD changes require user approval.
+Not yet demonstrated: live rollback, warm-cache behavior, retry/concurrency, changed-head handling, and corrupt-output handling. Keep these open. Human-classified [PR #69](https://github.com/vith/arch-packages/pull/69) changed only `pkgrel`; its normal merge does not prove review of an external executable recipe. Authorized internal changes may proceed through ordinary protected Merge; external PKGBUILD changes require user approval.
+
+Temporary hosted concurrency, post-persistence failure, archive-fault, and inclusion-retry probes are paused at the user's request. Live rollback remains pending; do not add those controls or perform rollback without renewed authorization. Continue the remaining checks through existing normal workflow inputs.
 
 ### Documentation and final checkpoint
 

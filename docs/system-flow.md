@@ -148,6 +148,8 @@ Push runs reconciliation only. Schedule/default manual runs reconciliation, disc
 
 Reconciliation tracks directly known open, merged, and closed PRs. Same queued/running/successful input is a no-op; the same failure is reported without automatic retry. If upstream moves during a build, wait for the actual result before refreshing the same automation-owned PR. Preserve human edits and one update PR per package. An unchanged source receipt with no open proposal leaves its retained branch untouched. Writes, refreshes, and dispatches require authenticated watcher ownership.
 
+New watcher proposals use one per-package leaf, `recipe-updates/<pkgbase>/candidate`; retained legacy `recipe-updates/<pkgbase>/<watcher-id>` refs remain unchanged. The writer and authenticated ownership checker share this construction. Fresh legacy migrations use the current leaf, while authenticated immutable originals replay their original `head_branch`.
+
 A behind-main captured source base is skipped so other work continues. The controller does not rebase a human branch. Targeted reconciliation does not redispatch unrelated PRs. Legacy migration does not transfer approval authority or salvage failed workers.
 
 ### Metadata dispatcher: `candidate-dispatch.yml`
@@ -449,7 +451,11 @@ The new native harness built a public Git fixture with declared version `0-1` an
 
 New consumer code verified and installed the exact original signed snapshot `snapshot-f5b1f735737944150331d06e0b05506f5c7d6957-38059323097-1`. Its seven enrolled targets were `apexshot`, `archive-mounter`, `carapace`, `cloudflare-speed-cli`, `nasctui`, `oh-my-pi-vith-git`, and `python-google-genai`. OMP was installed without shared runtime tests.
 
-The historical read-only smoke used no workstation package build, signing key, state write, or promotion. Subsequent [publication 38173038296](https://github.com/vith/arch-packages/actions/runs/38173038296) succeeded through original-output authentication, signing, public readback, and latest promotion. [Hosted consumer 38178456012](https://github.com/vith/arch-packages/actions/runs/38178456012) verified the signed snapshot, installed every package, and exercised consumers. No workstation builds were performed. Warm-cache admission, rollback, retry/concurrency, changed-head, corrupt-output, and external non-trivial recipe live scenarios remain unproved; hosted acceptance is not complete.
+The historical read-only smoke used no workstation package build, signing key, state write, or promotion. Subsequent [publication 38173038296](https://github.com/vith/arch-packages/actions/runs/38173038296) succeeded through original-output authentication, signing, public readback, and latest promotion. [Hosted consumer 38178456012](https://github.com/vith/arch-packages/actions/runs/38178456012) verified the signed snapshot, installed every package, and exercised consumers. No workstation builds were performed.
+
+External executable asleap [PR #33](https://github.com/vith/arch-packages/pull/33) built successfully before review through [candidate 38180726261](https://github.com/vith/arch-packages/actions/runs/38180726261) and [whole worker 38180781154](https://github.com/vith/arch-packages/actions/runs/38180781154). It remains open awaiting user approval; it has not been reviewed, merged, or published. Completed targeted update sweeps [38181088323](https://github.com/vith/arch-packages/actions/runs/38181088323) and [38181599263](https://github.com/vith/arch-packages/actions/runs/38181599263) preserved its exact request `f09c87fc1a54078efc4e5b3551eef0d1c70bb34f904b88b145d041b9ae342ba3` and worker, with zero new workers. Warm-cache admission, rollback, retry/concurrency, changed-head, and corrupt-output scenarios remain unproved; hosted acceptance is not complete.
+
+Temporary hosted concurrency, post-persistence failure, archive-fault, and inclusion-retry probes are paused at the user's request. Live rollback remains pending. No temporary probe controls or rollback were performed.
 
 ## History, licensing, and clients
 

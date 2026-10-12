@@ -166,13 +166,23 @@ class AcceptanceInvariants(unittest.TestCase):
                      'head': {'sha': H, 'ref': 'recipe-updates/demo/release'},
                      'merge_commit_sha': A}
         commits[A] = {'sha': A, 'tree': {'sha': T}, 'parents': [{'sha': B}, {'sha': H}]}
+        refs = {'pkg/demo': B, 'recipe-updates/demo/release': H}
         calls = []
         def response(path, method='GET', body=None):
             calls.append((path, method, body))
             if '/pulls?' in path:
                 return []
+            if path.endswith('/git/refs') and method == 'POST':
+                branch = body['ref'].removeprefix('refs/heads/')
+                if branch in refs:
+                    raise ValueError('ref already exists')
+                refs[branch] = body['sha']
+                return {'ref': body['ref'], 'object': {'type': 'commit', 'sha': body['sha']}}
             if path.endswith('/pulls') and method == 'POST':
-                return {'number': 7, 'head': {'sha': H}}
+                if refs.get(body['head']) != H:
+                    raise ValueError('replacement PR requires the exact existing recipe ref')
+                native_pr['head']['ref'] = body['head']
+                return native_pr
             if path.endswith('/pulls/7'):
                 return native_pr
             if '/pulls/' in path:
@@ -235,7 +245,7 @@ class AcceptanceInvariants(unittest.TestCase):
                     for context in (
                         patch.object(update, 'main_sha', return_value=C),
                         patch.object(recipe_state, 'protected_branch'),
-                        patch.object(update, 'ref_head', side_effect=lambda branch: B if branch == 'pkg/demo' else H),
+                        patch.object(update, 'ref_head', side_effect=refs.get),
                         patch.object(update, 'validate_source_policy'),
                         patch.object(update, 'verify_provenance'),
                         patch.object(recipe_state, 'load_optional', return_value=None),
@@ -245,6 +255,14 @@ class AcceptanceInvariants(unittest.TestCase):
                         patch.object(update, 'dispatch'),
                     ):
                         migration_stack.enter_context(context)
+                    def competing_proposal(path, method='GET', body=None):
+                        if '/pulls?' in path:
+                            return [{'number': 8, 'base': {'ref': 'pkg/demo', 'sha': B},
+                                     'head': {'sha': H, 'ref': 'feature/human'}}]
+                        return response(path, method, body)
+                    with patch.object(update, 'api', side_effect=competing_proposal):
+                        with self.assertRaisesRegex(ValueError, 'divergent open proposal'):
+                            acceptance.migrate_existing(3)
                     replacement = acceptance.migrate_existing(3)
                     self.assertEqual(replacement['number'], 7)
                     frozen = saved[('proposal', H)]
@@ -254,9 +272,28 @@ class AcceptanceInvariants(unittest.TestCase):
                     self.assertEqual(frozen['lock'], lock)
                     self.assertEqual(frozen['expected_previous_control_pin'], H)
                     writes = [(path, body) for path, method, body in calls if method != 'GET']
-                    self.assertEqual([path for path, body in writes], [update.route('/pulls')])
-                    self.assertEqual((writes[0][1]['head'], writes[0][1]['base']),
-                                     ('recipe-updates/demo/release', 'pkg/demo'))
+                    self.assertEqual([path for path, body in writes],
+                                     [update.route('/git/refs'), update.route('/pulls')])
+                    self.assertEqual(writes[0][1],
+                                     {'ref': 'refs/heads/recipe-updates/demo/candidate', 'sha': H})
+                    self.assertEqual((writes[1][1]['head'], writes[1][1]['base']),
+                                     ('recipe-updates/demo/candidate', 'pkg/demo'))
+                    self.assertEqual(refs['recipe-updates/demo/release'], H)
+                    refs['recipe-updates/demo/candidate'] = 'f'*40
+                    with self.assertRaisesRegex(ValueError, 'proposal or predecessor moved'):
+                        acceptance.migrate_existing(3)
+                    refs['recipe-updates/demo/candidate'] = H
+                    historical = {**frozen, 'head_branch': 'recipe-updates/demo/release'}
+                    historical['receipt_id'] = acceptance.digest({key: value for key, value in historical.items()
+                                                                 if key != 'receipt_id'})
+                    with patch.object(recipe_state, 'load_optional', return_value=historical):
+                        del refs['recipe-updates/demo/release']
+                        with self.assertRaisesRegex(ValueError, 'proposal or predecessor moved'):
+                            acceptance.migrate_existing(3)
+                        refs['recipe-updates/demo/release'] = H
+                        acceptance.migrate_existing(3)
+                    writes = [(path, body) for path, method, body in calls if method != 'GET']
+                    self.assertEqual(writes[-1][1]['head'], 'recipe-updates/demo/release')
                     # A moving enrolled git branch may change the recipe lock
                     # while the enrollment provenance remains exactly unchanged.
                     provenance = oldpro
