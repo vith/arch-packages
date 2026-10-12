@@ -592,8 +592,6 @@ def migrate_existing(number=3):
         if u.ref_head(branch) != B:
             raise ValueError('migration requires protected exact predecessor recipe branch')
         proposals = list(paginate(lambda page: u.api(u.route('/pulls?state=open&base=pkg%2F' + name + '&per_page=100&page=' + str(page)))))
-        if proposals and (len(proposals) != 1 or proposals[0]['head']['sha'] != recipe_head):
-            raise ValueError('recipe branch already has a divergent open proposal')
         merged_legacy = bool(pr.get('merged_at'))
         comparison = new if merged_legacy else old
         policy = u.policy_at(current).get(name)
@@ -624,6 +622,9 @@ def migrate_existing(number=3):
             raise ValueError('legacy recipe predecessor diverged')
         original = recipe_state.load_optional('proposal', recipe_head)
         proposal_branch = original['head_branch'] if original else u.recipe_update_branch(name)
+        if proposals and (len(proposals) != 1 or proposals[0]['head']['sha'] != recipe_head
+                          or proposals[0]['head']['ref'] != proposal_branch):
+            raise ValueError('recipe branch already has a divergent open proposal')
         receipt = {'schema': 1, 'repository': u.repository(), 'base': C, 'pkgbase': name,
                    'head_branch': proposal_branch, 'proposal_origin': 'watcher', 'watcher_ids': [watcher],
                    'watcher_id': watcher, 'recipe_commit': B, 'lock': lock, 'provenance': provenance,
@@ -652,8 +653,13 @@ def migrate_existing(number=3):
         refreshed, _, _ = legacy_identity(number, C, H)
         if bool(refreshed.get('merged_at')) != merged_legacy or refreshed.get('merge_commit_sha') != pr.get('merge_commit_sha'):
             raise ValueError('legacy merge state changed during migration')
-        if u.ref_head(proposal_branch) != recipe_head or u.main_sha() != C or u.ref_head(branch) != B:
+        proposal_tip = u.ref_head(proposal_branch)
+        if u.main_sha() != C or u.ref_head(branch) != B or proposal_tip is not None and proposal_tip != recipe_head:
             raise ValueError('migration proposal or predecessor moved')
+        if proposal_tip is None:
+            if proposal_branch != u.recipe_update_branch(name):
+                raise ValueError('migration proposal or predecessor moved')
+            u.api(u.route('/git/refs'), 'POST', {'ref': 'refs/heads/' + proposal_branch, 'sha': recipe_head})
         replacement = proposals[0] if proposals else u.api(u.route('/pulls'), 'POST', {'head': proposal_branch, 'base': branch,
                             'title': pr['title'], 'body': 'Native recipe replacement for #' + str(number) + '. Fresh exact build required; recipe approval uses human Merge.'})
         recipe_state.recipe_identity(replacement['number'], C, recipe_head)

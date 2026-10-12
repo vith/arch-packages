@@ -797,10 +797,16 @@ class ProposalNamespaces(unittest.TestCase):
             git('init', '--bare', str(remote))
             for key, value in [('user.name', 'Package tests'), ('user.email', 'tests@example.invalid')]:
                 git('config', key, value, cwd=repo)
+            git('commit', '--allow-empty', '-m', 'Base', cwd=repo)
+            base = git('rev-parse', 'HEAD', cwd=repo)
             (repo/'PKGBUILD').write_text('pkgname=demo\n')
             git('add', 'PKGBUILD', cwd=repo)
             git('commit', '-m', 'Recipe', cwd=repo)
             head = git('rev-parse', 'HEAD', cwd=repo)
+            tree = git('rev-parse', 'HEAD^{tree}', cwd=repo)
+            receipt = self.receipt('recipe-updates/demo/candidate')
+            receipt.update(recipe_head=head, recipe_base=base, recipe_tree=tree)
+            commit = {'tree': {'sha': tree}, 'parents': [{'sha': base}]}
             legacy = 'recipe-updates/demo/release'
             git('push', str(remote), head+':refs/heads/'+legacy, cwd=repo)
             real_run = update.subprocess.run
@@ -815,6 +821,7 @@ class ProposalNamespaces(unittest.TestCase):
                     patch.object(update.subprocess, 'run', side_effect=local_transport):
                 with self.assertRaises(update.subprocess.CalledProcessError):
                     update.push_ref(repo, head, 'recipe-updates/demo', None)
+                self.owned(receipt, commit)
                 update.push_ref(repo, head, update.recipe_update_branch('demo'), None)
             for branch in [legacy, 'recipe-updates/demo/candidate']:
                 self.assertEqual(git('rev-parse', 'refs/heads/'+branch, cwd=remote), head)
@@ -825,25 +832,17 @@ class ProposalNamespaces(unittest.TestCase):
                 'watcher_ids': ['release'], 'recipe_head': 'c'*40,
                 'recipe_tree': 'd'*40, 'recipe_base': 'b'*40, 'base': 'a'*40}
 
-    def owned(self, receipt):
-        commit = {'tree': {'sha': 'd'*40}, 'parents': [{'sha': 'b'*40}]}
+    def owned(self, receipt, commit):
         with patch.object(update, 'repository', return_value='owner/repo'), \
                 patch.object(update, 'api', return_value=commit), \
                 patch.object(recipe_state, 'load', return_value=receipt), \
                 patch.object(recipe_state, 'require_attestation'):
-            return update.owned_proposal({'head': {'sha': 'c'*40}}, 'demo', 'release')
-
-    def test_authenticated_package_candidate_can_be_refreshed(self):
-        try:
-            commit, base = self.owned(self.receipt('recipe-updates/demo/candidate'))
-        except ValueError as error:
-            self.fail(f'authenticated package candidate was refused: {error}')
-        self.assertEqual(base, 'a'*40)
-        self.assertEqual(commit['parents'], [{'sha': 'b'*40}])
+            return update.owned_proposal({'head': {'sha': receipt['recipe_head']}}, 'demo', 'release')
 
     def test_retained_watcher_ref_is_not_claimed_as_the_package_candidate(self):
         with self.assertRaisesRegex(ValueError, 'refusing overwrite'):
-            self.owned(self.receipt('recipe-updates/demo/release'))
+            self.owned(self.receipt('recipe-updates/demo/release'),
+                       {'tree': {'sha': 'd'*40}, 'parents': [{'sha': 'b'*40}]})
 
 
 class ProposalBatching(unittest.TestCase):
