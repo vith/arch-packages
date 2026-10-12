@@ -2,9 +2,9 @@
 
 **Status: publication, signed promotion to `latest`, and hosted installation proof are complete. The remaining operational and external-recipe boundaries are still open; this is not full plan completion.**
 
-The user selected a small prerequisite followed by **one atomic core cutover PR**, with reviewable component commits inside that PR. The earlier instruction to deploy small component PRs is superseded by this sequencing. Do not activate an incomplete combination of old and new worker contracts.
+The core cutover is delivered. Remaining live acceptance checks are listed below.
 
-Documentation is authored slowly from the supplied source and observed evidence. This is the existing plan, not a new changelog. Implementation and read-only smoke do not complete the live acceptance list.
+Implementation and read-only smoke do not complete the live acceptance list.
 
 ## 1. Target flow
 
@@ -241,9 +241,7 @@ Temporary hosted concurrency, post-persistence failure, archive-fault, and inclu
 
 ### Documentation and final checkpoint
 
-The existing README is user-facing: packages, installation, guide link, and licensing. The guide describes the exact seven YAML workflows, their triggers/jobs/inputs/actions, credentials, and retry rules. AGENTS records operational constraints. These replacements are grounded in source and observed evidence.
-
-After hosted protected acceptance, update the same files slowly with the observed result and checkpoint. Do not retain stale dated observations or claim all acceptance checks passed merely because local tests did. Do not add docs/changelog.
+Keep the README focused on packages and installation, the guide on workflow contracts, and AGENTS on operational constraints. Update acceptance evidence after verification; local tests alone do not complete live acceptance.
 
 ## 5. Explicit non-goals
 
@@ -251,6 +249,6 @@ After hosted protected acceptance, update the same files slowly with the observe
 - No source-submodule conversion or source-reference rewriting for tracking.
 - No catalog/history redesign or pruning of retained legal assets.
 - No unrelated action-policy hardening.
-- No ARM builders, local package builds, external-fork support, laptop package changes, or changes to the OMP fork or n3t infrastructure.
+- No ARM builders, local package builds, or changes outside this repository.
 
 **End state:** one build-before-merge route, direct records of whole-worker-success output, efficient updates, ordinary protected Merge with user approval for external PKGBUILD changes, and signing/database inclusion without rebuilds or failed-job recovery. Retain the successful publication and hosted signed-install evidence without rebuilding. Continue verification of the open boundaries; do not mark the plan complete until the remaining criteria are demonstrated.

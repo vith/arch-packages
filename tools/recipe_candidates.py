@@ -1,6 +1,5 @@
 """Trusted-main validation of native, recipe-only pull requests."""
 import copy
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -291,7 +290,7 @@ def prepare(number, output, retry=False):
             if not path.resolve().is_relative_to(recipe.resolve()):
                 raise ValueError('local source escapes recipe')
             for algorithm, expected in source['checksums'].items():
-                if expected != 'SKIP' and hashlib.new(algorithm, path.read_bytes()).hexdigest() != expected:
+                if expected != 'SKIP' and u.sources.new_hash(algorithm, path.read_bytes()).hexdigest() != expected:
                     raise ValueError('frozen local source checksum mismatch')
         else:
             u.sources.freeze_source(source)

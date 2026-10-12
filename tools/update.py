@@ -493,7 +493,7 @@ def frozen_transition(old,new,name,policy,work):
             if not path.resolve().is_relative_to((old/'recipes'/name).resolve()) or not path.is_file():
                 raise ValueError('unsafe frozen local source')
             for algorithm,digest in source['checksums'].items():
-                if digest!='SKIP' and hashlib.new(algorithm,path.read_bytes()).hexdigest()!=digest:
+                if digest!='SKIP' and sources.new_hash(algorithm,path.read_bytes()).hexdigest()!=digest:
                     raise ValueError('local source checksum mismatch')
         else:
             sources.freeze_source(source)
@@ -578,7 +578,7 @@ def _transition(old,new,name,policy,work,verify_context,aur_transition,verify_so
             if not file.resolve().is_relative_to((new/'recipes'/name).resolve()) or not file.is_file():
                 raise ValueError('unsafe frozen local source')
             for alg,digest in source['checksums'].items():
-                if digest!='SKIP' and hashlib.new(alg,file.read_bytes()).hexdigest()!=digest:
+                if digest!='SKIP' and sources.new_hash(alg,file.read_bytes()).hexdigest()!=digest:
                     raise ValueError('local source checksum mismatch')
         elif source['kind']=='git':
             mirror=sources.materialize_sources({'schema':1,'version':newlock['version'],'sources':[source]},work/source['id'])[source['url']]
@@ -699,7 +699,7 @@ def _static_metadata(recipe,lock,policy,work,preserve_pkgrel,ancestry_version,*,
             if not path.resolve().is_relative_to(recipe.resolve()) or not path.is_file():
                 raise ValueError('unsafe static local source')
             for algorithm,digest in source['checksums'].items():
-                if digest!='SKIP' and hashlib.new(algorithm,path.read_bytes()).hexdigest()!=digest:
+                if digest!='SKIP' and sources.new_hash(algorithm,path.read_bytes()).hexdigest()!=digest:
                     raise ValueError('static local checksum mismatch')
         elif source['kind']=='git':
             mirror=work/source['id']/'freeze.git'
@@ -1044,7 +1044,7 @@ def bootstrap(output):
             record={k:None for k in sources.FIELDS}
             record.update(id=enrolled['id'],kind=enrolled['kind'],source=native,url=url,checksums={algorithm:digest})
             if enrolled['kind']=='local':
-                actual=hashlib.new(algorithm,(recipe/native).read_bytes()).hexdigest()
+                actual=sources.new_hash(algorithm,(recipe/native).read_bytes()).hexdigest()
                 if actual!=digest:
                     raise ValueError('enrolled local checksum mismatch')
             else:
@@ -1128,7 +1128,7 @@ def discover(output):
                         data=sources.fetch(source['url'])
                         for algorithm in source['checksums']:
                             if source['checksums'][algorithm]!='SKIP':
-                                source['checksums'][algorithm]=hashlib.new(algorithm,data).hexdigest()
+                                source['checksums'][algorithm]=sources.new_hash(algorithm,data).hexdigest()
                         if source['kind']=='release':
                             asset_name=sources.release_asset_name(watcher,version,source['id'])
                             assets=[a for a in transition['assets'] if a['name']==asset_name]
@@ -1373,7 +1373,7 @@ def write_proposals(directory):
                 if not path.resolve().is_relative_to(rendered.resolve()):
                     raise ValueError('local source escapes recipe')
                 for algorithm,value in source['checksums'].items():
-                    if value!='SKIP' and hashlib.new(algorithm,path.read_bytes()).hexdigest()!=value:
+                    if value!='SKIP' and sources.new_hash(algorithm,path.read_bytes()).hexdigest()!=value:
                         raise ValueError('typed local source checksum mismatch')
         aur_parent=None
         if watcher['kind']=='aur':

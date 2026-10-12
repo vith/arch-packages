@@ -62,11 +62,9 @@ def parse_srcinfo(text):
     epoch = base.get("epoch", ["0"])[0]
     if not VERSION.fullmatch(pkgver) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", pkgrel) or not re.fullmatch(r"[0-9]+", epoch):
         raise ValueError("invalid native version")
-    if any(not re.fullmatch(r"[a-z0-9_]+", arch) for arch in base["arch"]):
+    if any(not re.fullmatch(r"[a-z0-9_]+", arch)
+           for values in scopes.values() for arch in values.get("arch", [])):
         raise ValueError("invalid architecture")
-    for output in names:
-        if "arch" in scopes[output] and not set(scopes[output]["arch"]).issubset(base["arch"]):
-            raise ValueError("output architecture not enrolled by base")
     version = (epoch + ":" if int(epoch) else "") + pkgver + "-" + pkgrel
     dependencies = {key: [v for _, k, v in fields if k == key or k.startswith(key + "_")] for key in ("depends", "makedepends", "checkdepends")}
     return {"pkgbase": pkgbase, "names": names, "arch": base["arch"], "pkgver": pkgver, "pkgrel": pkgrel, "epoch": int(epoch), "version": version, "fields": fields, "scopes": scopes, "dependencies": dependencies}

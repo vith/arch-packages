@@ -18,6 +18,11 @@ def canonical(value):
     return (json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)+'\n').encode()
 
 
+def new_hash(algorithm, data=b''):
+    """Accept native makepkg checksum names without rewriting declarations."""
+    return hashlib.new('blake2b' if algorithm == 'b2' else algorithm, data)
+
+
 def _format_version_fields(template, values):
     if not isinstance(template,str):
         raise ValueError('invalid source version template')
@@ -375,7 +380,7 @@ def git_checksums(source, repository):
         raise ValueError('frozen Git archive attributes are not sanitized')
     env={k:v for k,v in os.environ.items() if k in {'PATH','HOME','LANG','LC_ALL','TMPDIR'}}
     env.update(GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL='/dev/null',GIT_TERMINAL_PROMPT='0',GIT_ALLOW_PROTOCOL='https:file')
-    hashes={algorithm:hashlib.new(algorithm) for algorithm,value in source['checksums'].items() if value!='SKIP'}
+    hashes={algorithm:new_hash(algorithm) for algorithm,value in source['checksums'].items() if value!='SKIP'}
     with subprocess.Popen(['git','-c','safe.directory='+str(Path(repository).resolve()),'-c','core.hooksPath=/dev/null','-c','core.abbrev=no','archive','--format','tar',source['ref']],cwd=repository,env=env,stdout=subprocess.PIPE) as process:
         total=0
         while chunk:=process.stdout.read(1048576):
@@ -401,7 +406,7 @@ def freeze_source(spec):
         for algorithm,expected in record['checksums'].items():
             if expected=='SKIP':
                 continue
-            if hashlib.new(algorithm,data).hexdigest()!=expected:
+            if new_hash(algorithm,data).hexdigest()!=expected:
                 raise ValueError('source checksum mismatch')
         return record
     directory=Path(spec['work_dir']); directory.mkdir(parents=True,exist_ok=True)
