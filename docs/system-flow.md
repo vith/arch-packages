@@ -105,6 +105,8 @@ Normal native `makepkg` performs Git checkout with its branch, history, and reac
 
 Fixed Git commit declarations retain their literal object identity and genuine reachable tag context without invented refs. Fragment-free Git sources enroll the actual remote HEAD branch; a changed default is rejected rather than silently selecting the old branch. Indexed source declarations and explicit single-character version translation retain native package versions, source ordering, and checksum algorithms while supporting upstream tag spelling.
 
+Local AUR source files retain their native regular or executable mode. Admission verifies the declared checksum in either case; an executable bit does not authorize running the source during metadata authentication.
+
 The worker records actual full Git commits from the working copies used by the build, reachable tag/version context, actual generated metadata, and resulting version in a sidecar outside package archives. Keep the original recipe SHA/tree and original `.SRCINFO` declaration. For a recipe with `pkgver()`, actual `pkgver` may differ from the declaration. Do not refresh metadata into another recipe commit and build again.
 
 Non-version declarations still have to agree: package names, output set, architecture, epoch, `pkgrel`, sources, and dependencies are not ignored. The actual resulting version must be greater than the accepted predecessor, using native Arch version comparison.
