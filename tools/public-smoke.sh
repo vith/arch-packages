@@ -309,8 +309,11 @@ unset -f cd
   surge-cli)
 python3 - <<'PY'
 import subprocess
-result = subprocess.run(['surge', 'completion', 'zsh'], capture_output=True, text=True, check=True)
-assert '#compdef surge' in result.stdout and '_surge' in result.stdout and 'config' in result.stdout, result.stdout
+result = subprocess.run(['surge', '__complete', 'completion', 'z'], capture_output=True, text=True, check=True)
+lines = result.stdout.splitlines()
+assert lines and lines[-1].startswith(':'), result.stdout
+assert not int(lines[-1][1:]) & 1, result.stdout
+assert {line.split('\t', 1)[0] for line in lines[:-1]} == {'zsh'}, result.stdout
 PY
 ;;
   swag)
