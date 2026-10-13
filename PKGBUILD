@@ -3,7 +3,7 @@
 
 pkgname=spotify-adblock
 pkgver=1.1.1
-pkgrel=3
+pkgrel=4
 epoch=1
 pkgdesc='Adblocker for Spotify'
 arch=('x86_64')
@@ -27,7 +27,8 @@ build() {
 
 package() {
   cd $pkgname-$pkgver
-  make PREFIX=/usr DESTDIR="$pkgdir" install
+  make PREFIX=/usr DESTDIR="$pkgdir" \
+    BINARY_SOURCE="${CARGO_TARGET_DIR:-target}/release/libspotifyadblock.so" install
   install -Dm644 -t "$pkgdir"/usr/share/applications ../$pkgname.desktop
 }
 
