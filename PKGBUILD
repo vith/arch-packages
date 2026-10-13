@@ -1,35 +1,35 @@
+# Maintainer: rsteube <rsteube@users.noreply.github.com>
+
 pkgname=carapace-bridge
-pkgver=1.7.0
+pkgver=1.8.0_alpha
 pkgrel=1
+_upstream_version="${pkgver//_/-}"
 pkgdesc='A multi-shell completion bridge'
 arch=('x86_64')
 url='https://github.com/carapace-sh/carapace-bridge'
 license=('MIT')
-depends=('glibc')
-makedepends=('git' 'go>=1.24')
-optdepends=('bash-completion: bridge Bash completions'
-            'fish: bridge Fish completions'
-            'zsh: bridge Zsh completions')
+makedepends=('go' 'git')
+provides=('carapace-bridge-bin')
 conflicts=('carapace-bridge-bin')
-options=('!strip' '!debug')
-source=("$pkgname::git+${url}.git#tag=v${pkgver}")
-sha256sums=('SKIP')
+source=("$pkgname::git+$url.git#tag=v$_upstream_version")
+sha256sums=('9c237f9dabe4891d92448f8b561e980c775b7f826dad000df0680a9d87e96f19')
+
+prepare() {
+    cd "$srcdir/$pkgname"
+    export GOPATH="$srcdir"
+    go mod download -modcacherw
+}
 
 build() {
-  cd "$srcdir/$pkgname"
-  [[ $CARCH == x86_64 ]] || { error "Unsupported package target: $CARCH"; return 1; }
-  # The upstream workspace includes both the library and the CLI module.
-  # CARCH describes the package target, not the native Go execution host.
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1 \
-    go build -mod=readonly -modcacherw -trimpath -buildmode=pie \
-    -ldflags="-s -w -X main.version=v${pkgver}" \
-    -o carapace-bridge ./cmd/carapace-bridge
+    cd "$srcdir/$pkgname"
+    export GOPATH="$srcdir"
+    export GOFLAGS='-buildmode=pie -mod=readonly -modcacherw'
+    export CGO_ENABLED=0
+    go build -trimpath -ldflags="-X main.version=$_upstream_version" -o "$pkgname" "./cmd/$pkgname"
 }
 
 package() {
-  cd "$srcdir/$pkgname"
-  install -Dm755 carapace-bridge "$pkgdir/usr/bin/carapace-bridge"
-  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 third_party/github.com/Valodim/zsh-capture-completion/LICENSE \
-    "$pkgdir/usr/share/licenses/$pkgname/zsh-capture-completion.LICENSE"
+    cd "$srcdir/$pkgname"
+    install -Dm755 "$pkgname" "$pkgdir/usr/bin/$pkgname"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

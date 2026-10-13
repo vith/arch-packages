@@ -1,20 +1,15 @@
 pkgbase = carapace-bridge
 	pkgdesc = A multi-shell completion bridge
-	pkgver = 1.7.0
+	pkgver = 1.8.0_alpha
 	pkgrel = 1
 	url = https://github.com/carapace-sh/carapace-bridge
 	arch = x86_64
 	license = MIT
+	makedepends = go
 	makedepends = git
-	makedepends = go>=1.24
-	depends = glibc
-	optdepends = bash-completion: bridge Bash completions
-	optdepends = fish: bridge Fish completions
-	optdepends = zsh: bridge Zsh completions
+	provides = carapace-bridge-bin
 	conflicts = carapace-bridge-bin
-	options = !strip
-	options = !debug
-	source = carapace-bridge::git+https://github.com/carapace-sh/carapace-bridge.git#tag=v1.7.0
-	sha256sums = SKIP
+	source = carapace-bridge::git+https://github.com/carapace-sh/carapace-bridge.git#tag=v1.8.0-alpha
+	sha256sums = 9c237f9dabe4891d92448f8b561e980c775b7f826dad000df0680a9d87e96f19
 
 pkgname = carapace-bridge
