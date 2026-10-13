@@ -1,22 +1,21 @@
 pkgbase = pi
 	pkgdesc = AI coding agent for the terminal — minimal, extensible and optimized for tool use
-	pkgver = 0.99.1
-	pkgrel = 2
+	pkgver = 1.1.0
+	pkgrel = 1
 	url = https://github.com/earendil-works/pi
 	arch = x86_64
 	arch = aarch64
 	license = MIT
 	makedepends = npm
-	depends = nodejs>=22.19.0
+	depends = nodejs>=22
 	optdepends = tmux: for background bash capabilities
 	optdepends = fd: system-provided backend for the find tool
 	optdepends = ripgrep: system-provided backend for the grep tool
-	optdepends = libxcb: native X11 clipboard support
 	options = !strip
 	options = !debug
-	source = pi-0.99.1.tar.gz::https://github.com/earendil-works/pi/archive/refs/tags/v0.99.1.tar.gz
-	source = pi-ai-0.99.1.tgz::https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.99.1.tgz
-	sha256sums = f2cd629b7678e6b2880cf1ca8aa3cf3badc9a4089bf4ebdbd7ab8b83aa0653eb
-	sha256sums = f9f44692157d0bf5679c4a17304a310028231d7daaeaaea3b73252f4b7a264d3
+	source = pi-1.1.0.tar.gz::https://github.com/earendil-works/pi/archive/refs/tags/v1.1.0.tar.gz
+	source = pi-ai-1.1.0.tgz::https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.1.0.tgz
+	sha256sums = 6eb981ef0fbc18fd95a523447bace7cb4df7326cfcbaf094fb746b1adf914dde
+	sha256sums = 6caab33cec57480ed02c57fe37428a030a77cc2a0662814b435a5cf8932ad829
 
 pkgname = pi
