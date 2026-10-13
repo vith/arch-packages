@@ -1,26 +1,25 @@
 # Maintainer: Amin Vakil <info AT aminvakil DOT com>
 
 pkgname=pi
-pkgver=0.99.1
-pkgrel=2
+pkgver=1.1.0
+pkgrel=1
 pkgdesc="AI coding agent for the terminal — minimal, extensible and optimized for tool use"
 arch=('x86_64' 'aarch64')
 url="https://github.com/earendil-works/pi"
 license=('MIT')
-depends=('nodejs>=22.19.0')
+depends=('nodejs>=22')
 makedepends=('npm')
 optdepends=(
   'tmux: for background bash capabilities'
   'fd: system-provided backend for the find tool'
   'ripgrep: system-provided backend for the grep tool'
-  'libxcb: native X11 clipboard support'
 )
 options=('!strip' '!debug')
 
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz"
         "pi-ai-${pkgver}.tgz::https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-${pkgver}.tgz")
-sha256sums=('f2cd629b7678e6b2880cf1ca8aa3cf3badc9a4089bf4ebdbd7ab8b83aa0653eb'
-            'f9f44692157d0bf5679c4a17304a310028231d7daaeaaea3b73252f4b7a264d3')
+sha256sums=('6eb981ef0fbc18fd95a523447bace7cb4df7326cfcbaf094fb746b1adf914dde'
+            '6caab33cec57480ed02c57fe37428a030a77cc2a0662814b435a5cf8932ad829')
 
 prepare() {
   rm -rf "${srcdir}/${pkgname}-${pkgver}/packages/ai/src/providers/data"
@@ -31,32 +30,12 @@ prepare() {
 build() {
   cd "${pkgname}-${pkgver}"
 
-  export npm_config_cache="${npm_config_cache-"${srcdir}/npm-cache"}"
+  npm ci --cache "${srcdir}/npm-cache" --ignore-scripts --no-audit --no-fund
 
-  local _npm_cpu _other_cpu
-  case "$CARCH" in
-    x86_64) _npm_cpu=x64; _other_cpu=arm64 ;;
-    aarch64) _npm_cpu=arm64; _other_cpu=x64 ;;
-    *) echo "Unsupported architecture: $CARCH" >&2; return 1 ;;
-  esac
-
-  # Build with native tooling (notably the host-architecture tsgo binary).
-  npm ci --ignore-scripts --no-audit --no-fund
   npm run build:offline
 
-  # A clean, production-only install from the same lockfile selects target
-  # optional binaries without retaining or reinstalling host build tools.
-  npm ci --omit=dev --cpu="$_npm_cpu" --os=linux --libc=glibc \
-    --ignore-scripts --no-audit --no-fund
-
-  # This dependency ships both architectures inside one npm tarball rather
-  # than platform-specific optional packages. Its loader selects process.arch;
-  # retain the target's helper/BPF files, not the other architecture's copy.
-  local _vendor
-  for _vendor in node_modules/@anthropic-ai/sandbox-runtime/{vendor,dist/vendor}/seccomp; do
-    [[ -x "$_vendor/$_npm_cpu/apply-seccomp" ]] || return 1
-    rm -rf "$_vendor/$_other_cpu"
-  done
+  # Remove packages which are only necessary in development / building
+  npm prune --omit=dev --ignore-scripts --no-audit --no-fund --cache "${srcdir}/npm-cache"
 }
 
 package() {
@@ -76,15 +55,6 @@ package() {
     cp -a "packages/$_pkg/dist" "packages/$_pkg/package.json" "packages/$_pkg/README.md" \
       "$pkgdir/$mod_dir/packages/$_pkg/"
   done
-
-  local _npm_cpu
-  case "$CARCH" in
-    x86_64) _npm_cpu=x64 ;;
-    aarch64) _npm_cpu=arm64 ;;
-    *) echo "Unsupported architecture: $CARCH" >&2; return 1 ;;
-  esac
-  install -Dm755 "packages/tui/native/linux/prebuilds/linux-$_npm_cpu/linux-platform-x11.node" \
-    "$pkgdir/$mod_dir/packages/tui/native/linux/prebuilds/linux-$_npm_cpu/linux-platform-x11.node"
 
   # Copy the additional files for coding-agent
   cp -a packages/coding-agent/{docs,examples,CHANGELOG.md} \
