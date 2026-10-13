@@ -12,7 +12,7 @@ pkgname=${_cratename}
 pkgdesc="Easy, fast and local-first microVM runtime"
 
 pkgver=0.7.8
-pkgrel=1
+pkgrel=2
 _pkgvername=${pkgver}
 
 arch=('x86_64' 'aarch64')
@@ -51,7 +51,7 @@ build() {
 package() {
 	cd ${srcdir}/${_cratename}-${_pkgvername} || exit 1
 
-	install -Dm755 "target/release/${_cratename}" "${pkgdir}/usr/bin/${_pkgname}"
+	install -Dm755 "${CARGO_TARGET_DIR:-target}/release/${_cratename}" "${pkgdir}/usr/bin/${_pkgname}"
 	ln -sf "/usr/bin/${_pkgname}" "${pkgdir}/usr/bin/${_pkgalias}"
 
 	install -Dm644 "README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
