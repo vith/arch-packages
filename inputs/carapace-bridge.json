@@ -1,1 +1,30 @@
-{"schema":1,"sources":[{"asset_id":null,"checksums":{"sha256":"f2b25bb895ccd193fcb564370f746b026fdbaf051f780e61ce7b853ee0b55892"},"commit":"4c006db34c61a6061b735d170e1e0d91d80459ec","git_context":{"object_format":"sha1","version_tag":{"commit":"4c006db34c61a6061b735d170e1e0d91d80459ec","name":"refs/tags/v1.7.0","object":"4c006db34c61a6061b735d170e1e0d91d80459ec"}},"id":"carapace-bridge-git","kind":"git","peeled_commit":"4c006db34c61a6061b735d170e1e0d91d80459ec","ref":"refs/tags/v1.7.0","release_id":null,"source":"carapace-bridge::git+https://github.com/carapace-sh/carapace-bridge.git#tag=v1.7.0","tag_object":"4c006db34c61a6061b735d170e1e0d91d80459ec","url":"https://github.com/carapace-sh/carapace-bridge.git"}],"version":"1.7.0-2"}
+{
+  "schema": 1,
+  "sources": [
+    {
+      "asset_id": null,
+      "checksums": {
+        "sha256": "9c237f9dabe4891d92448f8b561e980c775b7f826dad000df0680a9d87e96f19"
+      },
+      "commit": "9d927cc7be15dc5ebed13376d080cfd05b83cdf3",
+      "git_context": {
+        "object_format": "sha1",
+        "tag_refs_sha256": "917ad5a7541119b82d8fd08ce091698f21acb07f0672afb113f9bfa263aa93c1",
+        "version_tag": {
+          "commit": "9d927cc7be15dc5ebed13376d080cfd05b83cdf3",
+          "name": "refs/tags/v1.8.0-alpha",
+          "object": "9d927cc7be15dc5ebed13376d080cfd05b83cdf3"
+        }
+      },
+      "id": "carapace-bridge-0",
+      "kind": "git",
+      "peeled_commit": "9d927cc7be15dc5ebed13376d080cfd05b83cdf3",
+      "ref": "refs/tags/v1.8.0-alpha",
+      "release_id": null,
+      "source": "carapace-bridge::git+https://github.com/carapace-sh/carapace-bridge.git#tag=v1.8.0-alpha",
+      "tag_object": "9d927cc7be15dc5ebed13376d080cfd05b83cdf3",
+      "url": "https://github.com/carapace-sh/carapace-bridge.git"
+    }
+  ],
+  "version": "1.8.0_alpha-1"
+}

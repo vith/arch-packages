@@ -1,1 +1,20 @@
-{"aur":null,"pkgbase":"carapace-bridge","schema":1,"watchers":[{"accepted_peeled_commit":"4c006db34c61a6061b735d170e1e0d91d80459ec","accepted_tag":"v1.7.0","accepted_tag_object":"4c006db34c61a6061b735d170e1e0d91d80459ec","id":"software-tag","kind":"tag","repository":"carapace-sh/carapace-bridge","source_id":"carapace-bridge-git","tag_pattern":"^v([0-9]+\\.[0-9]+\\.[0-9]+)$","url":"https://github.com/carapace-sh/carapace-bridge.git"}]}
+{
+  "aur": {
+    "commit": "78227894780a9be69fba15ec5daf66c8ff03ceb7",
+    "package": "carapace-bridge-bin",
+    "ref": "refs/heads/master",
+    "url": "https://aur.archlinux.org/carapace-bridge-bin.git"
+  },
+  "pkgbase": "carapace-bridge",
+  "schema": 1,
+  "watchers": [
+    {
+      "baseline_commit": "78227894780a9be69fba15ec5daf66c8ff03ceb7",
+      "id": "carapace-bridge-aur",
+      "kind": "aur",
+      "package": "carapace-bridge-bin",
+      "ref": "refs/heads/master",
+      "url": "https://aur.archlinux.org/carapace-bridge-bin.git"
+    }
+  ]
+}

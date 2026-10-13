@@ -1,1 +1,46 @@
-{"schema":1,"sources":[{"asset_id":null,"checksums":{"sha256":"3b781cc234d419de51245501c02fe8c1dc03eba9b79a8eefaf032046348edf05"},"commit":"e0cce7d37b065b5140349dbe12c6bcf6192fdd78","git_context":{"object_format":"sha1","version_tag":{"commit":"e0cce7d37b065b5140349dbe12c6bcf6192fdd78","name":"refs/tags/v0.2.2","object":"e0cce7d37b065b5140349dbe12c6bcf6192fdd78"}},"id":"sentencepiece-git","kind":"git","peeled_commit":"e0cce7d37b065b5140349dbe12c6bcf6192fdd78","ref":"refs/tags/v0.2.2","release_id":null,"source":"sentencepiece::git+https://github.com/google/sentencepiece.git#tag=v0.2.2","tag_object":"e0cce7d37b065b5140349dbe12c6bcf6192fdd78","url":"https://github.com/google/sentencepiece.git"},{"asset_id":null,"checksums":{"sha256":"85e56e6d2345dddb9717d028ce78eb428d9190a150a1929ca43d60aaf1895b37"},"commit":null,"git_context":null,"id":"sentencepiece-local","kind":"local","peeled_commit":null,"ref":null,"release_id":null,"source":"dont-include-data-files-in-python-pkg.patch","tag_object":null,"url":null}],"version":"0.2.2-3"}
+{
+  "schema": 1,
+  "sources": [
+    {
+      "asset_id": null,
+      "checksums": {
+        "sha512": "8a1b21e382b7e4649e406ed6d9cc2121df12c4c8b3e35524eaedc794539d1031afbd06e826aa25463ceb71ed556b2a4cd804253c4eb012b6ceca9ba79e644f42"
+      },
+      "commit": "e0cce7d37b065b5140349dbe12c6bcf6192fdd78",
+      "git_context": {
+        "object_format": "sha1",
+        "tag_refs_sha256": "77ea2a5160851b9d83fa76a707170b390ca9e69ba9d63e1ac1dcb98c6743e819",
+        "version_tag": {
+          "commit": "e0cce7d37b065b5140349dbe12c6bcf6192fdd78",
+          "name": "refs/tags/v0.2.2",
+          "object": "e0cce7d37b065b5140349dbe12c6bcf6192fdd78"
+        }
+      },
+      "id": "sentencepiece-0",
+      "kind": "git",
+      "peeled_commit": "e0cce7d37b065b5140349dbe12c6bcf6192fdd78",
+      "ref": "refs/tags/v0.2.2",
+      "release_id": null,
+      "source": "sentencepiece::git+https://github.com/google/sentencepiece.git#tag=v0.2.2",
+      "tag_object": "e0cce7d37b065b5140349dbe12c6bcf6192fdd78",
+      "url": "https://github.com/google/sentencepiece.git"
+    },
+    {
+      "asset_id": null,
+      "checksums": {
+        "sha512": "6fd675cf0187c2ddc0919e7c1aeb47768d4e3a0d7d8613215896678d489fb815de8473f6e6d6b611b4c269f135f7feca5c70b69c9e331123026caa3cd1afd871"
+      },
+      "commit": null,
+      "git_context": null,
+      "id": "sentencepiece-1",
+      "kind": "local",
+      "peeled_commit": null,
+      "ref": null,
+      "release_id": null,
+      "source": "dont-include-data-files-in-python-pkg.patch",
+      "tag_object": null,
+      "url": null
+    }
+  ],
+  "version": "0.2.2-3"
+}

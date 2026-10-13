@@ -1,1 +1,22 @@
-{"schema":1,"sources":[{"asset_id":null,"checksums":{"sha256":"a34c0f03d14cc1f27d91081dfc8bbe6a721097411c7831f20de6a9c6829ff58c"},"commit":null,"git_context":null,"id":"computer-use-linux-archive","kind":"archive","peeled_commit":null,"ref":null,"release_id":null,"source":"computer-use-linux-0.7.7.tar.gz::https://github.com/agent-sh/computer-use-linux/archive/refs/tags/v0.7.7.tar.gz","tag_object":null,"url":"https://github.com/agent-sh/computer-use-linux/archive/refs/tags/v0.7.7.tar.gz"}],"version":"0.7.7-3"}
+{
+  "schema": 1,
+  "sources": [
+    {
+      "asset_id": null,
+      "checksums": {
+        "sha256": "f853ff2a1416826ebc1b6896156dff6af448bb49481a045bc4d07b7fa51603aa"
+      },
+      "commit": null,
+      "git_context": null,
+      "id": "computer-use-linux-0",
+      "kind": "archive",
+      "peeled_commit": null,
+      "ref": null,
+      "release_id": null,
+      "source": "computer-use-linux-0.7.15.tar.gz::https://github.com/agent-sh/computer-use-linux/archive/refs/tags/v0.7.15.tar.gz",
+      "tag_object": null,
+      "url": "https://github.com/agent-sh/computer-use-linux/archive/refs/tags/v0.7.15.tar.gz"
+    }
+  ],
+  "version": "0.7.15-1"
+}
