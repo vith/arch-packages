@@ -111,6 +111,10 @@ The worker records actual full Git commits from the working copies used by the b
 
 Non-version declarations still have to agree: package names, output set, architecture, epoch, `pkgrel`, sources, and dependencies are not ignored. The actual resulting version must be greater than the accepted predecessor, using native Arch version comparison.
 
+Independent `.SRCINFO` field ordering is not a declaration change. Repeated source and checksum values retain their ordering and scope. Packaging options use makepkg's last-setting-wins precedence, so a repeated identical option does not change the effective declaration.
+
+Native archive names include the full version, including an epoch. The worker validates that name before copying unchanged archive bytes to the repository's established epoch-free release-asset name. Receipts and `.PKGINFO` retain the full version. Optional empty `url` and `pkgdesc` fields are accepted; required package identity fields remain nonempty and unique.
+
 Manual and human-edited heads use `declared_metadata` mode. Automatic discovery and unedited automation proposals retain their independent derivation checks. Mode selection is not permission to accept inconsistent sources or unsupported recipes.
 
 Accepted inputs advance only after accepted recipe merge. Discovery, a queued request, a successful but unmerged build, and a failure leave main's accepted baseline unchanged.

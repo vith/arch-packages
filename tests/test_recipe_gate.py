@@ -44,7 +44,7 @@ depends = example=1:r10.abcdef-2
         self.assertFalse(metadata_equivalent(self.metadata, actual))
         self.assertTrue(metadata_equivalent(self.metadata, actual, dynamic=True))
 
-    def test_all_other_fields_scopes_and_order_remain_bound(self):
+    def test_non_version_fields_and_output_scopes_remain_bound(self):
         for old, new in (
                 ('pkgrel = 2', 'pkgrel = 3'), ('epoch = 1', 'epoch = 2'),
                 ('arch = x86_64', 'arch = any'), ('license = MIT', 'license = GPL'),
@@ -57,10 +57,39 @@ depends = example=1:r10.abcdef-2
                 ('pkgname = example-tools', 'pkgname = other-tools')):
             with self.subTest(field=old):
                 self.assertFalse(metadata_equivalent(self.metadata, self.metadata.replace(old, new), dynamic=True))
+        self.assertFalse(metadata_equivalent(self.metadata, self.metadata + 'depends = extra\n'))
+
+    def test_independent_declaration_order_does_not_reject_native_metadata(self):
         actual = self.metadata.replace('makedepends = gcc\ncheckdepends = python',
                                        'checkdepends = python\nmakedepends = gcc')
-        self.assertFalse(metadata_equivalent(self.metadata, actual))
-        self.assertFalse(metadata_equivalent(self.metadata, self.metadata + 'depends = extra\n'))
+        self.assertTrue(metadata_equivalent(self.metadata, actual))
+
+    def test_repeated_options_keep_native_last_setting_precedence(self):
+        declared = self.metadata.replace('license = MIT',
+                                         'license = MIT\noptions = emptydirs\noptions = emptydirs')
+        actual = declared.replace('options = emptydirs\noptions = emptydirs',
+                                  'options = emptydirs')
+        self.assertTrue(metadata_equivalent(declared, actual))
+        disabled = actual.replace('options = emptydirs', 'options = emptydirs\noptions = !emptydirs')
+        enabled = actual.replace('options = emptydirs',
+                                 'options = emptydirs\noptions = !emptydirs\noptions = emptydirs')
+        self.assertTrue(metadata_equivalent(actual, enabled))
+        self.assertFalse(metadata_equivalent(disabled, enabled))
+
+    def test_source_and_checksum_array_order_remain_bound(self):
+        declared = self.metadata.replace(
+            'source = upstream::git+https://example.org/upstream.git\nsha256sums = SKIP',
+            'source = first::https://example.org/first.tar\n'
+            'source = second::https://example.org/second.tar\n'
+            'sha256sums = ' + 'a' * 64 + '\nsha256sums = ' + 'b' * 64)
+        reversed_sources = declared.replace(
+            'source = first::https://example.org/first.tar\nsource = second::https://example.org/second.tar',
+            'source = second::https://example.org/second.tar\nsource = first::https://example.org/first.tar')
+        reversed_checksums = declared.replace(
+            'sha256sums = ' + 'a' * 64 + '\nsha256sums = ' + 'b' * 64,
+            'sha256sums = ' + 'b' * 64 + '\nsha256sums = ' + 'a' * 64)
+        self.assertFalse(metadata_equivalent(declared, reversed_sources))
+        self.assertFalse(metadata_equivalent(declared, reversed_checksums))
 
     def test_invalid_metadata_is_not_equivalent(self):
         for actual in ('', self.metadata + 'pkgver = extra\n',
