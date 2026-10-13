@@ -85,6 +85,37 @@ class CandidateIntentTests(unittest.TestCase):
         self.assertEqual(recipe_intents.validate_admission(
             f.old, f.new, self.pins, self.pins, f.root/'complete-indexed'), ['example'])
 
+    def test_executable_aur_local_source_is_authenticated_without_skipping_checksum(self):
+        f = self.fixture
+        aur = f.root/'aur'
+        source = aur/'fix.patch'
+        source.chmod(0o755)
+        sources.git('add', '.', cwd=aur)
+        sources.git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+                    'commit', '-m', 'native executable source mode', cwd=aur)
+        intent = copy.deepcopy(self.intent)
+        for changed in (False, True):
+            if changed:
+                source.write_text(source.read_text()+'\nchanged bytes\n')
+                sources.git('add', '.', cwd=aur)
+                sources.git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+                            'commit', '-m', 'source bytes no longer match native checksum', cwd=aur)
+            commit = sources.git('rev-parse', 'HEAD', cwd=aur)
+            sources.git('branch', '-f', 'example', commit, cwd=aur)
+            intent['provenance']['aur']['commit'] = commit
+            intent['provenance']['watchers'][0]['baseline_commit'] = commit
+            update.dump(f.new/'intents/example.json', intent)
+            destination = f.root/('executable-changed' if changed else 'executable-authenticated')
+            if changed:
+                with self.assertRaises(ValueError):
+                    recipe_intents.validate_admission(f.old, f.new, self.pins, self.pins, destination)
+            else:
+                self.assertEqual(recipe_intents.validate_admission(
+                    f.old, f.new, self.pins, self.pins, destination), ['example'])
+                self.assertEqual(update.load(f.new/'inputs/example.json'), self.oldlock)
+            self.assertFalse((f.root/'EXECUTED').exists())
+            self.assertFalse((f.root/'AUR_EXECUTED').exists())
+
     def test_stock_source_enrollment_cannot_duplicate_native_coverage(self):
         f = self.fixture
         intent = copy.deepcopy(self.intent)

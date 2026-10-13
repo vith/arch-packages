@@ -285,7 +285,7 @@ def validate_intended(name, policy, lock, provenance, work, *, canonical_aur=Fal
                         if checksum_index >= len(sums) or source['checksums'][algorithm] != sums[checksum_index]:
                             raise ValueError('intended AUR source checksum differs')
                     if source['kind'] == 'local':
-                        payload = next((f for f in snapshot['files'] if f['path'] == source['source'] and f['mode'] == '100644'), None)
+                        payload = next((f for f in snapshot['files'] if f['path'] == source['source'] and f['mode'] in {'100644', '100755'}), None)
                         if payload is None or sources.new_hash(algorithm, payload['content'].encode()).hexdigest() != source['checksums'][algorithm]:
                             raise ValueError('intended AUR local source bytes differ')
     for source in lock['sources']:
