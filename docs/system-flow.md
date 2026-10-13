@@ -240,6 +240,7 @@ The worker:
 7. Packs original output plus `candidate.json` into `unsigned.tar`.
 8. Binds original producer context, attests `unsigned.tar` and `attestation-context.json`, retains the attestation bundle, and persists durable output and the direct result.
 
+The builder owns its private `HOME` and can create tool-specific directories there. Trusted Git configuration stays root-owned and read-only under root-owned `/build`, outside that writable home, so the builder cannot replace it.
 A complete successful attempt includes all required steps through persistence. If a later step fails, the whole attempt is failed even if output exists. The manager polls the registered exact run/attempt endpoint and confirms completion/conclusion plus the directly recorded result. No run-list search is permitted. Persistence itself cannot establish final job success because it runs before job conclusion.
 
 ### Cache contract
