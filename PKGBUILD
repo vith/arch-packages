@@ -3,7 +3,7 @@
 _name=google-genai
 pkgname=python-$_name
 pkgver=2.29.0
-pkgrel=1
+pkgrel=2
 pkgdesc="GenAI Python SDK."
 arch=('any')
 url='https://github.com/googleapis/python-genai'
@@ -31,6 +31,7 @@ checkdepends=('python-certifi'
               'python-pytest-asyncio'
               'python-pytest-xdist'
               'python-mcp'
+              'python-sentencepiece'
               'python-protobuf'
               'python-aiohttp')
 optdepends=('python-aiohttp: aiohttp'
