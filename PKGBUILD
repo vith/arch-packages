@@ -2,7 +2,7 @@
 pkgname=nasctui
 _pkgname=nascTUI
 pkgver=1.0.7
-pkgrel=1
+pkgrel=2
 pkgdesc='The Not a Soulver Clone TUI'
 arch=('x86_64')
 url='https://github.com/parnoldx/nascTUI'
@@ -32,5 +32,4 @@ check() {
 package() {
   install -Dm755 "$srcdir/${_pkgname}-${pkgver}/src/nasc" "$pkgdir/usr/bin/nasc"
   install -Dm644 "$srcdir/${_pkgname}-${pkgver}/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 "$srcdir/${_pkgname}-${pkgver}.tar.gz" "$pkgdir/usr/share/doc/$pkgname/${_pkgname}-${pkgver}.tar.gz"
 }
