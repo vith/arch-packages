@@ -321,6 +321,8 @@ It checks out `main` without stored credentials, installs public verification to
 
 `PROOF_WORK` is `/home/runner/.local/state/arch-packages/work/consumers-<run>-<attempt>`, with `TMPDIR` below it. `consumer-proof-<run>-<attempt>` uploads evidence under `always()`, retained for 14 days; missing evidence warns.
 
+The disposable consumer root has private `/dev`, PTY and `/proc` mounts. Its `/dev/fd` points to `/proc/self/fd` so Bash process substitution works without exposing host devices. Consumer processes still run with no capabilities.
+
 OMP is installed when enrolled but has no shared CLI/help/addon/PipeWire runtime tests. Recipe-owned checks remain in the build. ApexShot consumer proof covers version/help, native messaging, libraries, desktop assets, and extension files, not interactive live capture or recording.
 
 Publication does not dispatch this workflow. Signed consumer proof is not installation on a client's machine.
