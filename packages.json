@@ -1765,7 +1765,7 @@
       },
       "pkgbase": "spotify-adblock",
       "policy": {
-        "authority": "maintained",
+        "authority": "aur",
         "automatic": {
           "checksum_array": {
             "assignment": "b2sums",
@@ -1793,7 +1793,7 @@
           ],
           "pkgrel": {
             "assignment": "pkgrel",
-            "literal_assignment": "pkgrel=4",
+            "literal_assignment": "pkgrel=3",
             "value": "1"
           },
           "srcinfo_fields": [
