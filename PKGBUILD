@@ -2,7 +2,7 @@
 pkgname=ttf-ioskeley-mono-unhinted
 epoch=1
 pkgver=2.0.0
-pkgrel=2
+pkgrel=3
 pkgdesc="Iosevka configuration to mimic Berkeley Mono - unhinted TTF version"
 arch=(any)
 url="https://github.com/ahatem/IoskeleyMono"
