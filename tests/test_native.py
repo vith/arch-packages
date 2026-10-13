@@ -160,9 +160,31 @@ class ActualSourceTests(unittest.TestCase):
         self.assertEqual(sources.refs(self.repository), before)
         self.assertEqual(sources.git('rev-list', '--count', 'HEAD', cwd=self.repository), '2')
 
-    def test_unaliased_git_source_uses_native_basename(self):
+    def clone_default_source(self):
+        sources.git('branch', '-M', 'main', cwd=self.repository)
+        origin = self.root/'origin'
+        self.repository.rename(origin)
+        sources.git('clone', origin, self.repository)
         self.lock['sources'][0]['source'] = 'git+https://example.org/upstream.git'
+
+    def test_unaliased_git_source_uses_native_basename(self):
+        self.clone_default_source()
         self.assertEqual(actual_source_lock(self.lock, self.root, 'new-1')['sources'][0]['commit'], self.second)
+
+    def test_default_source_accepts_normal_makepkg_update_branch(self):
+        self.clone_default_source()
+        sources.git('checkout', '--force', '--no-track', '-B', 'makepkg', 'origin/HEAD', cwd=self.repository)
+        before = sources.refs(self.repository)
+        recorded = actual_source_lock(self.lock, self.root, 'new-1')
+        self.assertEqual(recorded['sources'][0]['commit'], self.second)
+        self.assertEqual(sources.refs(self.repository), before)
+        self.assertEqual(sources.git('symbolic-ref', 'HEAD', cwd=self.repository), 'refs/heads/makepkg')
+
+    def test_default_source_rejects_other_remote_default_branch(self):
+        self.clone_default_source()
+        self.lock['sources'][0]['ref'] = 'refs/heads/not-default'
+        with self.assertRaises(ValueError):
+            actual_source_lock(self.lock, self.root, 'new-1')
 
     def test_missing_escaping_and_parent_git_working_copies_are_rejected(self):
         for declaration in ('missing::git+https://example.org/repo.git',

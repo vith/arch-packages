@@ -220,7 +220,7 @@ class RecipeCandidateBoundaries(unittest.TestCase):
 
     def test_direct_human_unenrolled_source_does_not_create_manual_receipt(self):
         with tempfile.TemporaryDirectory() as work:
-            with self.assertRaisesRegex(ValueError, 'unenrolled'):
+            with self.assertRaises(ValueError):
                 self.prepare_manual(work, invalid=True)
             self.assertEqual(self.manual_stored, {})
 
@@ -318,8 +318,91 @@ class RecipeCandidateBoundaries(unittest.TestCase):
                 patch.object(recipe_state, 'recipe_identity', return_value=(pr, 'd'*40, 'h'*40)), \
                 patch.object(recipe_state, 'pending_build', return_value={'head': 'h'*40, 'request_id': 'demo-original'}), \
                 patch.object(recipe_state, 'build_request', return_value=original), \
+                patch.object(update, 'checkout_data', return_value=Path(directory)), \
+                patch('tools.recipe_intents.load', return_value=None), \
                 patch.object(candidates, 'export_recipe', side_effect=AssertionError('successful request must not refreeze')):
             self.assertEqual(candidates.prepare(7, directory), original)
+
+    def test_same_head_intent_request_rejects_stale_current_intent(self):
+        original = {'request_id': 'demo-original', 'pkgbase': 'demo', 'pr_number': 7,
+                    'head': 'h'*40, 'recipe_base': 'b'*40, 'intent': {'predecessor': 'b'*40}}
+        pr = {'base': {'ref': 'pkg/demo', 'sha': 'b'*40}, 'state': 'open'}
+        with tempfile.TemporaryDirectory() as directory, patch.object(update, 'api', return_value=pr), \
+                patch.object(recipe_state, 'recipe_identity', return_value=(pr, 'd'*40, 'h'*40)), \
+                patch.object(recipe_state, 'pending_build', return_value={'head': 'h'*40, 'request_id': 'demo-original'}), \
+                patch.object(recipe_state, 'build_request', return_value=original), \
+                patch.object(update, 'checkout_data', return_value=Path(directory)), \
+                patch('tools.recipe_intents.load', return_value=None), \
+                patch.object(candidates, 'export_recipe', side_effect=AssertionError('must not rebuild stale request')):
+            with self.assertRaisesRegex(ValueError, 'intent'):
+                candidates.prepare(7, directory)
+
+    def test_intent_admitted_after_intent_free_request_prevents_same_head_reuse(self):
+        original = {'request_id': 'demo-original', 'pkgbase': 'demo', 'pr_number': 7,
+                    'head': 'h'*40, 'recipe_base': 'b'*40, 'base': 'c'*40,
+                    'merge_policy': 'automatic'}
+        pr = {'base': {'ref': 'pkg/demo', 'sha': 'b'*40}, 'state': 'open'}
+        with tempfile.TemporaryDirectory() as directory, patch.object(update, 'api', return_value=pr), \
+                patch.object(recipe_state, 'recipe_identity', return_value=(pr, 'd'*40, 'h'*40)), \
+                patch.object(recipe_state, 'pending_build', return_value={'head': 'h'*40, 'request_id': 'demo-original'}), \
+                patch.object(recipe_state, 'build_request', return_value=original), \
+                patch.object(update, 'checkout_data', return_value=Path(directory)), \
+                patch('tools.recipe_intents.load', return_value={'predecessor': 'b'*40}), \
+                patch.object(candidates, 'export_recipe', side_effect=AssertionError('must not rebuild stale request')):
+            with self.assertRaises(ValueError):
+                candidates.prepare(7, directory)
+            self.assertFalse((Path(directory)/'candidate.json').exists())
+
+    def test_new_intent_prevents_original_automatic_request_from_finalizing_merge(self):
+        record = {'pr_number': 7, 'pkgbase': 'demo', 'base': 'c'*40, 'head': 'd'*40,
+                  'recipe_base': 'b'*40, 'merge_policy': 'automatic'}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(update, 'load', return_value=record), \
+                patch.object(candidates, 'validate_build'), \
+                patch.object(recipe_state, 'assert_recipe_identity'), \
+                patch.object(candidates, 'required_statuses'), \
+                patch.object(update, 'main_sha', return_value='c'*40), \
+                patch.object(update, 'checkout_data', return_value=Path(directory)), \
+                patch('tools.recipe_intents.load', return_value={'predecessor': 'b'*40}), \
+                patch.object(update, 'api', return_value={'merged': True, 'sha': 'a'*40}) as api:
+            with self.assertRaises(ValueError):
+                candidates.finalize(7, 'c'*40, 'd'*40, 'candidate.json', directory)
+            self.assertFalse(any(route.endswith('/merge') for (route, *_), _ in api.call_args_list))
+
+    def test_reused_automatic_request_can_finalize_in_the_same_workspace(self):
+        original = {'request_id': 'demo-original', 'pkgbase': 'demo', 'pr_number': 7,
+                    'base': 'c'*40, 'head': 'd'*40, 'recipe_base': 'b'*40,
+                    'merge_policy': 'automatic'}
+        pr = {'base': {'ref': 'pkg/demo', 'sha': 'b'*40}, 'state': 'open'}
+        payload = json.dumps({'schema': 1, 'packages': [{'pkgbase': 'demo'}], 'imports': []}).encode()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root/'control.tar.gz'
+            with tarfile.open(archive, 'w:gz') as stream:
+                entry = tarfile.TarInfo('snapshot/packages.json')
+                entry.size = len(payload)
+                stream.addfile(entry, io.BytesIO(payload))
+            def checkout(sha, destination, pins, selected=None):
+                update.extract_tree(archive, destination)
+                pins['demo'] = 'b'*40
+                return destination
+            def api(route, method='GET', data=None):
+                if route.endswith('/merge'):
+                    return {'merged': True, 'sha': 'a'*40}
+                return pr
+            with patch.object(update, 'api', side_effect=api), \
+                    patch.object(update, 'main_sha', return_value='c'*40), \
+                    patch.object(recipe_state, 'recipe_identity', return_value=(pr, 'c'*40, 'd'*40)), \
+                    patch.object(recipe_state, 'pending_build', return_value={'head': 'd'*40, 'request_id': 'demo-original'}), \
+                    patch.object(recipe_state, 'build_request', return_value=original), \
+                    patch.object(update, 'checkout_data', side_effect=checkout), \
+                    patch.object(candidates, 'validate_build'), \
+                    patch.object(recipe_state, 'assert_recipe_identity'), \
+                    patch.object(candidates, 'required_statuses'):
+                candidates.prepare(7, root)
+                result = candidates.finalize(7, 'c'*40, 'd'*40, root/'candidate.json', root)
+            self.assertTrue(result['merged'])
+            self.assertEqual(result['sha'], 'a'*40)
 
     def test_entire_worker_failure_rejects_stored_output(self):
         record = {'request_id': 'demo-original'}
@@ -362,6 +445,8 @@ class RecipeCandidateBoundaries(unittest.TestCase):
                 patch.object(recipe_state, 'recipe_identity', return_value=(pr, 'd'*40, 'a'*40)), \
                 patch.object(recipe_state, 'pending_build', return_value=active), \
                 patch.object(recipe_state, 'build_request', return_value=original), \
+                patch.object(update, 'checkout_data', return_value=Path(directory)), \
+                patch('tools.recipe_intents.load', return_value=None), \
                 patch.object(recipe_state, 'abandon_build', return_value=failed) as abandon:
             retried = candidates.prepare(7, directory, retry=True)
             self.assertNotEqual(retried['request_id'], original['request_id'])

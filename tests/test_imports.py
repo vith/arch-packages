@@ -227,6 +227,7 @@ class PendingImports(unittest.TestCase):
         sources.git('add', '.', cwd=aur)
         sources.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'upstream', cwd=aur)
         commit = sources.git('rev-parse', 'HEAD', cwd=aur)
+        sources.git('branch', 'example', 'HEAD', cwd=aur)
         changed = copy.deepcopy(self.item)
         changed['policy']['authority'] = 'aur'
         changed['policy']['outputs'][0]['arch'] = 'any'

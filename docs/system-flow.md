@@ -39,6 +39,7 @@ Candidate preparation is static. It does not invoke a recipe. A `PKGBUILD` funct
 | `pkg/<package>` | Maintained recipe history and recipe PR target |
 | `aur/<package>` | Imported AUR ancestry |
 | `inputs/` | Accepted actual version and source records |
+| `intents/` | Authenticated prospective AUR metadata for accepted packages, not publication inputs |
 | `upstream/` | Accepted upstream/update tracking |
 | `acceptance/` | Accepted recipe-to-original-build references |
 | `controller-state` | Direct pending, immutable request/result, proposal, and acceptance records |
@@ -84,7 +85,7 @@ There is no pre-build human approval. New/imported recipes and non-trivial or ex
 
 A successful internal compile step, uploaded archive, passing candidate status, or attestation cannot override a failed worker. There is no failed-worker salvage, compilation checkpoint, historical run search, or transport-recovery route.
 
-After recipe merge, reconciliation verifies the exact head/merge relationship and generates main bookkeeping. It records the gitlink, actual source/version data, upstream information, and original build reference. Pending imports can activate at this point. Bookkeeping selects zero workers and requires no second recipe approval or build.
+After recipe merge, reconciliation verifies the exact head/merge relationship and generates main bookkeeping. It records the gitlink, actual source/version data, upstream information, and original build reference. Pending imports can activate at this point. An accepted package's exact current intent can install its prospective policy and tracking at this same boundary; bookkeeping atomically removes the consumed intent. Bookkeeping selects zero workers and requires no second recipe approval or build.
 
 All main documentation, source, controller, image, and bookkeeping candidates use one source-test route with zero package workers. A human-classified PR stays open until ordinary protected Merge, which the assistant may perform for authorized internal changes. External PKGBUILD changes require user approval. Generated exact bookkeeping can merge automatically after validation. No alternative manual source-review workflow remains in the core.
 
@@ -101,6 +102,8 @@ Recipe PRs target `pkg/<package>`. The Files changed tab contains the actual `PK
 Pending import registration freezes source data without executing a recipe. Pending imports are not routine discovery/publication inputs. Their first conversion builds as an exact recipe PR and waits for human Merge.
 
 Normal native `makepkg` performs Git checkout with its branch, history, and reachable tags. Planned source locks are detection/classification snapshots, not instructions to rewrite source references or force a different checkout. No source bundle or extra source-submodule scheme is introduced.
+
+Fixed Git commit declarations retain their literal object identity and genuine reachable tag context without invented refs. Fragment-free Git sources enroll the actual remote HEAD branch; a changed default is rejected rather than silently selecting the old branch. Indexed source declarations and explicit single-character version translation retain native package versions, source ordering, and checksum algorithms while supporting upstream tag spelling.
 
 The worker records actual full Git commits from the working copies used by the build, reachable tag/version context, actual generated metadata, and resulting version in a sidecar outside package archives. Keep the original recipe SHA/tree and original `.SRCINFO` declaration. For a recipe with `pkgver()`, actual `pkgver` may differ from the declaration. Do not refresh metadata into another recipe commit and build again.
 
@@ -342,6 +345,8 @@ All five declared concurrency groups use `cancel-in-progress: false`: source upd
 | Client | Human configures pacman and installs; no automated client administration |
 
 Pending imports can revise intended policy, source locks, and upstream provenance against a pinned AUR baseline authenticated from canonical AUR Git or its Arch GitHub mirror. Admission preserves imported origins and recipe pins, leaves accepted packages unchanged, and selects no package workers. External recipe changes still require their separate candidate build and review; metadata admission is not recipe acceptance.
+
+Already-accepted packages register or revise candidate-only intents against the exact current recipe predecessor. Admission authenticates the selected canonical AUR branch history and frozen source identities, and permits changes only in `intents/`. Stock policy retains AUR outputs and source declarations; maintained policy supports necessary source-only or architecture corrections. Deliberate release advancement does not rewrite the authenticated upstream baseline. Accepted policy, inputs, tracking, and original build evidence remain unchanged until exact reviewed acceptance. A stale or changed intent cannot reuse an unrelated request or authorize automatic recipe merge.
 
 Official Arch dependencies come first, then signed `vith-gh`, then signed n3t `vith-arch`. Custom databases and packages both require trusted signatures. Worker dependency setup resolves the GitHub latest redirect to a fixed snapshot; consumer proof keeps the explicitly requested snapshot. Neither receives publication signing credentials.
 
