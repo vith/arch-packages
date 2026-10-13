@@ -146,102 +146,150 @@ def validate_admission(old, new, oldpins, newpins, work):
         raise ValueError('admission contains non-metadata or existing package changes')
     for name in sorted(intended):
         item = verify_predecessor(new, name, newpins, Path(work)/name)
-        policy = item['policy']
-        if policy.get('native_verification') != 'pending-github-native-probe' or not isinstance(policy.get('automatic'), dict) or not isinstance(policy.get('outputs'), list) or not policy['outputs']:
-            raise ValueError('incomplete intended native policy')
-        outputs = policy['outputs']
-        if any(set(output) != {'name', 'arch'} or not NAME.fullmatch(output.get('name', '')) or output.get('arch') not in {'any', 'x86_64'} for output in outputs) or len({o['name'] for o in outputs}) != len(outputs):
-            raise ValueError('invalid intended native outputs')
-        lock = u.load(Path(new)/'inputs'/f'{name}.json')
-        u.validate_source_policy(lock, item['policy'])
-        for source in lock['sources']:
-            if not isinstance(source['id'], str) or not source['checksums']:
-                raise ValueError('incomplete intended source identity/checksums')
-            # Source IDs are opaque source-lock keys, not lowercase package
-            # names. Retain the controller's existing safe-path boundary for
-            # the per-source authentication workspace.
-            u.safe_path(source['id'])
-            for algorithm, checksum in source['checksums'].items():
-                if checksum == 'SKIP' and source['kind'] == 'git':
-                    continue
-                try:
-                    length = sources.new_hash(algorithm).digest_size * 2
-                except ValueError as error:
-                    raise ValueError('invalid intended checksum algorithm') from error
-                if not isinstance(checksum, str) or not re.fullmatch('[0-9a-fA-F]{'+str(length)+'}', checksum):
-                    raise ValueError('incomplete intended source byte identity')
-            if source['kind'] == 'local':
-                u.recipe_payload_path(source['source'])
-        provenance = u.load(Path(new)/'upstream'/f'{name}.json')
-        if provenance.get('schema') != 1 or provenance.get('pkgbase') != name or 'aur' not in provenance or not isinstance(provenance.get('watchers'), list) or not provenance['watchers']:
-            raise ValueError('incomplete intended upstream provenance')
-        if name in revised:
-            aur = provenance['aur']
-            watchers = provenance['watchers']
-            if policy.get('authority') not in {'aur', 'maintained'} or not isinstance(aur, dict) or len(watchers) != 1 or watchers[0].get('kind') != 'aur':
-                raise ValueError('pending revision requires AUR recipe authority')
-            package = aur.get('package')
-            if not isinstance(package, str) or not NAME.fullmatch(package):
-                raise ValueError('invalid revision AUR package')
-            canonical = {
-                ('https://github.com/archlinux/aur.git', 'refs/heads/'+package),
-                ('https://aur.archlinux.org/'+package+'.git', 'refs/heads/master'),
-            }
-            if (aur.get('url'), aur.get('ref')) not in canonical or watchers[0].get('baseline_commit') != aur.get('commit'):
-                raise ValueError('pending revision requires canonical pinned AUR baseline')
-        identities = set()
-        source_ids = {s['id'] for s in lock['sources']}
-        for watcher in provenance['watchers']:
-            identity = watcher.get('id')
-            if not isinstance(identity, str) or not NAME.fullmatch(identity) or identity in identities or watcher.get('kind') not in {'aur', 'git', 'tag', 'release'}:
-                raise ValueError('invalid intended watcher enrollment')
-            identities.add(identity)
-            sources.public_url(watcher['url'])
-            if watcher['kind'] in {'tag', 'release'}:
-                if watcher['source_id'] not in source_ids:
-                    raise ValueError('watcher source is not enrolled')
-                tag = watcher.get('accepted_tag')
-                match = re.fullmatch(watcher.get('tag_pattern', ''), tag or '')
-                if not match or not match.groups():
-                    raise ValueError('intended watcher lacks an enrolled accepted tag')
-                version = sources._version_prefix(watcher) + '.'.join(match.groups())
-                asset_ids, asset_names = set(), set()
-                for identity in [watcher['source_id'], *watcher.get('related_source_ids', [])]:
-                    source = next((s for s in lock['sources'] if s['id'] == identity), None)
-                    definition = next((s for s in policy['sources'] if s['id'] == identity), None)
-                    if source is None or definition is None or source['source'] != definition['source_template'].format(version=version):
-                        raise ValueError('intended watcher tag differs from source policy')
-                    if source['kind'] == 'git' and (source['ref'] != 'refs/tags/'+tag or source['commit'] != watcher.get('accepted_peeled_commit') or (source['tag_object'] or source['commit']) != watcher.get('accepted_tag_object')):
-                        raise ValueError('intended watcher tag differs from Git lock')
-                    if watcher['kind'] == 'release' and source['kind'] == 'release':
-                        asset_name = sources.release_asset_name(watcher, version, identity)
-                        if source['asset_id'] in asset_ids or asset_name in asset_names:
-                            raise ValueError('release sources share an enrolled asset')
-                        asset_ids.add(source['asset_id'])
-                        asset_names.add(asset_name)
-                    # A release watcher authenticates its primary release and
-                    # related release assets, not tag-bound plain archives.
-                    # Every related source still binds the intended version
-                    # above and authenticates its own frozen bytes below.
-                    if identity == watcher['source_id'] or watcher['kind'] == 'release' and source['kind'] == 'release':
-                        u._live_tag_provenance(watcher, watcher, source)
-            elif watcher['kind'] == 'git':
-                source = next((s for s in lock['sources'] if s['id'] == watcher.get('source_id')), None)
-                if source is None or source['kind'] != 'git' or watcher.get('ref') != source['ref'] or watcher['url'] != source['url']:
-                    raise ValueError('intended Git watcher differs from frozen source')
-            elif watcher['kind'] == 'aur':
-                if not provenance['aur']:
-                    raise ValueError('missing intended AUR identity')
-                if any(provenance['aur'].get(k) != watcher.get(k) for k in ('url', 'package', 'ref')):
-                    raise ValueError('intended AUR watcher differs from provenance')
-                snapshot = sources.frozen_aur({**watcher, 'work_dir': str(Path(work)/(name+'-aur'))}, provenance['aur'], provenance['aur'])
-                if name in revised:
-                    metadata = next((f['content'] for f in snapshot['files'] if f['path'] == '.SRCINFO' and f['mode'] == '100644'), None)
-                    if metadata is None or parse_srcinfo(metadata)['pkgbase'] != watcher['package']:
-                        raise ValueError('pending revision AUR snapshot has wrong package identity')
-        for source in lock['sources']:
-            if source['kind'] == 'git':
-                sources.materialize_sources({'schema': 1, 'version': lock['version'], 'sources': [source]}, Path(work)/(name+'-'+source['id']))
-            elif source['kind'] != 'local':
-                sources.freeze_source(source)
+        validate_intended(name, item['policy'],
+                          u.load(Path(new)/'inputs'/f'{name}.json'),
+                          u.load(Path(new)/'upstream'/f'{name}.json'),
+                          work, canonical_aur=name in revised)
     return sorted(intended)
+
+
+def validate_intended(name, policy, lock, provenance, work, *, canonical_aur=False):
+    """Authenticate prospective data without evaluating a workstation recipe."""
+    from tools import update as u
+    if policy.get('pkgbase') != name or policy.get('native_verification') != 'pending-github-native-probe' or not isinstance(policy.get('automatic'), dict):
+        raise ValueError('incomplete intended native policy')
+    outputs = policy.get('outputs')
+    if not isinstance(outputs, list) or not outputs or any(
+            not isinstance(o, dict) or set(o) != {'name', 'arch'}
+            or not NAME.fullmatch(o.get('name', '')) or o.get('arch') not in {'any', 'x86_64'}
+            for o in outputs) or len({o['name'] for o in outputs}) != len(outputs):
+        raise ValueError('invalid intended native outputs')
+    u.validate_source_policy(lock, policy)
+    for source in lock['sources']:
+        if not isinstance(source['id'], str) or not source['checksums']:
+            raise ValueError('incomplete intended source identity/checksums')
+        u.safe_path(source['id'])
+        for algorithm, checksum in source['checksums'].items():
+            if checksum == 'SKIP' and source['kind'] == 'git':
+                continue
+            try:
+                length = sources.new_hash(algorithm).digest_size * 2
+            except ValueError as error:
+                raise ValueError('invalid intended checksum algorithm') from error
+            if not isinstance(checksum, str) or not re.fullmatch('[0-9a-fA-F]{'+str(length)+'}', checksum):
+                raise ValueError('incomplete intended source byte identity')
+        if source['kind'] == 'local':
+            u.recipe_payload_path(source['source'])
+    if provenance.get('schema') != 1 or provenance.get('pkgbase') != name or 'aur' not in provenance or not isinstance(provenance.get('watchers'), list) or not provenance['watchers']:
+        raise ValueError('incomplete intended upstream provenance')
+    if canonical_aur:
+        aur, watchers = provenance['aur'], provenance['watchers']
+        if policy.get('authority') not in {'aur', 'maintained'} or not isinstance(aur, dict) or len(watchers) != 1 or watchers[0].get('kind') != 'aur':
+            raise ValueError('intention requires AUR recipe authority')
+        package = aur.get('package')
+        if not isinstance(package, str) or not NAME.fullmatch(package):
+            raise ValueError('invalid intention AUR package')
+        canonical = {('https://github.com/archlinux/aur.git', 'refs/heads/'+package),
+                     ('https://aur.archlinux.org/'+package+'.git', 'refs/heads/master')}
+        if (aur.get('url'), aur.get('ref')) not in canonical or watchers[0].get('baseline_commit') != aur.get('commit'):
+            raise ValueError('intention requires canonical pinned AUR baseline')
+        if not sources.HEX.fullmatch(aur.get('commit', '')):
+            raise ValueError('invalid AUR baseline commit')
+        repository = sources.clone(aur['url'], Path(work)/(name+'-membership.git'), aur['ref'])
+        if sources.git('merge-base', '--is-ancestor', aur['commit'], aur['ref'], cwd=repository, check=False).returncode != 0:
+            raise ValueError('AUR baseline is not in selected canonical branch history')
+    identities = set()
+    source_ids = {s['id'] for s in lock['sources']}
+    for watcher in provenance['watchers']:
+        identity = watcher.get('id')
+        if not isinstance(identity, str) or not NAME.fullmatch(identity) or identity in identities or watcher.get('kind') not in {'aur', 'git', 'tag', 'release'}:
+            raise ValueError('invalid intended watcher enrollment')
+        identities.add(identity)
+        sources.public_url(watcher['url'])
+        if watcher['kind'] in {'tag', 'release'}:
+            if watcher['source_id'] not in source_ids:
+                raise ValueError('watcher source is not enrolled')
+            tag = watcher.get('accepted_tag')
+            match = re.fullmatch(watcher.get('tag_pattern', ''), tag or '')
+            if not match or not match.groups():
+                raise ValueError('intended watcher lacks an enrolled accepted tag')
+            version = sources._version_prefix(watcher) + '.'.join(match.groups())
+            asset_ids, asset_names = set(), set()
+            for identity in [watcher['source_id'], *watcher.get('related_source_ids', [])]:
+                source = next((s for s in lock['sources'] if s['id'] == identity), None)
+                definition = next((s for s in policy['sources'] if s['id'] == identity), None)
+                native_version = u.parse_version(lock['version'])
+                if (source is None or definition is None
+                        or sources.format_source('{upstream_version}', definition, native_version) != version
+                        or source['source'] != sources.format_source(definition['source_template'], definition, native_version, source['commit'])):
+                    raise ValueError('intended watcher tag differs from source policy')
+                if source['kind'] == 'git' and (source['ref'] != 'refs/tags/'+tag or source['commit'] != watcher.get('accepted_peeled_commit') or (source['tag_object'] or source['commit']) != watcher.get('accepted_tag_object')):
+                    raise ValueError('intended watcher tag differs from Git lock')
+                if watcher['kind'] == 'release' and source['kind'] == 'release':
+                    asset_name = sources.release_asset_name(watcher, version, identity)
+                    if source['asset_id'] in asset_ids or asset_name in asset_names:
+                        raise ValueError('release sources share an enrolled asset')
+                    asset_ids.add(source['asset_id'])
+                    asset_names.add(asset_name)
+                if identity == watcher['source_id'] or watcher['kind'] == 'release' and source['kind'] == 'release':
+                    u._live_tag_provenance(watcher, watcher, source)
+        elif watcher['kind'] == 'git':
+            source = next((s for s in lock['sources'] if s['id'] == watcher.get('source_id')), None)
+            if source is None or source['kind'] != 'git' or watcher.get('ref') != source['ref'] or watcher['url'] != source['url']:
+                raise ValueError('intended Git watcher differs from frozen source')
+        elif watcher['kind'] == 'aur':
+            if not provenance['aur'] or any(provenance['aur'].get(k) != watcher.get(k) for k in ('url', 'package', 'ref')):
+                raise ValueError('intended AUR watcher differs from provenance')
+            snapshot = sources.frozen_aur({**watcher, 'work_dir': str(Path(work)/(name+'-aur'))}, provenance['aur'], provenance['aur'])
+            if canonical_aur:
+                metadata = next((f['content'] for f in snapshot['files'] if f['path'] == '.SRCINFO' and f['mode'] == '100644'), None)
+                if metadata is None or parse_srcinfo(metadata)['pkgbase'] != watcher['package']:
+                    raise ValueError('intended AUR snapshot has wrong package identity')
+                info = parse_srcinfo(metadata)
+                from tools.recipe_gate import _compare
+                epoch = int(lock['version'].split(':', 1)[0]) if ':' in lock['version'] else 0
+                if (u.parse_version(lock['version']) != info['pkgver'] or epoch != info['epoch']
+                        or _compare(info['version'], lock['version']) < 0):
+                    raise ValueError('intended AUR native version differs or goes backwards')
+                names = set(info['names'])
+                if policy['authority'] == 'maintained':
+                    names.update(v.split('=', 1)[0] for _, key, v in info['fields']
+                                 if key in {'provides', 'provides_x86_64'})
+                if not {o['name'] for o in outputs} <= names:
+                    raise ValueError('intended AUR output identity differs')
+                if policy['authority'] == 'aur':
+                    if {o['name'] for o in outputs} != set(info['names']):
+                        raise ValueError('stock AUR output set differs')
+                    for output in outputs:
+                        arches = info['scopes'][output['name']].get('arch', info['arch'])
+                        if output['arch'] not in arches:
+                            raise ValueError('intended AUR output architecture differs')
+                native = [v for _, key, v in info['fields'] if key in {'source', 'source_x86_64'}]
+                if policy['authority'] == 'aur':
+                    from collections import Counter
+                    if Counter(native) != Counter(source['source'] for source in lock['sources']):
+                        raise ValueError('stock AUR source enrollment is incomplete or duplicated')
+                for source in lock['sources']:
+                    definition = next(s for s in policy['sources'] if s['id'] == source['id'])
+                    algorithm = definition['checksum_algorithm']
+                    checksum_index = definition['checksum_index']
+                    if type(checksum_index) is not int or checksum_index < 0 or algorithm not in source['checksums']:
+                        raise ValueError('invalid intended checksum enrollment')
+                    if policy['authority'] == 'aur':
+                        index = definition.get('native_source_index')
+                        if (index is not None and (type(index) is not int or index < 0
+                                                  or index >= len(native) or native[index] != source['source'])
+                                or index is None and native.count(source['source']) != 1):
+                            raise ValueError('intended AUR source declaration differs')
+                        sums = [v for _, key, v in info['fields'] if key in {algorithm+'sums', algorithm+'sums_x86_64'}]
+                        if checksum_index >= len(sums) or source['checksums'][algorithm] != sums[checksum_index]:
+                            raise ValueError('intended AUR source checksum differs')
+                    if source['kind'] == 'local':
+                        payload = next((f for f in snapshot['files'] if f['path'] == source['source'] and f['mode'] == '100644'), None)
+                        if payload is None or sources.new_hash(algorithm, payload['content'].encode()).hexdigest() != source['checksums'][algorithm]:
+                            raise ValueError('intended AUR local source bytes differ')
+    for source in lock['sources']:
+        if source['kind'] == 'git':
+            sources.materialize_sources({'schema': 1, 'version': lock['version'], 'sources': [source]}, Path(work)/(name+'-'+source['id']))
+        elif source['kind'] != 'local':
+            sources.freeze_source(source)

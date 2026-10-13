@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import tempfile
 
 from tools import recipe_gate, recipe_state, recipes
 from tools.recipe_gate import classify_recipe_update, harness_digest, input_digest, parse_srcinfo, tree_manifest
@@ -185,6 +186,18 @@ def write_outputs(record, output):
             handle.write(f'base={record["base"]}\nhead={record["head"]}\nkind=recipe\ncandidate={output / "candidate.json"}\n')
 
 
+def _validate_current_intent(record, control, work):
+    from tools import recipe_intents, update as u
+    name = record['pkgbase']
+    pins = {}
+    with tempfile.TemporaryDirectory(prefix='intent-current-', dir=Path(work)) as directory:
+        current = u.checkout_data(control, Path(directory)/'control', pins, selected={name})
+        intent = recipe_intents.load(current, name, pins.get(name))
+        expected = record.get('intent')
+        if intent != expected or expected is not None and pins.get(name) != expected['predecessor']:
+            raise ValueError('pending request intent or accepted predecessor changed')
+
+
 def prepare(number, output, retry=False):
     from tools import update as u
     metadata = u.api(u.route('/pulls/' + str(number)))
@@ -199,6 +212,7 @@ def prepare(number, output, retry=False):
         record = recipe_state.build_request(active['request_id'])
         if record['pr_number'] != int(number) or record['recipe_base'] != base:
             raise ValueError('pending build recipe identity differs')
+        _validate_current_intent(record, control, output)
         if retry and (active['state'] == 'failure' or active['state'] == 'queued' and active.get('worker') is None):
             if active['state'] == 'queued':
                 active = recipe_state.abandon_build(name, active['request_id'], retry=True)
@@ -227,6 +241,11 @@ def prepare(number, output, retry=False):
     oldlock = u.load(old/'inputs'/f'{name}.json')
     oldpro = u.load(old/'upstream'/f'{name}.json')
     predecessor_lock, predecessor_provenance = copy.deepcopy(oldlock), copy.deepcopy(oldpro)
+    from tools import recipe_intents
+    intent = recipe_intents.authenticate(old, name, pins[name], output/'intent-proof')
+    if intent is not None:
+        policy = copy.deepcopy(intent['policy'])
+        oldlock, oldpro = copy.deepcopy(intent['lock']), copy.deepcopy(intent['provenance'])
     comparison = old
     adoption = origin == 'legacy-accepted'
     previous_control_pin = base
@@ -323,7 +342,7 @@ def prepare(number, output, retry=False):
                    or structure(previous_manifest) != structure(recipe_manifest)
                    or payload(previous_manifest) != payload(recipe_manifest)
                    or parse_srcinfo((previous_recipe/'.SRCINFO').read_text())['epoch'] != parse_srcinfo(native['srcinfo'])['epoch'])
-    transition = None if pending is not None or human_scope else u.independent_transition(comparison, new, name, policy, output/'verify-source')
+    transition = None if pending is not None or intent is not None or human_scope else u.independent_transition(comparison, new, name, policy, output/'verify-source')
     if transition:
         trusted = {**policy, '_verified_transition': transition}
         decision = classify_recipe_update(comparison/'recipes'/name, recipe, trusted)
@@ -358,10 +377,12 @@ def prepare(number, output, retry=False):
     mechanical = decision['decision'] == 'mechanical'
     # The imported predecessor is authentic data, not previously approved code.
     # Even byte-identical imported code needs its first exact execution review.
-    needs_review = pending is not None or bool(receipt.get('legacy_pr_number')) or not mechanical or human_scope
+    needs_review = pending is not None or intent is not None or bool(receipt.get('legacy_pr_number')) or not mechanical or human_scope
     if not needs_review:
         recipe_gate.verify_automatic_recipe(comparison/'recipes'/name, recipe, policy, oldlock, lock, transition)
     record = {**bundle, **record_identity, 'control_digest': recipe_state.control_digest(old), 'mechanical': mechanical, 'merge_policy': 'human' if needs_review else 'automatic', 'decisions': [{'pkgbase': name, **decision}], 'predecessor_lock': predecessor_lock, 'predecessor_provenance': predecessor_provenance, 'baseline_lock': oldlock, 'baseline_provenance': oldpro, 'provenance': provenance, 'proposal_head': receipt['recipe_head']}
+    if intent is not None:
+        record['intent'] = copy.deepcopy(intent)
     if pending is not None:
         record['import_predecessor'] = pending
     recipe_state.assert_recipe_identity(record)
@@ -431,7 +452,11 @@ def finalize(number, base, head, record_path, directory):
     if record['merge_policy'] != 'automatic':
         raise ValueError('unknown trusted merge policy')
     # Stored policy came from trusted static preparation, never a workflow flag.
+    control = u.main_sha()
+    _validate_current_intent(record, control, directory)
     recipe_state.assert_recipe_identity(record)
+    if u.main_sha() != control:
+        raise ValueError('main advanced before automatic recipe merge; revalidate')
     result = u.api(u.route('/pulls/' + str(number) + '/merge'), 'PUT', {'sha': head, 'merge_method': 'merge'})
     if not result.get('merged') or not u.SHA.fullmatch(result.get('sha', '')):
         raise ValueError('expected-head recipe merge failed')

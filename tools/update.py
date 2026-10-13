@@ -237,6 +237,9 @@ def affected_packages(base,head,policies):
 def validate_source_policy(lock,policy):
     sources.validate_lock(lock)
     expected={s['id']:s for s in policy['sources']}
+    indices=[s['native_source_index'] for s in policy['sources'] if 'native_source_index' in s]
+    if any(type(index) is not int or index < 0 for index in indices) or len(set(indices))!=len(indices):
+        raise ValueError('invalid or ambiguous native source indices')
     if {s['id'] for s in lock['sources']}!=set(expected):
         raise ValueError('source enrollment set changed')
     pkgver=parse_version(lock['version'])
@@ -245,18 +248,14 @@ def validate_source_policy(lock,policy):
         if source['kind']!=enrolled['kind']:
             raise ValueError('source kind changed')
         if source['kind']=='git':
-            expression=source['source'].split('#',1)
-            if len(expression)!=2 or '=' not in expression[1]:
-                raise ValueError('Git source must retain enrolled native ref semantics')
-            kind,value=expression[1].split('=',1)
-            ref=('refs/tags/' if kind=='tag' else 'refs/heads/' if kind=='branch' else '')+value
-            if not ref or source['ref']!=ref:
+            ref=sources.native_ref(source['source'], enrolled)
+            if source['ref']!=ref:
                 raise ValueError('frozen ref differs from native source')
         template=enrolled['source_template']
-        if template.format(version=pkgver)!=source['source']:
+        if sources.format_source(template,enrolled,pkgver,source['commit'])!=source['source']:
             raise ValueError('source native template mismatch')
         url=enrolled.get('url_template')
-        if url and url.format(version=pkgver)!=source['url']:
+        if url and sources.format_source(url,enrolled,pkgver,source['commit'])!=source['url']:
             raise ValueError('source URL template mismatch')
     return lock
 
@@ -341,8 +340,10 @@ def _prepare_source(pr, number, base, head, output):
     from tools.recipe_acceptance import validate_bookkeeping
     acceptance=validate_bookkeeping(pr,base,head,old,new)
     admission=None if acceptance is not None else imports.validate_admission(old,new,oldpins,newpins,output/'import-admission')
-    retirement = None if acceptance is not None or admission is not None else validate_retirement(old, new, oldpins, newpins)
-    if acceptance is not None or admission is not None or retirement is not None:
+    from tools import recipe_intents
+    intent_admission = None if acceptance is not None or admission is not None else recipe_intents.validate_admission(old, new, oldpins, newpins, output/'intent-admission')
+    retirement = None if acceptance is not None or admission is not None or intent_admission is not None else validate_retirement(old, new, oldpins, newpins)
+    if acceptance is not None or admission is not None or intent_admission is not None or retirement is not None:
         names=[]
     shared |= oldpins.keys()!=newpins.keys()
     image=(old/'build-image.txt').read_text().strip()
@@ -356,7 +357,7 @@ def _prepare_source(pr, number, base, head, output):
     after = {entry['path']: entry for entry in tree_manifest(new)}
     changed = {path for path in changed if before.get(path) != after.get(path)}
     documentation = all((path.startswith('docs/') and path.endswith('.md') or path in {'README.md', 'AGENTS.md', 'CHANGELOG.md'}) and after.get(path, before.get(path))['kind'] == 'file' and after.get(path, before.get(path))['mode'] == 0o644 for path in changed)
-    auto_merge = acceptance is not None or admission is not None or documentation and retirement is None
+    auto_merge = acceptance is not None or admission is not None or intent_admission is not None or documentation and retirement is None
     record = {'schema': 1, 'repository': repository(), 'base': base, 'head': head,
               'recipe_pins': newpins, 'previous_recipe_pins': oldpins,
               'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
@@ -426,7 +427,9 @@ def _verify_provenance(old,new,lock,policy,verify_tag,verify_aur,watcher_id=None
             if not match:
                 raise ValueError('source lacks authentic enrolled tag')
             version=sources._version_prefix(previous)+(match[1] if len(match.groups())==1 else '.'.join(match.groups()))
-            if source['source']!=expected['source_template'].format(version=version):
+            native_version=parse_version(lock['version'])
+            if (sources.format_source('{upstream_version}',expected,native_version)!=version
+                    or source['source']!=sources.format_source(expected['source_template'],expected,native_version,source['commit'])):
                 raise ValueError('source lock and watcher tag disagree')
         changed.append(previous['id'])
         allowed={'accepted_tag','accepted_tag_object','accepted_peeled_commit','release_id','asset_id'}
@@ -448,7 +451,7 @@ def _verify_provenance(old,new,lock,policy,verify_tag,verify_aur,watcher_id=None
                         raise ValueError('release sources share an enrolled asset')
                     identities.add(related['asset_id']);names.add(name)
                     enrolled=next(s for s in policy['sources'] if s['id']==source_id)
-                    if related['source']!=enrolled['source_template'].format(version=version):
+                    if related['source']!=sources.format_source(enrolled['source_template'],enrolled,native_version,related['commit']):
                         raise ValueError('related source lock and watcher tag disagree')
                     verify_tag(previous,current,related)
     if old['aur']!=new['aur']:
@@ -763,7 +766,7 @@ def _static_metadata(recipe,lock,policy,work,preserve_pkgrel,ancestry_version,*,
         replacements={}
         for source in frozen:
             enrolled=next(s for s in policy['sources'] if s['id']==source['id'])
-            old=enrolled['source_template'].format(version=metadata['pkgver'])
+            old=sources.format_source(enrolled['source_template'],enrolled,metadata['pkgver'],source['commit'])
             if native.count(old)!=1:
                 raise ValueError('static source layout differs from enrollment')
             replacements[old]=source['source']
@@ -897,18 +900,16 @@ def align_aur_lock(recipe,lock,policy,work):
         enrolled=next(s for s in policy['sources'] if s['id']==source['id'])
         algorithm=enrolled['checksum_algorithm']
         values=[v for _,key,v in metadata['fields'] if key in {algorithm+'sums',algorithm+'sums_x86_64'}]
-        expanded=enrolled['source_template'].format(version=version)
         native=[v for _,key,v in metadata['fields'] if key in {'source','source_x86_64'}]
-        if expanded not in native:
-            raise ValueError('AUR integration changed unenrolled native source layout')
+        expanded,commit=sources.enrolled_native_source(enrolled,native,version,source['commit'])
         old=dict(source)
         source['source']=expanded
-        source['url']=enrolled['url_template'].format(version=version) if enrolled.get('url_template') else None
+        source['url']=sources.format_source(enrolled['url_template'],enrolled,version,commit) if enrolled.get('url_template') else None
         source['checksums'][algorithm]=values[enrolled['checksum_index']]
         if source['kind']=='git' and source['source']!=old['source']:
-            kind,ref=expanded.split('#',1)[1].split('=',1)
-            source['ref']=('refs/tags/' if kind=='tag' else 'refs/heads/')+ref
-            source['commit']=None;source['tag_object']=None;source['peeled_commit']=None
+            source['ref']=sources.native_ref(expanded,enrolled)
+            source['commit']=source['ref'] if sources.HEX.fullmatch(source['ref']) else None
+            source['tag_object']=None;source['peeled_commit']=None
             source.update(sources.freeze_source({**source,'work_dir':str(work/source['id'])}))
         elif source['kind'] in {'archive','release'}:
             sources.freeze_source(source)
@@ -1033,10 +1034,11 @@ def bootstrap(output):
         metadata=parse_srcinfo((recipe/'.SRCINFO').read_text())
         version=metadata['pkgver']
         records=[]
+        native_sources=[v for _,key,v in metadata['fields'] if key in {'source','source_x86_64'}]
         for enrolled in policy['sources']:
-            native=enrolled['source_template'].format(version=version)
+            native,commit=sources.enrolled_native_source(enrolled,native_sources,version)
             url=enrolled.get('url_template')
-            url=url.format(version=version) if url else None
+            url=sources.format_source(url,enrolled,version,commit) if url else None
             algorithm=enrolled['checksum_algorithm']
             field=algorithm+'sums'
             values=[v for _,key,v in metadata['fields'] if key==field or key==field+'_x86_64']
@@ -1058,8 +1060,9 @@ def bootstrap(output):
                         raise ValueError('bootstrap release asset identity mismatch')
                     record['release_id']=release['id'];record['asset_id']=assets[0]['id']
                 if enrolled['kind']=='git':
-                    kind,ref=native.split('#',1)[1].split('=',1)
-                    record['ref']=('refs/tags/' if kind=='tag' else 'refs/heads/')+ref
+                    record['ref']=sources.native_ref(native,enrolled)
+                    if sources.HEX.fullmatch(record['ref']):
+                        record['commit']=record['ref']
                 record=sources.freeze_source({**record,'work_dir':str(work/enrolled['id'])})
             records.append(record)
         lock={'schema':1,'version':metadata['version'],'sources':records}
@@ -1118,8 +1121,8 @@ def discover(output):
                     if source['id'] not in ids:
                         continue
                     enrolled=next(s for s in policy['sources'] if s['id']==source['id'])
-                    source['source']=enrolled['source_template'].format(version=version)
-                    source['url']=enrolled['url_template'].format(version=version)
+                    source['source']=sources.format_source(enrolled['source_template'],enrolled,version,transition.get('commit',source['commit']))
+                    source['url']=sources.format_source(enrolled['url_template'],enrolled,version,transition.get('commit',source['commit']))
                     if source['kind']=='git':
                         source['ref']=transition['ref'] if 'ref' in transition else 'refs/tags/'+transition['tag']
                         source['commit']=transition.get('commit');source['tag_object']=None;source['peeled_commit']=None

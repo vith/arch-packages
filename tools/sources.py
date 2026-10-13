@@ -33,6 +33,65 @@ def _format_version_fields(template, values):
 
 
 
+def format_source(template, enrolled, version, commit=None):
+    """Render the enrolled native version and its one-pass upstream spelling."""
+    mapping = enrolled.get('version_replace', [])
+    if not isinstance(mapping, list):
+        raise ValueError('invalid source version translation')
+    translations = {}
+    for pair in mapping:
+        if (not isinstance(pair, (list, tuple)) or len(pair) != 2
+                or any(not isinstance(c, str) or not re.fullmatch(r'[A-Za-z0-9._+~-]', c) for c in pair)
+                or pair[0] in translations):
+            raise ValueError('invalid source version translation')
+        translations[pair[0]] = pair[1]
+    values = {'version': version, 'upstream_version': version.translate(str.maketrans(translations))}
+    if commit is not None:
+        if not HEX.fullmatch(commit):
+            raise ValueError('invalid source template commit')
+        values['commit'] = commit
+    return _format_version_fields(template, values)
+
+
+def enrolled_native_source(enrolled, native, version, commit=None):
+    """Bind one expanded declaration, extracting only an indexed literal object."""
+    index = enrolled.get('native_source_index')
+    if index is not None:
+        if type(index) is not int or index < 0 or index >= len(native):
+            raise ValueError('invalid native source index')
+        literal = native[index].partition('#commit=')[2]
+        if literal:
+            if not HEX.fullmatch(literal):
+                raise ValueError('invalid native literal commit')
+            commit = literal
+    expanded = format_source(enrolled['source_template'], enrolled, version, commit)
+    if (index is not None and native[index] != expanded
+            or index is None and native.count(expanded) != 1):
+        raise ValueError('native source layout differs from enrollment')
+    return expanded, commit
+
+
+def native_ref(native, enrolled):
+    """Resolve only declared native ref semantics or the enrolled remote HEAD."""
+    fragment = native.split('#', 1)
+    if len(fragment) == 1:
+        ref = enrolled.get('default_ref')
+        if not isinstance(ref, str) or not ref.startswith('refs/heads/'):
+            raise ValueError('default Git source lacks enrolled HEAD branch')
+        git('check-ref-format', ref)
+        return ref
+    kind, separator, value = fragment[1].partition('=')
+    if not separator:
+        raise ValueError('invalid native Git ref')
+    if kind == 'commit' and HEX.fullmatch(value):
+        return value
+    if kind in {'tag', 'branch'}:
+        ref = ('refs/tags/' if kind == 'tag' else 'refs/heads/') + value
+        git('check-ref-format', ref)
+        return ref
+    raise ValueError('unsupported native Git ref')
+
+
 def public_url(url):
     from urllib.parse import urlsplit
     p = urlsplit(url)
@@ -80,7 +139,8 @@ def clone(url, directory, reference):
     if lengths not in ({40},{64}):
         raise ValueError('invalid or empty remote object format')
     git('init','--bare','--object-format='+('sha256' if lengths=={64} else 'sha1'),directory)
-    git('fetch','--no-recurse-submodules','--',url,reference+':'+reference,cwd=directory)
+    tag_flags=['--tags'] if HEX.fullmatch(reference) else []
+    git('fetch','--no-recurse-submodules',*tag_flags,'--',url,reference if HEX.fullmatch(reference) else reference+':'+reference,cwd=directory)
     return Path(directory)
 
 
@@ -192,7 +252,7 @@ def release_asset_name(watcher, version, source_id=None):
         template=templates[source_id]
         if not isinstance(template,str) or not 1<=len(template)<=512:
             raise ValueError('invalid release asset template')
-        name=_format_version_fields(template,{'version':version})
+        name=format_source(template,watcher,version)
     else:
         name=watcher.get('asset')
     if not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,254}',name):
@@ -290,7 +350,7 @@ def version_context(repository,commit):
 
 
 def pinned_refs(source):
-    expected={source['ref']:source['tag_object'] or source['commit']}
+    expected={} if HEX.fullmatch(source['ref']) else {source['ref']:source['tag_object'] or source['commit']}
     tag=source['git_context']['version_tag']
     if tag:
         if tag['name'] in expected and expected[tag['name']]!=tag['object']:
@@ -372,7 +432,7 @@ def _frozen_git_version(source, repository, rules):
 def git_checksums(source, repository):
     """Match makepkg's tag/commit Git archive checksum without sourcing PKGBUILD."""
     verify_git_source(source, repository)
-    if not source['ref'].startswith('refs/tags/'):
+    if source['ref'].startswith('refs/heads/'):
         return {algorithm:'SKIP' for algorithm in source['checksums']}
     # makepkg disables export attributes before creating the native archive.
     attributes=Path(repository)/'info'/'attributes'
@@ -395,12 +455,21 @@ def git_checksums(source, repository):
     return {algorithm:hashes[algorithm].hexdigest() if algorithm in hashes else 'SKIP' for algorithm in source['checksums']}
 
 
+def verify_default_git_ref(source):
+    if source['kind']=='git' and '#' not in source['source']:
+        advertised=git('ls-remote','--symref','--',source['url'],'HEAD').splitlines()
+        defaults=[row.split()[1] for row in advertised if row.startswith('ref: ') and row.split()[-1]=='HEAD']
+        if defaults!=[source['ref']]:
+            raise ValueError('native default Git branch differs from enrollment')
+
+
 def freeze_source(spec):
     record={key:spec.get(key) for key in FIELDS}
     record['checksums']=dict(spec.get('checksums',{}))
     if record['kind']=='local':
         return record
     public_url(record['url'])
+    verify_default_git_ref(record)
     if record['kind']!='git':
         data=fetch(record['url'])
         for algorithm,expected in record['checksums'].items():
@@ -450,9 +519,15 @@ def validate_lock(lock):
                     or 'tag_refs_sha256' in context and (not isinstance(context['tag_refs_sha256'],str)
                         or not re.fullmatch(r'[0-9a-f]{64}',context['tag_refs_sha256']))):
                 raise ValueError('invalid Git context')
-            if not isinstance(source['ref'],str) or not source['ref'].startswith(('refs/heads/','refs/tags/')):
+            if not isinstance(source['ref'],str):
                 raise ValueError('invalid pinned Git ref')
-            git('check-ref-format',source['ref'])
+            if HEX.fullmatch(source['ref']):
+                if source['ref'] != source['commit']:
+                    raise ValueError('literal Git ref differs from commit')
+            elif source['ref'].startswith(('refs/heads/','refs/tags/')):
+                git('check-ref-format',source['ref'])
+            else:
+                raise ValueError('invalid pinned Git ref')
             tag=context['version_tag']
             if tag is not None:
                 if not isinstance(tag,dict) or set(tag)!={'name','object','commit'} or not tag['name'].startswith('refs/tags/') or not HEX.fullmatch(tag['object']) or not HEX.fullmatch(tag['commit']):
@@ -470,12 +545,15 @@ def materialize_sources(lock, destination):
     for source in lock['sources']:
         if source['kind']!='git':
             continue
+        verify_default_git_ref(source)
         mirror=destination/(source['id']+'.git')
         git('init','--bare','--object-format='+source['git_context']['object_format'],mirror)
         objects={source['commit'],*pinned_refs(source).values()}
         git('fetch','--no-tags','--no-recurse-submodules','--',source['url'],*sorted(objects),cwd=mirror)
         for reference,object_id in pinned_refs(source).items():
             git('update-ref',reference,object_id,cwd=mirror)
+        if '#' not in source['source']:
+            git('symbolic-ref','HEAD',source['ref'],cwd=mirror)
         verify_git_source(source,mirror)
         (mirror/'info'/'attributes').write_text('* -export-subst -export-ignore\n')
         for path in mirror.rglob('*'):

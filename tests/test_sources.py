@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools import sources
+from tools import sources, update
 
 
 class SourceContracts(unittest.TestCase):
@@ -32,6 +32,82 @@ class SourceContracts(unittest.TestCase):
     def freeze(self,directory):
         with patch.object(sources,'public_url',lambda value:value):
             return sources.freeze_source({'id':'code','kind':'git','source':'git+'+self.url+'#branch=integration','url':self.url,'ref':'refs/heads/integration','commit':self.head,'checksums':{'sha256':'SKIP'},'work_dir':str(directory)})
+
+    def test_literal_commit_source_freezes_without_inventing_a_branch(self):
+        with patch.object(sources, 'public_url', lambda value: value):
+            frozen = sources.freeze_source({
+                'id': 'code', 'kind': 'git', 'source': 'code::git+'+self.url+'#commit='+self.head,
+                'url': self.url, 'ref': self.head, 'commit': self.head,
+                'checksums': {'sha256': 'SKIP'}, 'work_dir': str(self.root/'commit-freeze')})
+            mapping = sources.materialize_sources(
+                {'schema': 1, 'version': '1-1', 'sources': [frozen]}, self.root/'commit-materialized')
+        self.assertEqual(frozen['ref'], self.head)
+        self.assertEqual(frozen['commit'], self.head)
+        self.assertEqual([r['name'] for r in sources.refs(mapping[self.url])], ['refs/tags/v1.0.0'])
+        changed = {**frozen, 'commit': '0'*40}
+        with patch.object(sources, 'public_url', lambda value: value), self.assertRaises(ValueError):
+            sources.validate_lock({'schema': 1, 'version': '1-1', 'sources': [changed]})
+
+    def test_aur_alignment_authenticates_indexed_commit_changes(self):
+        frozen = self.freeze(self.root/'initial-freeze')
+        frozen.update(source='code::git+'+self.url+'#commit='+self.head, ref=self.head)
+        (self.repo/'file').write_text('second')
+        sources.git('add', 'file', cwd=self.repo)
+        sources.git('commit', '-m', 'second', cwd=self.repo)
+        current = sources.git('rev-parse', 'HEAD', cwd=self.repo)
+        recipe = self.root/'recipe'; recipe.mkdir()
+        (recipe/'.SRCINFO').write_text('pkgbase = example\npkgver = 1.0.1\npkgrel = 1\narch = x86_64\nsource = code::git+'+self.url+'#commit='+current+'\nsha256sums = SKIP\npkgname = example\n')
+        policy = {'sources': [{'id': 'code', 'kind': 'git', 'native_source_index': 0,
+                               'source_template': 'code::git+'+self.url+'#commit={commit}',
+                               'url_template': self.url, 'checksum_algorithm': 'sha256', 'checksum_index': 0}]}
+        lock = {'schema': 1, 'version': '1.0.0-1', 'sources': [frozen]}
+        with patch.object(sources, 'public_url', lambda value: value):
+            update.align_aur_lock(recipe, lock, policy, self.root/'aligned')
+            update.validate_source_policy({**lock, 'version': '1.0.1-1'}, policy)
+        self.assertEqual(lock['sources'][0]['ref'], current)
+        self.assertEqual(lock['sources'][0]['commit'], current)
+
+    def test_default_git_branch_change_does_not_force_old_checkout(self):
+        frozen = self.freeze(self.root/'default-freeze')
+        frozen['source'] = 'code::git+'+self.url
+        sources.git('branch', 'new-default', self.head, cwd=self.repo)
+        sources.git('symbolic-ref', 'HEAD', 'refs/heads/new-default', cwd=self.repo)
+        with patch.object(sources, 'public_url', side_effect=lambda url: url):
+            with self.assertRaises(ValueError):
+                sources.materialize_sources({'schema': 1, 'version': '1-1', 'sources': [frozen]}, self.root/'changed-default')
+
+    def test_native_default_git_branch_does_not_require_a_recipe_fragment(self):
+        frozen = self.freeze(self.root/'default-freeze')
+        frozen['source'] = 'code::git+'+self.url
+        policy = {'sources': [{'id': 'code', 'kind': 'git', 'default_ref': 'refs/heads/integration',
+                               'source_template': 'code::git+'+self.url, 'url_template': self.url,
+                               'checksum_algorithm': 'sha256', 'checksum_index': 0}]}
+        with patch.object(sources, 'public_url', lambda value: value):
+            update.validate_source_policy({'schema': 1, 'version': '1-1', 'sources': [frozen]}, policy)
+
+    def test_aur_archive_version_mapping_retains_native_pkgver_and_checksums(self):
+        recipe = self.root/'mapped-recipe'; recipe.mkdir()
+        checksum = hashlib.sha256(b'archive bytes').hexdigest()
+        native = 'code-1.2.4_alpha.tar.gz::https://example.test/v1.2.4-alpha/source.tar.gz'
+        (recipe/'.SRCINFO').write_text('pkgbase = example\npkgver = 1.2.4_alpha\npkgrel = 1\narch = x86_64\nsource = '+native+'\nsha256sums = '+checksum+'\npkgname = example\n')
+        policy = {'sources': [{'id': 'code', 'kind': 'archive', 'native_source_index': 0,
+                               'version_replace': [['_', '-']],
+                               'source_template': 'code-{version}.tar.gz::https://example.test/v{upstream_version}/source.tar.gz',
+                               'url_template': 'https://example.test/v{upstream_version}/source.tar.gz',
+                               'checksum_algorithm': 'sha256', 'checksum_index': 0}]}
+        source = {**dict.fromkeys(sources.FIELDS), 'id': 'code', 'kind': 'archive',
+                  'source': 'code-1.2.3_alpha.tar.gz::https://example.test/v1.2.3-alpha/source.tar.gz',
+                  'url': 'https://example.test/v1.2.3-alpha/source.tar.gz', 'checksums': {'sha256': checksum}}
+        lock = {'schema': 1, 'version': '1.2.3_alpha-1', 'sources': [source]}
+        with patch.object(sources, 'fetch', return_value=b'archive bytes'):
+            metadata = update.align_aur_lock(recipe, lock, policy, self.root/'mapped-freeze')
+        self.assertEqual(metadata['pkgver'], '1.2.4_alpha')
+        self.assertEqual(lock['sources'][0]['source'], native)
+        self.assertEqual(lock['sources'][0]['url'], 'https://example.test/v1.2.4-alpha/source.tar.gz')
+        invalid = (recipe/'.SRCINFO').read_text().replace('example.test', 'unregistered.test')
+        (recipe/'.SRCINFO').write_text(invalid)
+        with self.assertRaises(ValueError):
+            update.align_aur_lock(recipe, lock, policy, self.root/'invalid-freeze')
 
     def test_fetch_does_not_recurse_into_exported_recipe_directories(self):
         (self.repo / '.gitmodules').write_text('[submodule "recipes/example"]\npath = recipes/example\nurl = ' + self.url + '\n')

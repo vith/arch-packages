@@ -97,6 +97,11 @@ def expected_leaves(previous, receipt):
         result[path] = ('100644', 'blob', blob_sha(value))
     if receipt.get('activated_registry') is not None:
         result['packages.json'] = ('100644', 'blob', blob_sha(receipt['activated_registry']))
+    if receipt.get('applied_intent') is not None:
+        path = 'intents/' + name + '.json'
+        if path not in result:
+            raise ValueError('atomic acceptance lacks consumed intent')
+        del result[path]
     return result
 
 
@@ -173,6 +178,10 @@ def accepted_receipt(number, control=None):
         if name not in policies:
             raise ValueError('claimed bookkeeping package is not currently enrolled')
         policy = policies[name]
+        from tools import recipe_intents
+        intent = recipe_intents.authenticate(old, name, pins[name], work/'intent-proof')
+        if intent is not None:
+            policy = intent['policy']
         adoption = None
         if proposal.get('proposal_origin') == 'legacy-accepted':
             adoption = verify_legacy_adoption(proposal, C, old, pins)
@@ -183,7 +192,10 @@ def accepted_receipt(number, control=None):
         package = next(p for p in candidate['packages'] if p['pkgbase'] == name)
         if candidate.get('import_predecessor') != pending:
             raise ValueError('accepted import predecessor differs from authentic registration')
-        activated = imports.activate(imports.registry(old)[0], pending) if pending is not None else None
+        if candidate.get('intent') != intent:
+            raise ValueError('accepted request intent differs from current exact intention')
+        activated = (recipe_intents.activate(imports.registry(old)[0], intent) if intent is not None
+                     else imports.activate(imports.registry(old)[0], pending) if pending is not None else None)
         if adoption and (candidate.get('proposal_origin') != 'legacy-accepted'
                 or candidate.get('previous_control_pin') != adoption['expected_previous_control_pin']
                 or candidate.get('baseline_lock') != adoption['baseline_lock']
@@ -217,6 +229,9 @@ def accepted_receipt(number, control=None):
             'policy': policy, 'lock': lock, 'actual_srcinfo': built['packages'][0]['metadata']['srcinfo'], 'provenance': candidate['provenance']}
     if pending is not None:
         result['import_predecessor'] = pending
+        result['activated_registry'] = activated
+    if intent is not None:
+        result['applied_intent'] = intent
         result['activated_registry'] = activated
     return result
 
@@ -319,6 +334,8 @@ def write_bookkeeping(receipt):
             raise ValueError('existing bookkeeping diverged; refusing overwrite')
     else:
         changes = [{'path': 'recipes/' + name, 'mode': '160000', 'type': 'commit', 'sha': A}]
+        if receipt.get('applied_intent') is not None:
+            changes.append({'path': 'intents/' + name + '.json', 'mode': '100644', 'type': 'blob', 'sha': None})
         data = [('inputs/' + name + '.json', receipt['lock']),
                 ('upstream/' + name + '.json', receipt['provenance']),
                 ('acceptance/' + name + '.json', receipt)]

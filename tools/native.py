@@ -211,6 +211,13 @@ def actual_source_lock(lock, directory: Path, version: str) -> dict:
         commit = git('rev-parse', '--verify', 'HEAD^{commit}', cwd=repository)
         if not HEX.fullmatch(commit):
             raise ValueError('invalid actual Git commit')
+        if HEX.fullmatch(source['ref']) and commit != source['ref']:
+            raise ValueError('literal Git source differs from working-copy commit')
+        if '#' not in source['source']:
+            branch = git('symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD', cwd=repository, check=False)
+            expected = 'refs/remotes/origin/'+source['ref'].removeprefix('refs/heads/')
+            if branch.returncode != 0 or branch.stdout.strip() != expected:
+                raise ValueError('default Git remote branch differs from enrollment')
         source['commit'] = commit
         source['git_context'] = version_context(repository, commit)
         if source['ref'].startswith('refs/tags/'):
