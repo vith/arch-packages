@@ -1,7 +1,7 @@
 pkgbase = vet
 	pkgdesc = A command-line tool that acts as a safety net for the risky curl pipe to bash pattern
 	pkgver = 1.0.2
-	pkgrel = 1
+	pkgrel = 2
 	url = https://getvet.sh/
 	arch = any
 	license = MIT
