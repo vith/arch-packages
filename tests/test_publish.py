@@ -331,6 +331,21 @@ class PublicationBoundaries(unittest.TestCase):
             upstream.write_text(json.dumps({'aur':{'url':'https://github.com/archlinux/aur.git','commit':'e'*40}}))
             with_aur = publish.expectations('d'*40,3,1,previous,pins)
             self.assertEqual(with_aur['packages'][1]['aur']['commit'],'e'*40)
+            upstream.write_text(json.dumps({'aur': {
+                'package': 'example1-bin',
+                'url': 'https://aur.archlinux.org/example1-bin.git',
+                'ref': 'refs/heads/master',
+                'commit': 'e' * 40}}))
+            alias_plan = publish.expectations('d' * 40, 3, 1, previous, pins)
+            self.assertTrue(alias_plan['packages'][1]['reuse'])
+            for package, url in (
+                    ('example1-bin', 'https://aur.archlinux.org/example1.git'),
+                    ('../example1-bin', 'https://github.com/archlinux/aur.git'),
+                    (None, 'https://github.com/archlinux/aur.git')):
+                upstream.write_text(json.dumps({'aur': {
+                    'package': package, 'url': url, 'commit': 'e' * 40}}))
+                with self.subTest(package=package, url=url), self.assertRaises(ValueError):
+                    publish.expectations('d' * 40, 3, 1, previous, pins)
     def approved_output(self, pkgbase='example', version='1-1'):
         output = self.root / 'unsigned'; output.mkdir()
         text = f'pkgbase = {pkgbase}\n\tpkgver = {version.rsplit("-", 1)[0]}\n\tpkgrel = {version.rsplit("-", 1)[1]}\n\tarch = any\npkgname = {pkgbase}\n'

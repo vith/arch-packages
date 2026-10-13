@@ -285,6 +285,8 @@ Artifacts are `publication-plan-<attempt>` (`publication-plan.json`, 7 days, mis
 
 Metadata-only planning verifies a supported descriptor and the whole successful worker before consuming evidence. Bytes and attestation remain inclusion-step checks. The signing runner directly authenticates and materializes the original durable output once per inclusion operation, before private-key import/use. It confirms whole-worker success, exact producer/request/recipe, asset and attestation bindings, safe extraction, native package identity, and package bytes. Premerge native evidence has no package-byte SHA fields. Inclusion is where package integrity checking belongs.
 
+AUR provenance identifies the authenticated upstream package, which can differ from the maintained package name. Publication validates the canonical URL against that upstream identity and preserves it in the catalog. Historical provenance without a separate package field uses the maintained name.
+
 Signing also requires source-test evidence for the exact accepted controller tree. Tested PR evidence is reusable only after proving the protected merge and identical tested tree; otherwise test exact accepted main before signing. Current-main rebinding rejects stale targets.
 
 Only the signing step has `ARCH_SIGNING_KEY`, `ARCH_SIGNING_PASSPHRASE`, and `ARCH_SIGNING_FINGERPRINT`. Trusted tools are installed before that step. Inside it, verification/materialization precedes key import/use; keys and tokens never enter recipes or consumer execution.

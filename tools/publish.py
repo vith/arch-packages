@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MAXIMUM = 805306368
 REPOSITORY = 'vith/arch-packages'
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._+~-]*\Z')
+PACKAGE_NAME = re.compile(r'[a-z0-9][a-z0-9+_.-]*\Z')
 PKG_KEYS = {'pkgname','pkgbase','pkgver','pkgdesc','url','builddate','packager','size','arch','license','replaces','group','depend','optdepend','conflict','provides','backup','xdata','makedepend','checkdepend'}
 
 
@@ -260,7 +261,7 @@ def expectations(head, run_id, attempt, previous, pins):
     legacy_environment = None
     for item in policy['packages']:
         name = item['pkgbase']
-        if not re.fullmatch(r'[a-z0-9][a-z0-9+_.-]*', name):
+        if not PACKAGE_NAME.fullmatch(name):
             raise ValueError('invalid enrolled package')
         recipe = ROOT / 'recipes' / name
         lock = json.loads((ROOT / 'inputs' / (name + '.json')).read_text())
@@ -269,8 +270,15 @@ def expectations(head, run_id, attempt, previous, pins):
         validate_lock(lock)
         upstream = json.loads((ROOT / 'upstream' / (name + '.json')).read_text())
         aur = upstream.get('aur')
-        if aur is not None and (not isinstance(aur, dict) or not re.fullmatch(r'[0-9a-f]{40}', aur.get('commit', '')) or aur.get('url') not in ('https://aur.archlinux.org/' + name + '.git', 'https://github.com/archlinux/aur.git')):
-            raise ValueError('invalid accepted optional AUR provenance')
+        if aur is not None:
+            if not isinstance(aur, dict):
+                raise ValueError('invalid accepted optional AUR provenance')
+            aur_package = aur.get('package', name)
+            if (not isinstance(aur_package, str) or not PACKAGE_NAME.fullmatch(aur_package)
+                    or not re.fullmatch(r'[0-9a-f]{40}', aur.get('commit', ''))
+                    or aur.get('url') not in ('https://aur.archlinux.org/' + aur_package + '.git',
+                                              'https://github.com/archlinux/aur.git')):
+                raise ValueError('invalid accepted optional AUR provenance')
         if lock.get('schema') != 1:
             raise ValueError('accepted lock/native metadata mismatch: ' + name)
         # bind_accepted_builds authenticates actual metadata for changed outputs.
