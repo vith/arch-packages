@@ -1,1 +1,30 @@
-{"schema":1,"sources":[{"asset_id":null,"checksums":{"sha256":"f780f4ee6b306270f1d9ca78169ea917e17723d360a437d4da933151ad8e6962"},"commit":null,"git_context":null,"id":"prek-archive","kind":"archive","peeled_commit":null,"ref":null,"release_id":null,"source":"prek-0.5.4.tar.gz::https://codeload.github.com/j178/prek/tar.gz/refs/tags/v0.5.4","tag_object":null,"url":"https://codeload.github.com/j178/prek/tar.gz/refs/tags/v0.5.4"},{"asset_id":null,"checksums":{"sha256":"b162bd604be208dca1cea8b591190043c83e4fd9b7355fafbb666c56bb97aed8"},"commit":null,"git_context":null,"id":"prek-prek.bash","kind":"local","peeled_commit":null,"ref":null,"release_id":null,"source":"prek.bash","tag_object":null,"url":null},{"asset_id":null,"checksums":{"sha256":"69c6c01e1cf1a6093f0d2482ff72b40fa1f8711689f8cd33d9281141c56ed535"},"commit":null,"git_context":null,"id":"prek-prek.zsh","kind":"local","peeled_commit":null,"ref":null,"release_id":null,"source":"prek.zsh","tag_object":null,"url":null},{"asset_id":null,"checksums":{"sha256":"f84ea5786bcfd25d096a7eab94f6f96517b565dc3a699c6dfc4d8decb9b4057c"},"commit":null,"git_context":null,"id":"prek-prek.fish","kind":"local","peeled_commit":null,"ref":null,"release_id":null,"source":"prek.fish","tag_object":null,"url":null}],"version":"0.5.4-2"}
+{
+  "schema": 1,
+  "sources": [
+    {
+      "asset_id": null,
+      "checksums": {
+        "md5": "SKIP"
+      },
+      "commit": "77cca6719ea8e3d9cc7a973e2c9e7648f4b0381d",
+      "git_context": {
+        "object_format": "sha1",
+        "tag_refs_sha256": "85814f345a4261193f5b4b517f00cd2189ced49966ab6c30ed47e7615285e26d",
+        "version_tag": {
+          "commit": "77cca6719ea8e3d9cc7a973e2c9e7648f4b0381d",
+          "name": "refs/tags/v0.5.5",
+          "object": "77cca6719ea8e3d9cc7a973e2c9e7648f4b0381d"
+        }
+      },
+      "id": "prek-0",
+      "kind": "git",
+      "peeled_commit": null,
+      "ref": "77cca6719ea8e3d9cc7a973e2c9e7648f4b0381d",
+      "release_id": null,
+      "source": "prek::git+https://github.com/j178/prek.git#commit=77cca6719ea8e3d9cc7a973e2c9e7648f4b0381d",
+      "tag_object": null,
+      "url": "https://github.com/j178/prek.git"
+    }
+  ],
+  "version": "0.5.5-3"
+}
