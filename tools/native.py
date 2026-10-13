@@ -290,7 +290,9 @@ def build(path: Path, output: Path):
         shutil.copytree(original, directory, symlinks=True)
         home = work / (name + '-home')
         home.mkdir()
-        gitconfig = home / '.gitconfig'
+        os.chown(home, 1000, 1000)
+        # Keep trusted Git configuration outside the builder-writable home.
+        gitconfig = work / ('.' + name + '-gitconfig')
         gitconfig.write_text('[core]\n hooksPath = /dev/null\n[fetch]\n recurseSubmodules = false\n')
         for p in [directory, *directory.rglob('*')]:
             if not p.is_symlink():
