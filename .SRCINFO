@@ -1,7 +1,7 @@
 pkgbase = sentencepiece
 	pkgdesc = Unsupervised text tokenizer for Neural Network-based text generation
 	pkgver = 0.2.2
-	pkgrel = 2
+	pkgrel = 3
 	url = https://github.com/google/sentencepiece
 	arch = x86_64
 	license = Apache-2.0
@@ -35,7 +35,7 @@ pkgname = sentencepiece
 
 pkgname = python-sentencepiece
 	pkgdesc = Python wrapper for SentencePiece
-	depends = sentencepiece=0.2.2-2
+	depends = sentencepiece=0.2.2-3
 	depends = libgcc
 	depends = libstdc++
 	depends = glibc
