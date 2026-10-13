@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 
 from tools import github_api, publish
+from tools.native import repository_filename
 
 
 def snapshot_inputs(catalog, directory, policies):
@@ -18,7 +19,7 @@ def snapshot_inputs(catalog, directory, policies):
         version = recipe['version']
         files = []
         for output in policy['outputs']:
-            filename = f"{output['name']}-{version.split(':', 1)[-1]}-{output['arch']}.pkg.tar.zst"
+            filename = repository_filename(output['name'], version, output['arch'])
             if not publish.NAME.fullmatch(filename) or filename not in catalog['files']:
                 raise ValueError('enrolled package absent from signed snapshot')
             path = directory / filename

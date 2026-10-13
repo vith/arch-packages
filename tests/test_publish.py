@@ -4,6 +4,7 @@ import os
 import re
 import copy
 import hashlib
+import io
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -263,6 +264,17 @@ class PublicationBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'too many'):
             publish.safe_extract(archive_path, destination)
         self.assertEqual(list(destination.iterdir()), [])
+
+    def test_native_archive_with_empty_optional_metadata_is_readable(self):
+        path = self.root / 'example-1:2.0-3-any.pkg.tar.zst'
+        data = (b'pkgname = example\npkgver = 1:2.0-3\narch = any\n'
+                b'url = \npkgdesc = \n')
+        with tarfile.open(path, 'w') as archive:
+            member = tarfile.TarInfo('.PKGINFO')
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+        self.assertEqual(publish.pkginfo(path),
+                         {'pkgname': 'example', 'pkgver': '1:2.0-3', 'arch': 'any'})
 
     def test_shell_shaped_and_duplicate_pkginfo_keys_rejected(self):
         for content in (b'$(touch owned) = value\n',b'pkgname = x\npkgname = y\npkgver = 1-1\narch = any\n'):

@@ -19,7 +19,16 @@ def canonical(value):
 
 
 
-def parse_pkginfo(data: bytes) -> dict:
+def archive_filename(name, version, arch):
+    return f'{name}-{version}-{arch}.pkg.tar.zst'
+
+
+def repository_filename(name, version, arch):
+    """Keep the established release-asset spelling without changing package bytes."""
+    return archive_filename(name, version.split(':', 1)[-1], arch)
+
+
+def parse_pkginfo(data: bytes, *, allowed_keys=None) -> dict:
     fields = {}
     for line in data.decode('utf-8', errors='strict').splitlines():
         if not line or line.startswith('#'):
@@ -27,7 +36,9 @@ def parse_pkginfo(data: bytes) -> dict:
         if ' = ' not in line:
             raise ValueError('malformed .PKGINFO line')
         key, value = line.split(' = ', 1)
-        if not key or not value:
+        if allowed_keys is not None and key not in allowed_keys:
+            raise ValueError('invalid literal .PKGINFO field')
+        if not key or (not value and key not in ('pkgdesc', 'url')):
             raise ValueError('empty .PKGINFO field')
         fields.setdefault(key, []).append(value)
     result = {}
@@ -46,9 +57,12 @@ def parse_pkginfo(data: bytes) -> dict:
 
 def validate_output(info: dict, filename: str, version: str, expected: set) -> tuple:
     identity = (info['pkgname'], info['arch'])
-    native_filename = f"{info['pkgname']}-{version.split(':', 1)[-1]}-{info['arch']}.pkg.tar.zst"
+    native_filename = archive_filename(info['pkgname'], version, info['arch'])
     if identity not in expected or info['pkgver'] != version or filename != native_filename:
-        raise ValueError('output name/version/architecture/filename mismatch')
+        raise ValueError(f'output name/version/architecture/filename mismatch: '
+                         f'actual={info}, filename={filename!r}, '
+                         f'expected={sorted(expected)}, version={version!r}, '
+                         f'filename={native_filename!r}')
     return identity
 
 
@@ -325,11 +339,11 @@ def build(path: Path, output: Path):
             if identity in found:
                 raise ValueError(f'duplicate output metadata: {info}')
             found.add(identity)
-            target = output / archive.name
+            target = output / repository_filename(info['pkgname'], info['pkgver'], info['arch'])
             if target.exists():
                 raise ValueError('duplicate output filename')
             shutil.copyfile(archive, target)
-            files.append({'filename': archive.name, 'name': info['pkgname'], 'version': info['pkgver'], 'arch': info['arch']})
+            files.append({'filename': target.name, 'name': info['pkgname'], 'version': info['pkgver'], 'arch': info['arch']})
         if found != expected:
             raise ValueError(f'missing outputs: {expected-found}')
         metadata['srcinfo'] = final_srcinfo

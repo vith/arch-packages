@@ -70,14 +70,27 @@ def parse_srcinfo(text):
     return {"pkgbase": pkgbase, "names": names, "arch": base["arch"], "pkgver": pkgver, "pkgrel": pkgrel, "epoch": int(epoch), "version": version, "fields": fields, "scopes": scopes, "dependencies": dependencies}
 
 
+def _metadata_declarations(metadata):
+    fields = {}
+    for scope, key, value in metadata["fields"]:
+        if (scope, key) == ("base", "pkgver"):
+            continue
+        if key == "options":
+            # makepkg scans options backwards: the last setting wins.
+            fields.setdefault((scope, key), {})[value.removeprefix("!")] = not value.startswith("!")
+        else:
+            # Preserve repeated-value order, especially source/checksum pairing.
+            fields.setdefault((scope, key), []).append(value)
+    return fields
+
+
 def metadata_equivalent(expected_srcinfo, actual_srcinfo, dynamic=False) -> bool:
-    """Compare declarations, allowing pkgver changes only for dynamic recipes."""
+    """Compare scoped declarations, allowing pkgver changes only for dynamic recipes."""
     expected = parse_srcinfo(expected_srcinfo)
     actual = parse_srcinfo(actual_srcinfo)
     if dynamic is not True and expected["pkgver"] != actual["pkgver"]:
         return False
-    return ([field for field in expected["fields"] if field[:2] != ["base", "pkgver"]]
-            == [field for field in actual["fields"] if field[:2] != ["base", "pkgver"]])
+    return _metadata_declarations(expected) == _metadata_declarations(actual)
 
 
 def tree_manifest(directory):

@@ -59,6 +59,7 @@ def producer_run(record, producer, completed=True):
 
 def validate_metadata(record, evidence):
     from tools.recipe_gate import metadata_equivalent, parse_srcinfo
+    from tools.native import repository_filename
     package = package_record(record)
     for key in ('repository', 'base', 'head', 'request_id', 'image'):
         if evidence.get(key) != record[key]:
@@ -100,7 +101,7 @@ def validate_metadata(record, evidence):
     found = set()
     for file in receipt['files']:
         identity = (file['name'], file['arch'])
-        filename = f"{file['name']}-{metadata['version'].split(':', 1)[-1]}-{file['arch']}.pkg.tar.zst"
+        filename = repository_filename(file['name'], metadata['version'], file['arch'])
         if identity in found or identity not in wanted or file['version'] != metadata['version'] or file['filename'] != filename:
             raise ValueError('native output identity differs')
         found.add(identity)

@@ -17,6 +17,7 @@ import urllib.parse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools import github_api, recipes
 from tools.update import extract_tree
+from tools.native import parse_pkginfo, repository_filename
 from tools.recipe_gate import harness_digest, input_digest, metadata_equivalent, parse_srcinfo, tree_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -374,23 +375,14 @@ def pkginfo(path):
     data = bounded_metadata(['bsdtar','-xOf',str(path),'.PKGINFO'], 1024*1024)
     if len(data) > 1024*1024:
         raise ValueError('oversized package metadata')
-    fields = {}
-    for line in data.decode().splitlines():
-        if not line or line.startswith('#'):
-            continue
-        key, separator, value = line.partition(' = ')
-        if not separator or key not in PKG_KEYS or not value:
-            raise ValueError('invalid literal .PKGINFO field')
-        fields.setdefault(key, []).append(value)
-    for key in ('pkgname','pkgver','arch'):
-        if len(fields.get(key, [])) != 1:
-            raise ValueError('missing/duplicate package identity')
-    return {k:fields[k][0] for k in ('pkgname','pkgver','arch')}
+    return parse_pkginfo(data, allowed_keys=PKG_KEYS)
 
 
 def filenames(package):
-    version = package['lock']['version'].split(':',1)[-1]
-    return {f"{o['name']}-{version}-{o['arch']}.pkg.tar.zst":{'pkgname':o['name'],'pkgver':package['lock']['version'],'arch':o['arch']} for o in package['policy']['outputs']}
+    version = package['lock']['version']
+    return {repository_filename(o['name'], version, o['arch']): {
+        'pkgname': o['name'], 'pkgver': version, 'arch': o['arch'],
+    } for o in package['policy']['outputs']}
 
 
 def validate_native_receipt(directory, package, receipt, original_record, original_package):
