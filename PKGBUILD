@@ -2,7 +2,7 @@
 
 pkgname=vet
 pkgver=1.0.2
-pkgrel=1
+pkgrel=2
 pkgdesc='A command-line tool that acts as a safety net for the risky curl pipe to bash pattern'
 arch=('any')
 url="https://getvet.sh/"
