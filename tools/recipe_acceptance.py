@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 from tools import recipe_state, sources
+from tools.update_sweep import BatchFailure, SweepFailures
 
 SHA = re.compile(r'^[0-9a-f]{40}$')
 
@@ -214,7 +215,7 @@ def accepted_receipt(number, control=None):
             raise ValueError('accepted predecessor source state changed; reconcile original history')
         lock = built['packages'][0]['source_lock']
         if u.main_sha() != C:
-            raise ValueError('main advanced during acceptance; revalidate')
+            raise BatchFailure('main advanced during acceptance; revalidate')
     result = {'schema': 1, 'kind': 'recipe-acceptance', 'repository': u.repository(),
             'base': C, 'candidate_base': candidate['base'], 'proposal_base': proposal['base'], 'recipe_base': B, 'head': H, 'recipe_tree': candidate['recipe_tree'],
             'accepted': A, 'pkgbase': name, 'watcher_id': candidate.get('watcher_id'),
@@ -314,7 +315,7 @@ def validate_bookkeeping(pr, C, H, old, new):
     if [p['sha'] for p in commit['parents']] != [C] or pr['base']['ref'] != 'main':
         raise ValueError('bookkeeping is not based on exact protected main')
     if u.main_sha() != C:
-        raise ValueError('bookkeeping main advanced; revalidate')
+        raise BatchFailure('bookkeeping main advanced; revalidate')
     return verified
 
 
@@ -322,7 +323,7 @@ def write_bookkeeping(receipt):
     from tools import update as u
     C, A, name = receipt['base'], receipt['accepted'], receipt['pkgbase']
     if u.main_sha() != C:
-        raise ValueError('main advanced before bookkeeping; revalidate')
+        raise BatchFailure('main advanced before bookkeeping; revalidate')
     recipe_state.save('acceptance', C + '-' + A, receipt)
     branch = 'bookkeeping/' + name + '/' + A + '/' + C
     message = 'Accept ' + name + ' recipe\n\nArch-Recipe-Acceptance: ' + A
@@ -349,7 +350,7 @@ def write_bookkeeping(receipt):
         commit = u.api(u.route('/git/commits'), 'POST', {'tree': tree['sha'], 'parents': [C], 'message': message})
         existing = commit['sha']
         if u.main_sha() != C:
-            raise ValueError('main advanced before bookkeeping ref creation')
+            raise BatchFailure('main advanced before bookkeeping ref creation')
         u.api(u.route('/git/refs'), 'POST', {'ref': 'refs/heads/' + branch, 'sha': existing})
     owner = u.repository().split('/')[0]
     prs = list(paginate(lambda page: u.api(u.route('/pulls?state=open&base=main&head=' + owner + ':' + branch + '&per_page=100&page=' + str(page)))))
@@ -411,13 +412,14 @@ def reconcile_bookkeeping(pr, C, enrolled):
         raise ValueError('bookkeeping replacement identity or reconstruction differs')
     u.pr_identity(pr['number'], C, H)
     if u.main_sha() != C:
-        raise ValueError('main advanced before stale bookkeeping retirement')
+        raise BatchFailure('main advanced before stale bookkeeping retirement')
     u.api(u.route('/pulls/' + str(pr['number'])), 'PATCH', {'state': 'closed'})
     return {'pr_number': pr['number'], 'replacement': replacement['number'], 'closed': True}
 
 
 def reconcile(number=None):
     from tools import update as u
+    failures = SweepFailures(enabled=number is None)
     C = u.main_sha()
     if u.control_checkout()[0] != C:
         raise ValueError('reconciliation requires current trusted main')
@@ -434,60 +436,68 @@ def reconcile(number=None):
         numbers = {int(number)}
         pulls = [u.api(u.route('/pulls/' + str(number)))]
     else:
-        pulls = open_pulls + [u.api(u.route('/pulls/' + str(n))) for n in sorted(numbers - by_number.keys())]
+        pulls = list(open_pulls)
+        package_for_pr = {int(request['pr_number']): request['pkgbase']
+                          for request in requests.values() if request}
+        for n in sorted(numbers - by_number.keys()):
+            with failures.package('reconcile', package_for_pr[n], pr_number=n):
+                pulls.append(u.api(u.route('/pulls/' + str(n))))
     for pr in sorted(pulls, key=lambda item: (item.get('merged_at') or '9999', item['number'])):
         target = pr['base']['ref']
-        if target == 'main':
+        name = target[4:] if target.startswith('pkg/') else None
+        with failures.package('reconcile', name, pr_number=pr['number']):
+            if target == 'main':
+                if pr['state'] == 'open':
+                    if pr['head']['ref'].startswith('bookkeeping/'):
+                        parent = u.api(u.route('/git/commits/' + pr['head']['sha']))['parents']
+                        if len(parent) == 1 and parent[0]['sha'] != C:
+                            results.append(reconcile_bookkeeping(pr, C, enrolled))
+                            continue
+                    u.dispatch(pr['number'], pr=pr)
+                continue
+            if not target.startswith('pkg/') or target[4:] not in enrolled:
+                continue
+            name = target[4:]
+            active = known.get(('pending', name))
+            request = requests.get(('build-request', active['request_id'])) if active else None
+            if active and request and int(request['pr_number']) == pr['number'] and active['state'] == 'queued' and active.get('worker') is None and (pr['state'] == 'closed' or active['head'] != pr['head']['sha']):
+                active = recipe_state.abandon_build(name, active['request_id'])
+                known[('pending', name)] = active
+            if active and request and int(request['pr_number']) == pr['number'] and active['state'] in {'queued', 'running'}:
+                worker = active.get('worker')
+                if worker:
+                    from tools import build_store
+                    run = build_store.producer_run(request, worker, completed=False)
+                    if run.get('status') == 'completed':
+                        result = recipe_state.StateSnapshot().load_optional('build-result', active['request_id'])
+                        outcome = 'success' if run.get('conclusion') == 'success' and result is not None else 'failure'
+                        active = recipe_state.finish_build(name, active['request_id'], outcome, result=result if outcome == 'success' else None)
+                        known[('pending', name)] = active
             if pr['state'] == 'open':
-                if pr['head']['ref'].startswith('bookkeeping/'):
-                    parent = u.api(u.route('/git/commits/' + pr['head']['sha']))['parents']
-                    if len(parent) == 1 and parent[0]['sha'] != C:
-                        results.append(reconcile_bookkeeping(pr, C, enrolled))
-                        continue
-                u.dispatch(pr['number'], pr=pr)
-            continue
-        if not target.startswith('pkg/') or target[4:] not in enrolled:
-            continue
-        name = target[4:]
-        active = known.get(('pending', name))
-        request = requests.get(('build-request', active['request_id'])) if active else None
-        if active and request and int(request['pr_number']) == pr['number'] and active['state'] == 'queued' and active.get('worker') is None and (pr['state'] == 'closed' or active['head'] != pr['head']['sha']):
-            active = recipe_state.abandon_build(name, active['request_id'])
-            known[('pending', name)] = active
-        if active and request and int(request['pr_number']) == pr['number'] and active['state'] in {'queued', 'running'}:
-            worker = active.get('worker')
-            if worker:
-                from tools import build_store
-                run = build_store.producer_run(request, worker, completed=False)
-                if run.get('status') == 'completed':
-                    result = recipe_state.StateSnapshot().load_optional('build-result', active['request_id'])
-                    outcome = 'success' if run.get('conclusion') == 'success' and result is not None else 'failure'
-                    active = recipe_state.finish_build(name, active['request_id'], outcome, result=result if outcome == 'success' else None)
-                    known[('pending', name)] = active
-        if pr['state'] == 'open':
-            if active and active['head'] == pr['head']['sha'] and active['state'] == 'success' and pr.get('statuses', {}).get('candidate-build') in {None, 'pending'}:
-                # A lost coordinator is reconciled from metadata, never another worker.
-                request = requests.get(('build-request', active['request_id'])) or recipe_state.build_request(active['request_id'], snapshot=recipe_state.StateSnapshot())
-                descriptor = recipe_state.StateSnapshot().load('build-result', active['request_id'])
-                with tempfile.TemporaryDirectory(prefix='recipe-finalize-', dir=scratch_root()) as directory:
-                    work = Path(directory)
-                    u.dump(work/'candidate.json', request)
-                    u.dump(work/'build-results.json', {name: descriptor})
-                    u.dump(work/'native-evidence.json', descriptor['evidence'])
-                    from tools.recipe_candidates import finalize
-                    results.append(finalize(pr['number'], request['base'], request['head'], work/'candidate.json', work))
-            else:
-                u.dispatch(pr['number'], pr=pr, pending=active)
-            continue
-        if not pr.get('merged_at'):
-            results.append({'pr_number': pr['number'], 'closed': True})
-            continue
-        A = pr['merge_commit_sha']
-        pin = u.pin_at(C, name)
-        from tools import recipes
-        if pin == A or recipes.is_ancestor(u.repository(), A, pin):
-            continue
-        results.append(write_bookkeeping(accepted_receipt(pr['number'], C)))
+                if active and active['head'] == pr['head']['sha'] and active['state'] == 'success' and pr.get('statuses', {}).get('candidate-build') in {None, 'pending'}:
+                    # A lost coordinator is reconciled from metadata, never another worker.
+                    request = requests.get(('build-request', active['request_id'])) or recipe_state.build_request(active['request_id'], snapshot=recipe_state.StateSnapshot())
+                    descriptor = recipe_state.StateSnapshot().load('build-result', active['request_id'])
+                    with tempfile.TemporaryDirectory(prefix='recipe-finalize-', dir=scratch_root()) as directory:
+                        work = Path(directory)
+                        u.dump(work/'candidate.json', request)
+                        u.dump(work/'build-results.json', {name: descriptor})
+                        u.dump(work/'native-evidence.json', descriptor['evidence'])
+                        from tools.recipe_candidates import finalize
+                        results.append(finalize(pr['number'], request['base'], request['head'], work/'candidate.json', work))
+                else:
+                    u.dispatch(pr['number'], pr=pr, pending=active)
+                continue
+            if not pr.get('merged_at'):
+                results.append({'pr_number': pr['number'], 'closed': True})
+                continue
+            A = pr['merge_commit_sha']
+            pin = u.pin_at(C, name)
+            from tools import recipes
+            if pin == A or recipes.is_ancestor(u.repository(), A, pin):
+                continue
+            results.append(write_bookkeeping(accepted_receipt(pr['number'], C)))
+    failures.finish()
     return results
 
 
