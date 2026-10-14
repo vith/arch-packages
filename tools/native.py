@@ -276,7 +276,7 @@ def build(path: Path, output: Path):
         if digest != package['input_digest']:
             raise ValueError('input digest mismatch')
     from tools.dependency_repo import configure
-    configure(Path(__file__).resolve().parent.parent, work, run)
+    configure(Path(__file__).resolve().parent.parent, work, run, dependencies)
     run(['pacman', '-S', '--noconfirm', '--needed', '--', *sorted(dependencies)], stream=True)
     # Image defaults are inherited; do not copy runner-specific tuning or replace OPTIONS.
     config = work / 'makepkg.conf'

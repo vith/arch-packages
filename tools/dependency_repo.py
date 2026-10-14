@@ -1,6 +1,8 @@
 """Signed public dependency fallback for the disposable trusted Arch root."""
 from pathlib import Path
+import os
 import re
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -85,14 +87,45 @@ def _append_repository(name, key, fingerprint, server, work, run,
     config.write_text(existing + f'\n[{name}]\nSigLevel = Required\nServer = {server}\n')
 
 
-def configure(root, work, run):
-    """Append signed GH then n3t fallbacks after the official repositories."""
-    root = Path(root)
-    _append_repository('vith-gh', root / 'keys/arch-packages.asc',
-                       FINGERPRINT, latest_server(), work, run)
-    _append_repository('vith-arch', root / 'keys/n3t.asc',
-                       N3T_FINGERPRINT, 'https://arch.n3t.work/repo', work, run)
+def _resolve_dependencies(dependencies, run):
     run(['pacman', '-Sy', '--noconfirm'], stream=True)
+    result = subprocess.run(
+        ['pacman', '-Sp', '--noconfirm', '--print-format', '%n', '--', *dependencies],
+        text=True, capture_output=True, env={**os.environ, 'LC_ALL': 'C'},
+    )
+    missing = re.search(
+        r'(?m)^(?:error: target not found: |warning: cannot resolve |:: unable to satisfy dependency )',
+        result.stderr,
+    )
+    unexpected = any(
+        line.startswith('error:') and not (
+            line.startswith('error: target not found: ') or
+            line == 'error: failed to prepare transaction (could not satisfy dependencies)'
+        )
+        for line in result.stderr.splitlines()
+    )
+    if result.returncode and (result.returncode != 1 or not missing or unexpected):
+        raise RuntimeError('build dependency query failed: ' + result.stderr.strip())
+    return result
+
+
+def configure(root, work, run, dependencies):
+    """Resolve official dependencies before enabling each signed fallback."""
+    root = Path(root)
+    dependencies = sorted(set(dependencies))
+    result = _resolve_dependencies(dependencies, run)
+    repositories = (
+        ('vith-gh', root / 'keys/arch-packages.asc', FINGERPRINT, latest_server),
+        ('vith-arch', root / 'keys/n3t.asc', N3T_FINGERPRINT,
+         lambda: 'https://arch.n3t.work/repo'),
+    )
+    for name, key, fingerprint, server in repositories:
+        if result.returncode == 0:
+            return
+        _append_repository(name, key, fingerprint, server(), work, run)
+        result = _resolve_dependencies(dependencies, run)
+    if result.returncode:
+        raise RuntimeError('unresolved build dependencies: ' + result.stderr.strip())
 
 
 def configure_n3t(work, run=None, *, config='/etc/pacman.conf', gpgdir=None):

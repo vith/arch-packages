@@ -36,13 +36,13 @@ def prepare(snapshot, work):
         raise ValueError('invalid snapshot tag')
     work.mkdir(parents=True, exist_ok=False)
     ring = publish.keyring(work)
-    release = github_api.api(f'repos/{publish.REPOSITORY}/releases/tags/{snapshot}', authenticated=False)
+    release = github_api.api(f'repos/{publish.REPOSITORY}/releases/tags/{snapshot}', authenticated=True)
     if release['draft'] or release['prerelease'] or release['tag_name'] != snapshot:
         raise ValueError('snapshot is not a public package release')
     catalog = publish.verified_snapshot({'id': release['id'], 'tag': snapshot}, work / 'snapshot', ring)
     enrollment = github_api.api(
         f"repos/vith/arch-packages/contents/packages.json?ref={catalog['accepted_sha']}",
-        authenticated=False,
+        authenticated=True,
     )
     content = enrollment['content'].replace('\n', '').replace('\r', '')
     enrollment = json.loads(base64.b64decode(content, validate=True))
