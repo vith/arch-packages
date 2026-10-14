@@ -2,11 +2,13 @@
 
 pkgname=airgorah
 pkgver=0.8.1
-pkgrel=3
+pkgrel=4
 pkgdesc="A WiFi security auditing software mainly based on aircrack-ng tools suite"
 arch=("x86_64")
 url="https://github.com/martin-olivier/airgorah"
 license=("MIT")
+# ring's GCC LTO objects cannot be linked by Rust's LLVM linker.
+options=('!lto')
 
 source=("${pkgname}-${pkgver}::${url}/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('e86aaf8c60615050beffedec8880842d7f9e3b86855f9b901210246d4dd8d079')
