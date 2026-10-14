@@ -7,7 +7,7 @@ pkgname=("${pkgbase}"
          "obs-plugin-${pkgbase}")
 epoch=2
 pkgver=B7
-pkgrel=9
+pkgrel=7.1
 pkgdesc="An extremely low latency KVMFR (KVM FrameRelay) implementation for guests with VGA PCI Passthrough"
 url="https://looking-glass.io/"
 arch=('x86_64')
@@ -42,7 +42,7 @@ build() {
 	for b in "${components[@]}"; do
 		mkdir "${b}/build"
 		pushd "${b}/build"
-		cmake -DCMAKE_INSTALL_PREFIX=/usr ..
+		cmake -DCMAKE_INSTALL_PREFIX=/usr -DOPTIMIZE_FOR_NATIVE=OFF ..
 		make
 		popd
 	done
@@ -51,7 +51,7 @@ build() {
 package_looking-glass() {
 	pkgdesc="A client application for accessing the LookingGlass IVSHMEM device of a VM"
 	depends=('binutils' 'fontconfig' 'gcc-libs' 'glibc' 'gmp' 'hicolor-icon-theme'
-	         'libegl' 'libgl' 'libpipewire' 'libpulse' 'libsamplerate' 'libx11'
+	         'libdecor' 'libegl' 'libgl' 'libpipewire' 'libpulse' 'libsamplerate' 'libx11'
 	         'libxcursor' 'libxfixes' 'libxi' 'libxinerama' 'libxkbcommon' 'libxpresent'
 	         'libxss' 'nettle' 'wayland' 'zlib' 'zstd')
 
