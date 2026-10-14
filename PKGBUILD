@@ -25,7 +25,7 @@ source=(
     "i915ovmf.tar.gz::https://github.com/x78x79x82x79/${pkgname}Pkg/archive/refs/tags/v${pkgver}.tar.gz"
     "edk2::git+https://github.com/x78x79x82x79/edk2"
     "edk2-platforms.tar.gz::https://github.com/x78x79x82x79/edk2-platforms/archive/refs/tags/v1.0.0.tar.gz"
-    "basetools-unused-counter.patch"
+    "basetools-unused-counter.patch::https://raw.githubusercontent.com/vith/arch-packages/93c3255741b18bf398106db19556262e5d52aa1e/basetools-unused-counter.patch"
 )
 sha256sums=(
     "5580834291cb07a5da9cab8de964c94ecf4754e1a4cb159eff2a371b737ba3ab"
