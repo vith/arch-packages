@@ -3,7 +3,7 @@
 pkgbase=computer-use-linux
 pkgname=('computer-use-linux' 'gnome-shell-extension-computer-use-linux')
 pkgver=0.7.15
-pkgrel=1
+pkgrel=1.1
 pkgdesc="Control a real Linux desktop from any MCP host (AT-SPI, portals, multi-compositor window targeting)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/agent-sh/computer-use-linux"
@@ -66,8 +66,9 @@ package_computer-use-linux() {
     conflicts=('computer-use-linux-bin')
 
     cd "${pkgbase}-${pkgver}"
-    install -Dm755 "target/release/${pkgname}" "${pkgdir}/usr/bin/${pkgname}"
-    install -Dm755 "target/release/${pkgname}-cosmic" "${pkgdir}/usr/bin/${pkgname}-cosmic"
+    local release_dir="${CARGO_TARGET_DIR:-target}/release"
+    install -Dm755 "${release_dir}/${pkgname}" "${pkgdir}/usr/bin/${pkgname}"
+    install -Dm755 "${release_dir}/${pkgname}-cosmic" "${pkgdir}/usr/bin/${pkgname}-cosmic"
     install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 }
 
