@@ -24,6 +24,7 @@ jobs:
       - name: Verify signed snapshot and prepare installation expectations
         env:
           SNAPSHOT: ${{ inputs.snapshot_tag }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$TMPDIR"
           sudo apt-get update
