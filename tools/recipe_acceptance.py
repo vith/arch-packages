@@ -170,7 +170,7 @@ def accepted_receipt(number, control=None):
     with tempfile.TemporaryDirectory(prefix='recipe-accept-', dir=scratch_root()) as directory:
         work = Path(directory)
         pins = {}
-        old = u.checkout_data(C, work/'control', pins)
+        old = u.checkout_data(C, work/'control', pins, selected={name})
         from tools import imports
         policies = imports.policies(old)
         pending = imports.registry(old)[2].get(name)
@@ -391,7 +391,7 @@ def reconcile_bookkeeping(pr, C, enrolled):
     if len(claims) != 1:
         raise ValueError('claimed bookkeeping requires one exact acceptance record')
     with tempfile.TemporaryDirectory(prefix='bookkeeping-refresh-', dir=scratch_root()) as directory:
-        new = u.checkout_data(H, Path(directory)/'claimed')
+        new = u.checkout_data(H, Path(directory)/'claimed', selected=[])
         supplied = u.load(new/claims[0])
     verify_bookkeeping_shape(pr, commit, supplied, before, after)
     if claims[0] != 'acceptance/' + supplied['pkgbase'] + '.json' or supplied['pkgbase'] not in enrolled:
@@ -421,7 +421,7 @@ def reconcile(number=None):
     from tools import update as u
     failures = SweepFailures(enabled=number is None)
     C = u.main_sha()
-    if u.control_checkout()[0] != C:
+    if u.control_checkout(selected=[])[0] != C:
         raise ValueError('reconciliation requires current trusted main')
     from tools.imports import policies
     enrolled = set(policies(u.ROOT))

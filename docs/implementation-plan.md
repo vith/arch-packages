@@ -193,7 +193,16 @@ Activation remains protected and human-owned. Manage settings through inspected 
 
 ### Completed evidence
 
-- Per-package updater isolation: the original reconciliation, discovery, and proposal continuation regressions failed before implementation; both read-only mirror cleanup and early shared-main drift regressions also failed before their fixes. The complete local controller suite passed 367 tests in 23.152 seconds. All nine updater workflow shell blocks passed `bash -n`; the final reporter returned zero for a clean sweep and nonzero for a partial failure. Two independent static reviews were completed and their boundary findings addressed. Live protected source integration and healthy-package continuation through the hosted updater remain unverified; no workstation package build or installation was performed.
+- Per-package updater isolation: the original reconciliation, discovery, and proposal continuation regressions failed before implementation; both read-only mirror cleanup and early shared-main drift regressions also failed before their fixes. The complete local controller suite passed 367 tests in 23.152 seconds. All nine updater workflow shell blocks passed `bash -n`; the final reporter returned zero for a clean sweep and nonzero for a partial failure. Two independent static reviews were completed and their boundary findings addressed. [PR #161](https://github.com/vith/arch-packages/pull/161) merged through normal protection as `a7ad0e19d3494911fb299ba55d968154c9ccb88d` after the whole [source candidate 38611759620](https://github.com/vith/arch-packages/actions/runs/38611759620) succeeded with zero package workers. Full [updater 38614373272](https://github.com/vith/arch-packages/actions/runs/38614373272) completed reconciliation but discovery failed on a shared authenticated GitHub HTTP 403 before package checks. Healthy-package hosted continuation and the cause of that 403 remain unverified; no workstation package build or installation was performed.
+- Request-efficiency and safe-diagnostic follow-up: eight new regressions were observed RED before implementation. The integrated local controller suite passed 375 tests in 61.124 seconds. A zero-network real-Git exporter smoke exercised operation-scope activation and the metadata-only controller path; binary GET/streamed POST failure smokes retained HTTP status and safe quota context without body, token, or query leakage. Non-SHA, alternate-query, and status routes stayed fresh. Two independent static reviews found no actionable defects; neither reviewer ran checks. Protected source integration and live hosted updater recovery for this follow-up remain unverified.
+
+The 33-root local exporter smoke measured transport invocations at the urllib boundary; these are not live GitHub quota measurements:
+
+| Operation | Before: API reads / archive downloads | After: API reads / archive downloads |
+| --- | --- | --- |
+| Metadata-only controller setup | 68 / 33 | 2 / 0 |
+| Repeat a complete export in one operation | 68 / 33 | 0 / 0 |
+| Select one recipe after that complete export | 4 / 1 | 0 / 0 |
 
 - Core full suite: 305 tests in 24.630 seconds, OK.
 - Later targeted checks after failure-lifecycle/behind-base fixes and obsolete kind deletion: update 40, package runs 14, recipe acceptance 21, all passed.
