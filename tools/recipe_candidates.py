@@ -319,9 +319,15 @@ def prepare(number, output, retry=False):
         raise ValueError('native recipe differs from frozen candidate source metadata')
     lock['version'] = native['version']
     u.validate_source_policy(lock, policy)
+    initial_aur_import = pending is not None and provenance.get('aur') is not None
+    if initial_aur_import:
+        imports.validate_intended(name, policy, lock, provenance, output/'import-intended',
+                                  canonical_aur=True)
     previous_recipe = comparison/'recipes'/name
     previous_manifest = tree_manifest(previous_recipe)
-    if (manual or head != receipt['recipe_head']) and recipe_manifest != previous_manifest:
+    # Initial AUR imports use their authenticated canonical floor, not an
+    # unpublished legacy counter. Other recipes still require native advancement.
+    if not initial_aur_import and (manual or head != receipt['recipe_head']) and recipe_manifest != previous_manifest:
         previous_version = parse_srcinfo((comparison/'recipes'/name/'.SRCINFO').read_text())['version']
         if recipe_gate._compare(previous_version, lock['version']) <= 0:
             raise ValueError('manual package changes require a version or pkgrel bump')

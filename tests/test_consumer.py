@@ -18,6 +18,7 @@ class SignedConsumerInputs(unittest.TestCase):
         self.filename = 'example-1-1-any.pkg.tar.zst'
         (self.directory / self.filename).write_bytes(b'package')
         self.catalog = {'recipes': {'example': {'version': '1-1', 'sources': []}},
+                        'source_assets': {},
                         'files': {self.filename: {'sha256': hashlib.sha256(b'package').hexdigest()},
                                   'vith-gh.db': {'sha256': 'a' * 64}}}
         self.policies = [{'pkgbase': 'example', 'outputs': [{'name': 'example', 'arch': 'any'}]}]

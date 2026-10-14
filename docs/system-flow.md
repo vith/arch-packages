@@ -101,6 +101,8 @@ Recipe PRs target `pkg/<package>`. The Files changed tab contains the actual `PK
 
 Pending import registration freezes source data without executing a recipe. Pending imports are not routine discovery/publication inputs. Their first conversion builds as an exact recipe PR and waits for human Merge.
 
+Initial AUR imports use the authenticated AUR version floor, not an unpublished legacy recipe counter. Local release corrections use fractions above the AUR counter and below its next integer. Final candidate preparation revalidates the intended policy, sources, and AUR provenance before allowing this initial reset; published recipes retain their version-increase requirement.
+
 Normal native `makepkg` performs Git checkout with its branch, history, and reachable tags. Planned source locks are detection/classification snapshots, not instructions to rewrite source references or force a different checkout. No source bundle or extra source-submodule scheme is introduced.
 
 Fixed Git commit declarations retain their literal object identity and genuine reachable tag context without invented refs. Fragment-free Git sources enroll the actual remote HEAD branch; a changed default is rejected rather than silently selecting the old branch. Indexed source declarations and explicit single-character version translation retain native package versions, source ordering, and checksum algorithms while supporting upstream tag spelling.
@@ -320,6 +322,8 @@ An inclusion failure retries inclusion using the same successful build. Missing 
 Manual dispatch has one required string input, `snapshot_tag`, with no declared default. The sole `consumers` job is main-only, with a 60-minute timeout and contents read. There is no concurrency group or environment approval.
 
 It checks out `main` without stored credentials, installs public verification tools, and runs `tools.consumer` for the exact snapshot. Expectations and enrollment come from that snapshot's accepted commit, not today's package list. `smoke.sh` installs every enrolled target using required database/package signatures in a fresh Arch environment, then runs the retained package-specific consumer proofs.
+
+Nasc's corresponding-source archive is selected by its locked checksum from the signed catalog's source assets and downloaded anonymously from the exact snapshot release. The proof checks the archive hash and installed license before exercising the TUI; native packages need not install their source archives.
 
 `PROOF_WORK` is `/home/runner/.local/state/arch-packages/work/consumers-<run>-<attempt>`, with `TMPDIR` below it. `consumer-proof-<run>-<attempt>` uploads evidence under `always()`, retained for 14 days; missing evidence warns.
 
