@@ -1,7 +1,7 @@
 pkgbase = airgorah
 	pkgdesc = A WiFi security auditing software mainly based on aircrack-ng tools suite
 	pkgver = 0.8.1
-	pkgrel = 4
+	pkgrel = 1.1
 	url = https://github.com/martin-olivier/airgorah
 	arch = x86_64
 	license = MIT

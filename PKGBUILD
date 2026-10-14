@@ -2,7 +2,7 @@
 
 pkgname=airgorah
 pkgver=0.8.1
-pkgrel=4
+pkgrel=1.1
 pkgdesc="A WiFi security auditing software mainly based on aircrack-ng tools suite"
 arch=("x86_64")
 url="https://github.com/martin-olivier/airgorah"
@@ -49,8 +49,9 @@ build() {
 package() {
     cd "${srcdir}/${pkgname}-${pkgver}"
 
-    install -Dm755 "target/release/${pkgname}" -t "${pkgdir}/usr/bin"
-    install -Dm755 "target/release/${pkgname}-agent" -t "${pkgdir}/usr/bin"
+    local release_dir="${CARGO_TARGET_DIR:-target}/release"
+    install -Dm755 "${release_dir}/${pkgname}" -t "${pkgdir}/usr/bin"
+    install -Dm755 "${release_dir}/${pkgname}-agent" -t "${pkgdir}/usr/bin"
     install -Dm644 "crates/gui/icons/app_icon.png" "${pkgdir}/usr/share/pixmaps/${pkgname}.png"
 
     install -Dm644 "package/.desktop" "${pkgdir}/usr/share/applications/com.molivier.${pkgname}.desktop"
