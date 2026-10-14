@@ -4,12 +4,12 @@
 
 pkgname=prek
 pkgver=0.5.5
-pkgrel=3
+pkgrel=3.1
 pkgdesc="⚡ Better 'pre-commit', re-engineered in Rust"
 arch=('x86_64')
 url='https://github.com/j178/prek'
 license=('MIT')
-depends=('gcc-libs')
+depends=('gcc-libs' 'git')
 makedepends=('git' 'rust' 'libxml2')
 # TODO: https://github.com/jmelahman/PKGBUILDs/issues/119
 # checkdepends=('cargo-nextest')
