@@ -233,10 +233,14 @@ JS
 ;;
   podcheck)
 # Run in the hosted disposable consumer container: upstream EXIT cleanup removes /tmp/podcheck-*.
-HOME="$consumer_scratch/home" podcheck -Z > "$consumer_scratch/podcheck-error" 2>&1 && exit 1 || status=$?
-[[ "$status" == 2 ]]
-grep -F 'invalid option --' "$consumer_scratch/podcheck-error"
-grep -F 'Syntax:     podcheck.sh [OPTION]' "$consumer_scratch/podcheck-error"
+status=0
+HOME="$consumer_scratch/home" podcheck -Z > "$consumer_scratch/podcheck-error" 2>&1 || status=$?
+if [[ "$status" != 2 ]]; then
+  printf 'podcheck: invalid option returned %s instead of 2\n' "$status" >&2
+  cat "$consumer_scratch/podcheck-error" >&2
+  exit 1
+fi
+printf 'podcheck: rejected invalid option with exit status %s\n' "$status"
 # -Z exits during getopts, before registry/container/network discovery.
 
 ;;
