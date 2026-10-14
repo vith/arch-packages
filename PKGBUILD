@@ -1,7 +1,7 @@
 # Maintainer ArchEnemy
 pkgname=i915ovmf
 pkgver=1.0.2
-pkgrel=1.2
+pkgrel=1.3
 pkgdesc="i915ovmfPkg VBIOS for Intel GPU Passthrough GVT-g/GVT-d"
 arch=('x86_64')
 url="https://github.com/x78x79x82x79/i915ovmfPkg"
@@ -32,6 +32,20 @@ sha256sums=(
 )
 
 prepare(){
+    # Keep the legacy firmware's BOOLEAN typedef compatible with modern GCC.
+    printf '%s\r\n' \
+        '--- a/i915ovmf.dsc' \
+        '+++ b/i915ovmf.dsc' \
+        '@@ -54,7 +54,7 @@' \
+        '   INTEL:RELEASE_*_*_CC_FLAGS           = /D MDEPKG_NDEBUG' \
+        '   MSFT:RELEASE_*_*_CC_FLAGS            = /D MDEPKG_NDEBUG' \
+        ' !if $(TOOL_CHAIN_TAG) != "XCODE5"' \
+        '-  GCC:*_*_*_CC_FLAGS                   = -mno-mmx -mno-sse -fno-stack-protector' \
+        '+  GCC:*_*_*_CC_FLAGS                   = -mno-mmx -mno-sse -fno-stack-protector -std=gnu17' \
+        ' #  GCC:*_*_*_LD_FLAGS                   = -lssp -lstack_guard.obj' \
+        ' !endif' \
+        ' !ifdef $(SOURCE_DEBUG_ENABLE)' \
+        | patch --binary --batch --fuzz=0 -Np1 -d "${pkgname}Pkg-${pkgver}"
     cd edk2
     # Preserve upstream CRLF and the DEBUG copy, but not its duplicate option-ROM graph output.
     printf '%s\r\n' \

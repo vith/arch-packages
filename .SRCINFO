@@ -1,7 +1,7 @@
 pkgbase = i915ovmf
 	pkgdesc = i915ovmfPkg VBIOS for Intel GPU Passthrough GVT-g/GVT-d
 	pkgver = 1.0.2
-	pkgrel = 1.2
+	pkgrel = 1.3
 	url = https://github.com/x78x79x82x79/i915ovmfPkg
 	arch = x86_64
 	license = unknown
