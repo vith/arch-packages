@@ -340,6 +340,8 @@ The disposable consumer root has private `/dev`, PTY and `/proc` mounts. Its `/d
 
 Surge's offline proof requests completion of the `completion z` prefix and checks that it resolves to `zsh`. It exercises the installed CLI rather than searching generated completion-script text for command names.
 
+Carapace-spec's offline proof loads a valid YAML specification with `json` and `text` format choices, requests completion of the `--format j` prefix, and requires exactly the `json` value in the exported result. It exercises completion behavior without relying on malformed-input exit status or diagnostic wording.
+
 OMP is installed when enrolled but has no shared CLI/help/addon/PipeWire runtime tests. Recipe-owned checks remain in the build. ApexShot consumer proof covers version/help, native messaging, libraries, desktop assets, and extension files, not interactive live capture or recording.
 
 Publication does not dispatch this workflow. Signed consumer proof is not installation on a client's machine.
