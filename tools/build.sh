@@ -23,7 +23,7 @@ if [[ -n ${ARCH_BUILD_CACHE:-} ]]; then
   [[ $(realpath -- "$ARCH_BUILD_CACHE") == "$ARCH_BUILD_CACHE" ]] || { echo 'symlinked cache path refused' >&2; exit 1; }
   cache_args=(--mount "type=bind,src=$ARCH_BUILD_CACHE,dst=/ci-cache" --env ARCH_PACKAGE_CACHE=1)
 fi
-container=$(docker create --platform linux/amd64 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_CHROOT --security-opt no-new-privileges --env PATH=/usr/local/sbin:/usr/local/bin:/usr/bin "${cache_args[@]}" "$image" /bin/bash -c 'pacman -Syu --noconfirm --needed -- python util-linux && exec /usr/bin/python /harness/tools/native.py build /input/bundle.json /output')
+container=$(docker create --init --platform linux/amd64 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_CHROOT --security-opt no-new-privileges --env PATH=/usr/local/sbin:/usr/local/bin:/usr/bin "${cache_args[@]}" "$image" /bin/bash -c 'pacman -Syu --noconfirm --needed -- python util-linux && exec /usr/bin/python /harness/tools/native.py build /input/bundle.json /output')
 cleanup() {
   status=$?
   trap - EXIT
