@@ -557,7 +557,7 @@ class SuccessfulOutputAcceptance(unittest.TestCase):
         proposal = {'base': 'c'*40, 'proposal_origin': 'manual'}
         pr = {'number': 7, 'base': {'ref': 'pkg/demo', 'sha': 'b'*40}, 'head': {'sha': 'd'*40}, 'merge_commit_sha': 'a'*40}
         merge = {'sha': 'a'*40, 'tree': {'sha': 'e'*40}, 'parents': [{'sha': 'b'*40}, {'sha': 'd'*40}]}
-        def checkout(sha, destination, pins):
+        def checkout(sha, destination, pins, selected=None):
             pins['demo'] = 'b'*40
             update.dump(destination/'inputs/demo.json', predecessor)
             update.dump(destination/'upstream/demo.json', provenance)

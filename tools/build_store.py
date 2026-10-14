@@ -165,7 +165,7 @@ def download_api(endpoint, destination, maximum, *, accept):
     except urllib.error.HTTPError as error:
         try:
             if error.code not in (301, 302, 303, 307, 308):
-                raise github_api.GitHubError(error.code, 'GET', url) from None
+                raise github_api.GitHubError(error.code, 'GET', url, error.headers) from None
             location = error.headers['Location']
         finally:
             error.close()
@@ -280,7 +280,7 @@ def upload(repository, release_id, archive, name='unsigned.tar'):
         response = connection.getresponse()
         body = response.read(github_api.MAX_JSON + 1)
         if response.status != 201:
-            raise github_api.GitHubError(response.status, 'POST', path)
+            raise github_api.GitHubError(response.status, 'POST', path, response.headers)
         if len(body) > github_api.MAX_JSON:
             raise ValueError('oversized asset API response')
         return json.loads(body)
