@@ -22,20 +22,20 @@
       "checksums": {
         "sha256": "SKIP"
       },
-      "commit": "0d61f52fe31c86936c5b4268effddad7241c811e",
+      "commit": "b7a715f7c03c45c6b4575bf88596bfd79658b8ce",
       "git_context": {
         "object_format": "sha1",
-        "tag_refs_sha256": "0b13641a11adbac6009dcf3588835d2d6657b0764e9fc498cbcc5886dc3e044b",
+        "tag_refs_sha256": "bfd4f8f0aa1baaf7f6b266a5986963cdf5a4b7fa8794731bff38f13357270a4c",
         "version_tag": null
       },
       "id": "i915ovmf-1",
       "kind": "git",
       "peeled_commit": null,
-      "ref": "refs/heads/master",
+      "ref": "b7a715f7c03c45c6b4575bf88596bfd79658b8ce",
       "release_id": null,
-      "source": "edk2::git+https://github.com/x78x79x82x79/edk2",
+      "source": "edk2::git+https://github.com/tianocore/edk2#commit=b7a715f7c03c45c6b4575bf88596bfd79658b8ce",
       "tag_object": null,
-      "url": "https://github.com/x78x79x82x79/edk2"
+      "url": "https://github.com/tianocore/edk2"
     },
     {
       "asset_id": null,
@@ -52,23 +52,7 @@
       "source": "edk2-platforms.tar.gz::https://github.com/x78x79x82x79/edk2-platforms/archive/refs/tags/v1.0.0.tar.gz",
       "tag_object": null,
       "url": "https://github.com/x78x79x82x79/edk2-platforms/archive/refs/tags/v1.0.0.tar.gz"
-    },
-    {
-      "asset_id": null,
-      "checksums": {
-        "sha256": "dc505c76fb01f4891b9736013406fb39667a629f435097e2075b7fa1f2311ef8"
-      },
-      "commit": null,
-      "git_context": null,
-      "id": "i915ovmf-3",
-      "kind": "archive",
-      "peeled_commit": null,
-      "ref": null,
-      "release_id": null,
-      "source": "basetools-unused-counter.patch::https://raw.githubusercontent.com/vith/arch-packages/93c3255741b18bf398106db19556262e5d52aa1e/basetools-unused-counter.patch",
-      "tag_object": null,
-      "url": "https://raw.githubusercontent.com/vith/arch-packages/93c3255741b18bf398106db19556262e5d52aa1e/basetools-unused-counter.patch"
     }
   ],
-  "version": "1.0.2-4"
+  "version": "1.0.2-5"
 }
