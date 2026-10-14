@@ -32,7 +32,7 @@ class RecipeCandidateBoundaries(unittest.TestCase):
                 candidates.proposal_receipt('1', 'base', 'example')
 
 
-    def prepare_manual(self, work, invalid=False, pkgrel='2', accepted_version='1-1', dynamic=False, count_git=False, executable_pkgver=False, declared_mismatch=False):
+    def prepare_manual(self, work, invalid=False, pkgrel='2', accepted_version='1-1', dynamic=False, count_git=False, executable_pkgver=False, declared_mismatch=False, pending=False, legacy_pkgrel='1', pending_aur=True):
         root = Path(work)
         old, recipe = root/'accepted', root/'human'
         for directory in (old/'recipes/example', old/'inputs', old/'upstream', recipe):
@@ -45,7 +45,7 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             source = 'other.patch' if invalid and directory == recipe else 'fix.patch'
             text = 'pkgbase = example\n\tpkgver = 1\n\tpkgrel = ' + release + '\n\tarch = x86_64\n\tsource = ' + source + '\n\tsha256sums = ' + checksum + '\npkgname = example\n\tdepends = ' + dependency + '\n'
             (directory/'.SRCINFO').write_text(text)
-        write_recipe(old/'recipes/example', before, 'original', '1')
+        write_recipe(old/'recipes/example', before, 'original', legacy_pkgrel)
         write_recipe(recipe, after, 'human-dependency', pkgrel)
         if dynamic:
             for directory in (old/'recipes/example', recipe):
@@ -96,7 +96,48 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             if declared_mismatch:
                 build = recipe/'PKGBUILD'
                 build.write_text(build.read_text().replace('pkgrel=' + pkgrel, 'pkgrel=99'))
-        update.dump(old/'packages.json', {'schema': 1, 'packages': [policy]})
+        baseline = 'b'*40
+        remotes = {}
+        if pending:
+            policy.update(authority='maintained', native_verification='pending-github-native-probe',
+                          automatic={'version': {'assignment': 'pkgver'}, 'pkgrel': {'assignment': 'pkgrel'}})
+            git = update.sources.git
+            origin = root/'origin'
+            shutil.copytree(old/'recipes/example', origin)
+            aur = root/'aur'
+            shutil.copytree(recipe, aur)
+            write_recipe(aur, after, 'human-dependency', '1')
+            for directory in (origin, aur):
+                git('init', directory)
+                git('add', '.', cwd=directory)
+                git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                    'commit', '-m', 'fixture', cwd=directory)
+            baseline = git('rev-parse', 'HEAD', cwd=origin)
+            git('branch', 'example', 'HEAD', cwd=aur)
+            aur_commit = git('rev-parse', 'HEAD', cwd=aur)
+            origin_url = 'https://git.n3t.work/vith/arch-pkg-example.git'
+            aur_url = 'https://github.com/archlinux/aur.git'
+            remotes = {origin_url: origin.as_uri(), aur_url: aur.as_uri()}
+            identity = {'url': aur_url, 'package': 'example', 'ref': 'refs/heads/example',
+                        'commit': aur_commit}
+            provenance = {'schema': 1, 'pkgbase': 'example', 'aur': identity,
+                          'watchers': [{'id': 'aur-recipe', 'kind': 'aur',
+                                        **{key: value for key, value in identity.items() if key != 'commit'},
+                                        'baseline_commit': aur_commit, 'mode': 'authoritative-import'}]}
+            if not pending_aur:
+                git('tag', 'v1', cwd=origin)
+                provenance = {'schema': 1, 'pkgbase': 'example', 'aur': None,
+                              'watchers': [{'id': 'software-tag', 'kind': 'tag', 'source_id': 'patch',
+                                            'url': origin_url, 'tag_pattern': '^v([0-9]+)$',
+                                            'accepted_tag': 'v1', 'accepted_tag_object': baseline,
+                                            'accepted_peeled_commit': baseline}]}
+            item = {'pkgbase': 'example', 'policy': policy,
+                    'origin': {'url': origin_url, 'commit': baseline,
+                               'tree': git('rev-parse', 'HEAD^{tree}', cwd=origin),
+                               'manifest': candidates.tree_manifest(old/'recipes/example'), 'pkgbase': 'example'}}
+            update.dump(old/'packages.json', {'schema': 1, 'packages': [], 'imports': [item]})
+        else:
+            update.dump(old/'packages.json', {'schema': 1, 'packages': [policy]})
         update.dump(old/'inputs/example.json', lock)
         update.dump(old/'upstream/example.json', provenance)
         (old/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:' + 'f'*64)
@@ -105,12 +146,12 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             destination = old/filename
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(repo/filename, destination)
-        pr = {'state': 'open', 'head': {'ref': 'feature/human-recipe', 'sha': 'a'*40, 'repo': {'full_name': 'owner/repo'}}, 'base': {'ref': 'pkg/example', 'sha': 'b'*40, 'repo': {'full_name': 'owner/repo'}}}
+        pr = {'state': 'open', 'head': {'ref': 'feature/human-recipe', 'sha': 'a'*40, 'repo': {'full_name': 'owner/repo'}}, 'base': {'ref': 'pkg/example', 'sha': baseline, 'repo': {'full_name': 'owner/repo'}}}
         stored = {}
         self.manual_stored = stored
         def checkout(control, destination, pins=None, selected=None):
             if pins is not None:
-                pins['example'] = 'b'*40
+                pins['example'] = baseline
             shutil.copytree(old, destination)
             return destination
         def export(head, destination):
@@ -120,10 +161,14 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             if '/pulls/' in route:
                 return pr
             if route.endswith('a'*40):
-                return {'tree': {'sha': 'd'*40}, 'parents': [{'sha': 'b'*40}]}
+                return {'tree': {'sha': 'd'*40}, 'parents': [{'sha': baseline}]}
             raise AssertionError(route)
         public_url = update.sources.public_url
+        actual_git = update.sources.git
+        def fixture_git(*args, **kwargs):
+            return actual_git(*(remotes.get(str(arg), arg) for arg in args), **kwargs)
         with patch.dict(os.environ, {'GITHUB_RUN_ID': '10', 'GITHUB_RUN_ATTEMPT': '1'}), \
+                patch.object(update.sources, 'git', side_effect=fixture_git), \
                 patch.object(update.sources, 'public_url', side_effect=lambda value: value if count_git else public_url(value)), \
                 patch.object(update, 'api', side_effect=api), patch.object(update, 'status'), \
                 patch.object(recipe_state, 'recipe_identity', return_value=(pr, 'c'*40, 'a'*40)), \
@@ -217,6 +262,37 @@ class RecipeCandidateBoundaries(unittest.TestCase):
                     self.prepare_manual(work, pkgrel=pkgrel)
                 self.assertNotIn(('proposal', 'a'*40), self.manual_stored)
 
+
+    def test_pending_initial_import_uses_fraction_above_aur_not_legacy_release(self):
+        with tempfile.TemporaryDirectory() as work:
+            record, stored = self.prepare_manual(work, pending=True, legacy_pkgrel='2',
+                                                 accepted_version='1-2', pkgrel='1.1')
+            self.assertEqual(record['packages'][0]['lock']['version'], '1-1.1')
+            self.assertEqual(record['predecessor_lock']['version'], '1-2')
+            self.assertEqual(record['merge_policy'], 'human')
+            self.assertEqual(record['import_predecessor']['origin']['commit'], record['recipe_base'])
+            self.assertEqual(stored['proposal', record['head']]['lock']['version'], '1-1.1')
+
+    def test_pending_initial_import_cannot_lower_authenticated_aur_floor(self):
+        with tempfile.TemporaryDirectory() as work:
+            with self.assertRaisesRegex(ValueError, 'AUR native version differs or goes backwards'):
+                self.prepare_manual(work, pending=True, legacy_pkgrel='2',
+                                    accepted_version='1-2', pkgrel='0.1')
+            self.assertNotIn(('proposal', 'a'*40), self.manual_stored)
+
+    def test_pending_non_aur_import_keeps_legacy_release_floor(self):
+        with tempfile.TemporaryDirectory() as work:
+            with self.assertRaisesRegex(ValueError, 'version or pkgrel bump'):
+                self.prepare_manual(work, pending=True, pending_aur=False, legacy_pkgrel='2',
+                                    accepted_version='1-2', pkgrel='1.1')
+            self.assertNotIn(('proposal', 'a'*40), self.manual_stored)
+
+    def test_published_recipe_keeps_legacy_release_floor(self):
+        for pkgrel in ('1.1', '2'):
+            with self.subTest(pkgrel=pkgrel), tempfile.TemporaryDirectory() as work:
+                with self.assertRaisesRegex(ValueError, 'version or pkgrel bump'):
+                    self.prepare_manual(work, legacy_pkgrel='2', accepted_version='1-2', pkgrel=pkgrel)
+                self.assertNotIn(('proposal', 'a'*40), self.manual_stored)
 
     def test_direct_human_unenrolled_source_does_not_create_manual_receipt(self):
         with tempfile.TemporaryDirectory() as work:

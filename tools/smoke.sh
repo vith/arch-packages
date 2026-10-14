@@ -197,17 +197,22 @@ if not {'checkout','checkout-index'} <= values: raise SystemExit('missing real g
 PY
 fi
 if enrolled nasctui nasc-tui-bin; then
-python - <<'PY'
-import hashlib,json,pathlib,subprocess
+PUBLIC_RELEASE_URL="$server" python - <<'PY'
+import hashlib,json,os,pathlib,subprocess,urllib.request
 # Historical snapshots retain the old binary package; current snapshots use nasctui.
-package=next(x for x in json.load(open('/expected.json'))['packages'] if x['pkgbase'] in {'nasctui','nasc-tui-bin'})
+expected=json.load(open('/expected.json'))
+package=next(x for x in expected['packages'] if x['pkgbase'] in {'nasctui','nasc-tui-bin'})
 name=package['pkgbase']
 sources=[s for s in package['source_lock']['sources'] if s['source'].startswith('nascTUI-') and '::' in s['source']]
 if len(sources)!=1: raise SystemExit('nasc corresponding-source lock absent/ambiguous')
 source=sources[0]; filename=source['source'].split('::',1)[0]
-archive=pathlib.Path('/fresh/root/usr/share/doc')/name/filename
+assets=[asset for asset,identity in expected['source_assets'].items() if identity['sha256']==source['checksums']['sha256']]
+if len(assets)!=1: raise SystemExit('public nasc corresponding-source asset absent/ambiguous')
+archive=pathlib.Path('/evidence')/assets[0]
+with urllib.request.urlopen(os.environ['PUBLIC_RELEASE_URL']+'/'+assets[0],timeout=60) as response:
+    archive.write_bytes(response.read())
 digest=hashlib.sha256(archive.read_bytes()).hexdigest()
-if digest!=source['checksums']['sha256']: raise SystemExit('installed nasc corresponding-source hash mismatch')
+if digest!=source['checksums']['sha256']: raise SystemExit('public nasc corresponding-source hash mismatch')
 members=subprocess.check_output(['bsdtar','-tf',str(archive)],text=True).splitlines()
 licenses=[m for m in members if m.count('/')==1 and m.endswith('/LICENSE')]
 if len(licenses)!=1: raise SystemExit('corresponding source LICENSE absent/ambiguous')
