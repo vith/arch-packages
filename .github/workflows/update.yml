@@ -33,6 +33,8 @@ jobs:
   reconcile:
     if: github.ref == 'refs/heads/main' && (inputs.bootstrap != true || inputs.migrate_pr != '' || inputs.reconcile_pr != '')
     runs-on: ubuntu-latest
+    outputs:
+      package_failures: ${{ steps.reconcile.outputs.package_failures }}
     permissions:
       contents: write
       pull-requests: write
@@ -76,6 +78,7 @@ jobs:
           MIGRATE_PR: ${{ inputs.migrate_pr }}
         run: python3 -m tools.update migrate-existing --pr "$MIGRATE_PR"
       - name: Reconcile directly recorded open and accepted recipes
+        id: reconcile
         if: inputs.migrate_pr == ''
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -83,11 +86,13 @@ jobs:
         run: |
           args=()
           if [ -n "$RECONCILE_PR" ]; then args+=(--pr "$RECONCILE_PR"); fi
-          python3 -m tools.update reconcile "${args[@]}"
+          python3 -m tools.update reconcile --defer-package-failures "${args[@]}"
   discover:
     needs: reconcile
     if: always() && github.ref == 'refs/heads/main' && github.event_name != 'push' && inputs.migrate_pr == '' && inputs.reconcile_pr == '' && (needs.reconcile.result == 'success' || needs.reconcile.result == 'skipped')
     runs-on: ubuntu-latest
+    outputs:
+      package_failures: ${{ steps.discover.outputs.package_failures }}
     permissions:
       contents: read
     steps:
@@ -101,6 +106,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Freeze immutable recipe data without execution
+        id: discover
         env:
           GITHUB_TOKEN: ${{ github.token }}
           BOOTSTRAP: ${{ inputs.bootstrap }}
@@ -108,7 +114,7 @@ jobs:
           if [ "$BOOTSTRAP" = true ]; then
             python3 -m tools.update bootstrap --directory "$ARCH_WORK/discovery"
           else
-            python3 -m tools.update discover --directory "$ARCH_WORK/discovery"
+            python3 -m tools.update discover --defer-package-failures --directory "$ARCH_WORK/discovery"
           fi
           python3 -m tools.update pack --directory "$ARCH_WORK/discovery" --archive "$ARCH_WORK/source-data.tar"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -121,6 +127,8 @@ jobs:
     needs: discover
     if: inputs.bootstrap != true && inputs.migrate_pr == '' && inputs.reconcile_pr == ''
     runs-on: ubuntu-latest
+    outputs:
+      package_failures: ${{ steps.write.outputs.package_failures }}
     permissions:
       contents: write
       pull-requests: write
@@ -141,8 +149,26 @@ jobs:
           name: source-receipts
           path: ${{ env.ARCH_WORK }}/receipts
       - name: Validate data and write proposals
+        id: write
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 -m tools.update extract --source-receipts --archive "$ARCH_WORK/receipts/source-data.tar" --directory "$ARCH_WORK/source-data"
-          python3 -m tools.update write --directory "$ARCH_WORK/source-data"
+          python3 -m tools.update write --defer-package-failures --directory "$ARCH_WORK/source-data"
+  report-package-failures:
+    needs: [reconcile, discover, write-proposals]
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Report contained package failures after other packages finish
+        env:
+          RECONCILE_FAILURES: ${{ needs.reconcile.outputs.package_failures }}
+          DISCOVER_FAILURES: ${{ needs.discover.outputs.package_failures }}
+          WRITE_FAILURES: ${{ needs.write-proposals.outputs.package_failures }}
+        run: |
+          failed=$(( ${RECONCILE_FAILURES:-0} + ${DISCOVER_FAILURES:-0} + ${WRITE_FAILURES:-0} ))
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::$failed package update operations failed; other packages were processed. See package-specific annotations."
+            exit 1
+          fi

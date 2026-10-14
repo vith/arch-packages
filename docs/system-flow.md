@@ -127,7 +127,7 @@ All supplied checkouts use `persist-credentials: false`. Only `build-package.yml
 
 | File and workflow name | Trigger | Jobs |
 | --- | --- | --- |
-| `update.yml` — Source update proposals | Main push; cron `17 */6 * * *` UTC; `workflow_dispatch` | `reconcile`, `discover`, `write-proposals` |
+| `update.yml` — Source update proposals | Main push; cron `17 */6 * * *` UTC; `workflow_dispatch` | `reconcile`, `discover`, `write-proposals`, `report-package-failures` |
 | `candidate-dispatch.yml` — Start candidate validation | Main-target `pull_request_target`: `opened`, `synchronize`, `reopened`, `ready_for_review` | `dispatch` |
 | `candidate.yml` — Exact candidate validation | `workflow_dispatch` | `candidate` |
 | `build-package.yml` — Build one package | `workflow_dispatch` | `package` |
@@ -152,10 +152,15 @@ Explicit PR numbers must be positive decimal values. Migration and targeted reco
 | `reconcile` | Main ref; skip only read-only bootstrap without an explicit target | contents, pull-requests, actions, statuses write. Validate mode; prepare scratch and `libarchive-tools`; checkout event SHA; run `migrate-existing --pr` for migration, otherwise `reconcile` with optional `--pr`. |
 | `discover` | Needs reconcile. `always()` admits success or skip; main only; not push; no migration/targeted reconciliation | contents read. Prepare tools; checkout event SHA; run static `bootstrap` or `discover`, then `pack`; upload `source-receipts`. |
 | `write-proposals` | Needs discover; excludes bootstrap and both explicit modes | contents, pull-requests, actions, statuses write. Prepare tools; checkout event SHA; download `source-receipts`; bounded validated extraction; run `write`. |
+| `report-package-failures` | Always runs after all three stage jobs on main | No permissions. Fail the overall run if any completed stage reports contained package failures. |
 
 `source-receipts` contains `source-data.tar`, retained for 2 days, with missing files an error. No job declares a timeout.
 
 Push runs reconciliation only. Schedule/default manual runs reconciliation, discovery, then proposal writing. Bootstrap runs discovery only. Targeted reconciliation and migration skip discovery and writing.
+
+Normal reconciliation, discovery, and proposal writing isolate package-local failures and process the remaining packages before reporting all failures. Failed discovery drops that package's partial receipts and work; failed acceptance or proposal guards remain enforced without advancing its accepted baseline. Shared invalid batch data or an advanced control base still aborts the stage. Explicit single-PR reconciliation and migration remain strict.
+
+The updater CLI exits with status 2 for contained package failures after processing the batch. Workflow stages use `--defer-package-failures` to report errors and export their counts without stopping downstream healthy work; `report-package-failures` then fails the overall run if any package operations failed. The flag does not defer shared-batch failures or weaken validation. Packing and extraction do not replace an earlier stage's failure count.
 
 Reconciliation tracks directly known open, merged, and closed PRs. Same queued/running/successful input is a no-op; the same failure is reported without automatic retry. If upstream moves during a build, wait for the actual result before refreshing the same automation-owned PR. Preserve human edits and one update PR per package. An unchanged source receipt with no open proposal leaves its retained branch untouched. Writes, refreshes, and dispatches require authenticated watcher ownership.
 

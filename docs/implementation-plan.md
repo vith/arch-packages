@@ -193,6 +193,8 @@ Activation remains protected and human-owned. Manage settings through inspected 
 
 ### Completed evidence
 
+- Per-package updater isolation: the original reconciliation, discovery, and proposal continuation regressions failed before implementation; both read-only mirror cleanup and early shared-main drift regressions also failed before their fixes. The complete local controller suite passed 367 tests in 23.152 seconds. All nine updater workflow shell blocks passed `bash -n`; the final reporter returned zero for a clean sweep and nonzero for a partial failure. Two independent static reviews were completed and their boundary findings addressed. Live protected source integration and healthy-package continuation through the hosted updater remain unverified; no workstation package build or installation was performed.
+
 - Core full suite: 305 tests in 24.630 seconds, OK.
 - Later targeted checks after failure-lifecycle/behind-base fixes and obsolete kind deletion: update 40, package runs 14, recipe acceptance 21, all passed.
 - Prerequisite full suite: 284 tests in 35.155 seconds, OK, one skip.

@@ -9,12 +9,13 @@ import re
 import subprocess
 from tools import sources
 from tools.recipe_gate import manifest_digest
+from tools.update_sweep import BatchFailure
 
 BRANCH='controller-state'
 NAMESPACES={'proposal','candidate','candidate-provenance','built','approved','acceptance','built-by-input',
             'build-request','build-result','pending','source-test','source-test-index'}
 KEY=re.compile(r'^[a-zA-Z0-9_-]{1,200}$')
-CONTROLS=('tools/update.py','tools/recipes.py','tools/imports.py','tools/recipe_intents.py','tools/recipe_candidates.py',
+CONTROLS=('tools/update.py','tools/update_sweep.py','tools/recipes.py','tools/imports.py','tools/recipe_intents.py','tools/recipe_candidates.py',
           'tools/recipe_acceptance.py','tools/recipe_state.py','tools/package_runs.py','tools/build_store.py','tools/attestations.py',
           '.github/workflows/update.yml','.github/workflows/candidate.yml',
           '.github/workflows/candidate-dispatch.yml','.github/workflows/build-package.yml',
@@ -563,7 +564,9 @@ def assert_recipe_identity(record,merged=False,control=None):
         pr=u.api(u.route('/pulls/'+str(record['pr_number'])))
         protected_branch(record['pkgbase'])
         expected_control=control or u.main_sha()
-        if pr['state']!='closed' or not pr.get('merged') or not pr.get('merged_at') or pr['head']['sha']!=record['head'] or u.main_sha()!=expected_control or u.trusted_checkout_sha()!=expected_control:
+        if u.main_sha()!=expected_control or u.trusted_checkout_sha()!=expected_control:
+            raise BatchFailure('control base changed before accepted recipe identity check')
+        if pr['state']!='closed' or not pr.get('merged') or not pr.get('merged_at') or pr['head']['sha']!=record['head']:
             raise ValueError('accepted recipe identity changed')
         if record.get('accepted') and pr.get('merge_commit_sha')!=record['accepted']:
             raise ValueError('accepted recipe merge changed')

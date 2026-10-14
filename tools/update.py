@@ -12,6 +12,7 @@ import tarfile
 
 from tools import sources, recipes, recipe_gate
 from tools.github_api import api, download
+from tools.update_sweep import BatchFailure, PackageErrors, SweepFailures, report_failures
 from tools.recipe_gate import classify_recipe_update, input_digest, parse_srcinfo, tree_manifest, harness_digest
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -1083,84 +1084,94 @@ def discover(output):
     output=Path(output);output.mkdir(parents=True,exist_ok=False)
     base,pins=control_checkout()
     policies=policy_at(ROOT);receipts=[]
+    failures = SweepFailures()
     for name,policy in policies.items():
-        provenance=load(ROOT/'upstream'/f'{name}.json');accepted=load(ROOT/'inputs'/f'{name}.json')
-        for watcher in provenance['watchers']:
-            work=output/name/watcher['id'];work.mkdir(parents=True)
-            configured={**watcher,'work_dir':str(work)}
-            oldsource=next((s for s in accepted['sources'] if s['id']==watcher.get('source_id')),None)
-            identity={'tag':watcher.get('accepted_tag'),'release_id':watcher.get('release_id'),'asset_id':watcher.get('asset_id'),'tag_object':watcher.get('accepted_tag_object')}
-            if watcher['kind']=='aur':
-                identity=provenance.get('aur') or {};transition=sources.discover_aur(configured,identity)
-            elif watcher['kind']=='git':
-                transition=sources.discover_git(configured,oldsource)
-            else:
-                transition=sources.discover_release_tag(configured,identity)
-            if transition is None:
-                related={watcher.get('source_id'),*watcher.get('related_source_ids',[])}
-                for source in accepted['sources']:
-                    if source['id'] in related and source['kind'] in {'archive','release'}:
-                        if watcher['kind']=='release' and source['kind']=='release':
-                            _live_tag_provenance(watcher,watcher,source)
-                        sources.freeze_source(source)
-                receipts.append({'schema':1,'pkgbase':name,'watcher_id':watcher['id'],'base':base,'recipe_commit':pins[name],'unchanged':True})
-                shutil.rmtree(work)
-                continue
-            recipe=work/'recipe';recipes.copy_recipe(ROOT/'recipes'/name,recipe)
-            lock=json.loads(json.dumps(accepted));newpro=json.loads(json.dumps(provenance))
-            if watcher['kind']=='aur':
-                integration=apply_aur_transition(recipe,transition,policy,work/'three-way')
-                dump(work/'aur-integration.json',{'conflicts':integration['conflicts']})
-                if not integration['conflicts']:
-                    align_aur_lock(recipe,lock,policy,work)
-                newpro['aur']['commit']=transition['commit']
-            else:
-                version=transition.get('version',parse_version(accepted['version']))
-                ids={watcher['source_id'],*watcher.get('related_source_ids',[])}
-                for source in lock['sources']:
-                    if source['id'] not in ids:
-                        continue
-                    enrolled=next(s for s in policy['sources'] if s['id']==source['id'])
-                    source['source']=sources.format_source(enrolled['source_template'],enrolled,version,transition.get('commit',source['commit']))
-                    source['url']=sources.format_source(enrolled['url_template'],enrolled,version,transition.get('commit',source['commit']))
-                    if source['kind']=='git':
-                        source['ref']=transition['ref'] if 'ref' in transition else 'refs/tags/'+transition['tag']
-                        source['commit']=transition.get('commit');source['tag_object']=None;source['peeled_commit']=None
-                        source.update(sources.freeze_source({**source,'work_dir':str(work/source['id'])}))
-                    else:
-                        data=sources.fetch(source['url'])
-                        for algorithm in source['checksums']:
-                            if source['checksums'][algorithm]!='SKIP':
-                                source['checksums'][algorithm]=sources.new_hash(algorithm,data).hexdigest()
-                        if source['kind']=='release':
-                            asset_name=sources.release_asset_name(watcher,version,source['id'])
-                            assets=[a for a in transition['assets'] if a['name']==asset_name]
-                            if len(assets)!=1 or assets[0]['browser_download_url']!=source['url']:
-                                raise ValueError('release asset enrollment mismatch')
-                            source['release_id']=transition['release_id'];source['asset_id']=assets[0]['id']
-                render_recipe(recipe,policy,version,{s['id']:s['checksums'] for s in lock['sources']})
-                updated=next(w for w in newpro['watchers'] if w['id']==watcher['id'])
-                if 'tag' in transition:
-                    updated['accepted_tag']=transition['tag']
-                    tag=sources.git('ls-remote',watcher['url'],'refs/tags/'+transition['tag']).splitlines()
-                    if len(tag)!=1:
-                        raise ValueError('release tag missing')
-                    updated['accepted_tag_object']=tag[0].split()[0]
-                    peeled=sources.git('ls-remote',watcher['url'],'refs/tags/'+transition['tag']+'^{}').splitlines()
-                    updated['accepted_peeled_commit']=peeled[0].split()[0] if peeled else updated['accepted_tag_object']
-                    if transition.get('release_id'):
-                        updated['release_id']=transition['release_id']
-                        updated['asset_id']=next(s['asset_id'] for s in lock['sources'] if s['id']==watcher['source_id'])
-            submitted=watcher['kind']=='aur'
-            metadata=static_metadata(recipe,lock,policy,work,preserve_pkgrel=submitted)
-            lock['version']=metadata['version'];lock['sources']=metadata['sources']
-            if not submitted:
-                render_recipe(recipe,policy,metadata['pkgver'],{s['id']:s['checksums'] for s in lock['sources']},pkgrel=metadata['pkgrel'])
-                (recipe/'.SRCINFO').write_text(metadata['srcinfo'])
-            receipt={'schema':1,'pkgbase':name,'watcher_id':watcher['id'],'base':base,'recipe_commit':pins[name],'unchanged':False,'transition':transition,'lock':lock,'provenance':newpro,'metadata':metadata,'tree':tree_manifest(recipe),'aur_conflicts':integration['conflicts'] if watcher['kind']=='aur' else []}
-            dump(work/'receipt.json',receipt);receipts.append(receipt)
-            prune_discovery_work(work)
+        previous_receipts = len(receipts)
+        with failures.package('discover', name):
+            provenance=load(ROOT/'upstream'/f'{name}.json');accepted=load(ROOT/'inputs'/f'{name}.json')
+            for watcher in provenance['watchers']:
+                work=output/name/watcher['id'];work.mkdir(parents=True)
+                configured={**watcher,'work_dir':str(work)}
+                oldsource=next((s for s in accepted['sources'] if s['id']==watcher.get('source_id')),None)
+                identity={'tag':watcher.get('accepted_tag'),'release_id':watcher.get('release_id'),'asset_id':watcher.get('asset_id'),'tag_object':watcher.get('accepted_tag_object')}
+                if watcher['kind']=='aur':
+                    identity=provenance.get('aur') or {};transition=sources.discover_aur(configured,identity)
+                elif watcher['kind']=='git':
+                    transition=sources.discover_git(configured,oldsource)
+                else:
+                    transition=sources.discover_release_tag(configured,identity)
+                if transition is None:
+                    related={watcher.get('source_id'),*watcher.get('related_source_ids',[])}
+                    for source in accepted['sources']:
+                        if source['id'] in related and source['kind'] in {'archive','release'}:
+                            if watcher['kind']=='release' and source['kind']=='release':
+                                _live_tag_provenance(watcher,watcher,source)
+                            sources.freeze_source(source)
+                    receipts.append({'schema':1,'pkgbase':name,'watcher_id':watcher['id'],'base':base,'recipe_commit':pins[name],'unchanged':True})
+                    shutil.rmtree(work)
+                    continue
+                recipe=work/'recipe';recipes.copy_recipe(ROOT/'recipes'/name,recipe)
+                lock=json.loads(json.dumps(accepted));newpro=json.loads(json.dumps(provenance))
+                if watcher['kind']=='aur':
+                    integration=apply_aur_transition(recipe,transition,policy,work/'three-way')
+                    dump(work/'aur-integration.json',{'conflicts':integration['conflicts']})
+                    if not integration['conflicts']:
+                        align_aur_lock(recipe,lock,policy,work)
+                    newpro['aur']['commit']=transition['commit']
+                else:
+                    version=transition.get('version',parse_version(accepted['version']))
+                    ids={watcher['source_id'],*watcher.get('related_source_ids',[])}
+                    for source in lock['sources']:
+                        if source['id'] not in ids:
+                            continue
+                        enrolled=next(s for s in policy['sources'] if s['id']==source['id'])
+                        source['source']=sources.format_source(enrolled['source_template'],enrolled,version,transition.get('commit',source['commit']))
+                        source['url']=sources.format_source(enrolled['url_template'],enrolled,version,transition.get('commit',source['commit']))
+                        if source['kind']=='git':
+                            source['ref']=transition['ref'] if 'ref' in transition else 'refs/tags/'+transition['tag']
+                            source['commit']=transition.get('commit');source['tag_object']=None;source['peeled_commit']=None
+                            source.update(sources.freeze_source({**source,'work_dir':str(work/source['id'])}))
+                        else:
+                            data=sources.fetch(source['url'])
+                            for algorithm in source['checksums']:
+                                if source['checksums'][algorithm]!='SKIP':
+                                    source['checksums'][algorithm]=sources.new_hash(algorithm,data).hexdigest()
+                            if source['kind']=='release':
+                                asset_name=sources.release_asset_name(watcher,version,source['id'])
+                                assets=[a for a in transition['assets'] if a['name']==asset_name]
+                                if len(assets)!=1 or assets[0]['browser_download_url']!=source['url']:
+                                    raise ValueError('release asset enrollment mismatch')
+                                source['release_id']=transition['release_id'];source['asset_id']=assets[0]['id']
+                    render_recipe(recipe,policy,version,{s['id']:s['checksums'] for s in lock['sources']})
+                    updated=next(w for w in newpro['watchers'] if w['id']==watcher['id'])
+                    if 'tag' in transition:
+                        updated['accepted_tag']=transition['tag']
+                        tag=sources.git('ls-remote',watcher['url'],'refs/tags/'+transition['tag']).splitlines()
+                        if len(tag)!=1:
+                            raise ValueError('release tag missing')
+                        updated['accepted_tag_object']=tag[0].split()[0]
+                        peeled=sources.git('ls-remote',watcher['url'],'refs/tags/'+transition['tag']+'^{}').splitlines()
+                        updated['accepted_peeled_commit']=peeled[0].split()[0] if peeled else updated['accepted_tag_object']
+                        if transition.get('release_id'):
+                            updated['release_id']=transition['release_id']
+                            updated['asset_id']=next(s['asset_id'] for s in lock['sources'] if s['id']==watcher['source_id'])
+                submitted=watcher['kind']=='aur'
+                metadata=static_metadata(recipe,lock,policy,work,preserve_pkgrel=submitted)
+                lock['version']=metadata['version'];lock['sources']=metadata['sources']
+                if not submitted:
+                    render_recipe(recipe,policy,metadata['pkgver'],{s['id']:s['checksums'] for s in lock['sources']},pkgrel=metadata['pkgrel'])
+                    (recipe/'.SRCINFO').write_text(metadata['srcinfo'])
+                receipt={'schema':1,'pkgbase':name,'watcher_id':watcher['id'],'base':base,'recipe_commit':pins[name],'unchanged':False,'transition':transition,'lock':lock,'provenance':newpro,'metadata':metadata,'tree':tree_manifest(recipe),'aur_conflicts':integration['conflicts'] if watcher['kind']=='aur' else []}
+                dump(work/'receipt.json',receipt);receipts.append(receipt)
+                prune_discovery_work(work)
+        if name in failures.failed_packages:
+            del receipts[previous_receipts:]
+            try:
+                remove_verification_tree(output/name)
+            except FileNotFoundError:
+                pass
     dump(output/'receipts.json',{'schema':1,'base':base,'receipts':receipts})
+    failures.finish()
 
 
 
@@ -1296,157 +1307,166 @@ def write_proposals(directory):
         name=receipt['pkgbase'];watcher_id=receipt['watcher_id']
         if name not in policies or not NAME.fullmatch(watcher_id) or receipt['base']!=base or receipt.get('recipe_commit')!=pins[name]:
             raise ValueError('unknown watcher receipt')
-        from tools import recipe_state
-        recipe_state.protected_branch(name)
-        if ref_head('pkg/'+name)!=pins[name]:
-            raise ValueError('accepted recipe branch awaits bookkeeping or has divergent work')
-        provenance=load(ROOT/'upstream'/f'{name}.json')
-        watcher=next(w for w in provenance['watchers'] if w['id']==watcher_id)
-        branch=recipe_update_branch(name)
-        package_prs = [pr for pr in pulls if pr['base']['ref'] == 'pkg/' + name]
-        if any(not pr['head']['ref'].startswith('recipe-updates/') for pr in package_prs):
+    failures = SweepFailures()
+    for receipt in batch['receipts']:
+        name=receipt['pkgbase'];watcher_id=receipt['watcher_id']
+        if name in failures.failed_packages:
             continue
-        prs = package_prs
-        if len(prs) > 1:
-            raise ValueError('multiple automation-owned package PRs require reconciliation')
-        existing = prs[0] if prs else None
-        active = pending_records.get(('pending', name))
-        if active is not None and active['state'] in {'queued', 'running'}:
-            continue
-        request = requests.get(('build-request', active['request_id'])) if active else None
-        if existing is None and request is not None and not receipt['unchanged'] and request['packages'][0]['lock'] == receipt['lock'] and request.get('provenance') == receipt['provenance']:
-            # Closing a PR declines these inputs, not a request to recreate it.
-            continue
-        if receipt['unchanged']:
+        with failures.package('write', name, watcher_id=watcher_id):
+            from tools import recipe_state
+            recipe_state.protected_branch(name)
+            if ref_head('pkg/'+name)!=pins[name]:
+                raise ValueError('accepted recipe branch awaits bookkeeping or has divergent work')
+            provenance=load(ROOT/'upstream'/f'{name}.json')
+            watcher=next(w for w in provenance['watchers'] if w['id']==watcher_id)
+            branch=recipe_update_branch(name)
+            package_prs = [pr for pr in pulls if pr['base']['ref'] == 'pkg/' + name]
+            if any(not pr['head']['ref'].startswith('recipe-updates/') for pr in package_prs):
+                continue
+            prs = package_prs
+            if len(prs) > 1:
+                raise ValueError('multiple automation-owned package PRs require reconciliation')
+            existing = prs[0] if prs else None
+            active = pending_records.get(('pending', name))
+            if active is not None and active['state'] in {'queued', 'running'}:
+                continue
+            request = requests.get(('build-request', active['request_id'])) if active else None
+            if existing is None and request is not None and not receipt['unchanged'] and request['packages'][0]['lock'] == receipt['lock'] and request.get('provenance') == receipt['provenance']:
+                # Closing a PR declines these inputs, not a request to recreate it.
+                continue
+            if receipt['unchanged']:
+                if existing is not None:
+                    dispatch(existing['number'], pr=existing, pending=active)
+                continue
+            if name in handled:
+                continue
+            handled.add(name)
             if existing is not None:
-                dispatch(existing['number'], pr=existing, pending=active)
-            continue
-        if name in handled:
-            continue
-        handled.add(name)
-        if existing is not None:
-            try:
-                previous_commit, previous_base = owned_proposal(existing, name, watcher_id)
-            except ValueError:
-                # Human changes remain untouched and use the normal recipe route.
-                continue
-            old_receipt = recipe_state.load('proposal', existing['head']['sha'])
-            if old_receipt['lock'] == receipt['lock'] and old_receipt['provenance'] == receipt['provenance']:
-                dispatch(existing['number'], pr=existing, pending=active)
-                continue
-        else:
-            previous_commit, previous_base = None, None
-        retained_tip = existing['head']['sha'] if existing else ref_head(branch)
-        if existing is None and retained_tip:
-            owned_proposal({'head': {'sha': retained_tip}}, name, watcher_id)
-        policy=policies[name];lock=receipt['lock'];validate_source_policy(lock,policy)
-        work=directory/name/watcher_id;recipe=work/'recipe'
-        if tree_manifest(recipe)!=receipt['tree'] or (recipe/'.SRCINFO').read_text()!=receipt['metadata']['srcinfo'] or parse_srcinfo(receipt['metadata']['srcinfo'])['version']!=lock['version']:
-            raise ValueError('static metadata/tree receipt mismatch')
-        # Re-render enrolled spans or reconstruct the authentic AUR merge.
-        rendered=work/'trusted-render';recipes.copy_recipe(ROOT/'recipes'/name,rendered)
-        if watcher['kind']=='aur':
-            configured={**watcher,'work_dir':str(work/'writer-aur')}
-            actual=sources.discover_aur(configured,provenance.get('aur') or {})
-            if actual!=receipt['transition']:
-                raise ValueError('AUR receipt identity changed')
-            integration=apply_aur_transition(rendered,actual,policy,work/'writer-three-way')
-            if integration['conflicts']!=receipt.get('aur_conflicts'):
-                raise ValueError('AUR integration conflicts differ from typed receipt')
-        else:
-            render_recipe(rendered,policy,receipt['metadata']['pkgver'],{s['id']:s['checksums'] for s in lock['sources']},pkgrel=receipt['metadata']['pkgrel'])
-            (rendered/'.SRCINFO').write_text(receipt['metadata']['srcinfo'])
-        if tree_manifest(rendered)!=receipt['tree']:
-            raise ValueError('proposal differs from trusted typed rendering')
-        verify_provenance(provenance,receipt['provenance'],lock,policy,watcher_id)
-        oldlock=load(ROOT/'inputs'/f'{name}.json')
-        allowed_ids={watcher.get('source_id'),*watcher.get('related_source_ids',[])}
-        for source in lock['sources']:
-            previous=next(s for s in oldlock['sources'] if s['id']==source['id'])
-            if source!=previous and not next(s for s in policy['sources'] if s['id']==source['id'])['mutable'] and watcher['kind']!='aur':
-                raise ValueError('watcher changed fixed auxiliary source')
-            if source!=previous and source['id'] not in allowed_ids and watcher['kind']!='aur':
-                raise ValueError('watcher changed unrelated source')
-            if source['kind']=='git' and source!=previous:
-                sources.materialize_sources({'schema':1,'version':lock['version'],'sources':[source]},work/('verify-'+source['id']))
-            elif source['kind'] not in {'local','git'}:
-                sources.freeze_source(source)
-            elif source['kind']=='local':
-                path=rendered/source['source']
-                if not path.resolve().is_relative_to(rendered.resolve()):
-                    raise ValueError('local source escapes recipe')
-                for algorithm,value in source['checksums'].items():
-                    if value!='SKIP' and sources.new_hash(algorithm,path.read_bytes()).hexdigest()!=value:
-                        raise ValueError('typed local source checksum mismatch')
-        aur_parent=None
-        if watcher['kind']=='aur':
-            aur_parent=retain_aur_history(name,watcher,actual,provenance['aur'],work)
-        blobs=[]
-        for file in rendered.rglob('*'):
-            if file.is_symlink():
-                if not file.resolve(strict=False).is_relative_to(rendered.resolve()):
-                    raise ValueError('rendered symlink escapes recipe')
-                data=os.readlink(file).encode();mode='120000'
-            elif file.is_file():
-                data=file.read_bytes();mode='100755' if file.stat().st_mode&0o111 else '100644'
-            elif file.is_dir():
-                continue
+                try:
+                    previous_commit, previous_base = owned_proposal(existing, name, watcher_id)
+                except ValueError:
+                    # Human changes remain untouched and use the normal recipe route.
+                    continue
+                old_receipt = recipe_state.load('proposal', existing['head']['sha'])
+                if old_receipt['lock'] == receipt['lock'] and old_receipt['provenance'] == receipt['provenance']:
+                    dispatch(existing['number'], pr=existing, pending=active)
+                    continue
             else:
-                raise ValueError('unsupported rendered file')
-            path=recipe_payload_path(file.relative_to(rendered).as_posix())
-            blob=api(route('/git/blobs'),'POST',{'content':base64.b64encode(data).decode(),'encoding':'base64'})
-            blobs.append({'path':path.as_posix(),'mode':mode,'type':'blob','sha':blob['sha']})
-        recipe_tree=api(route('/git/trees'),'POST',{'tree':blobs})
-        parents=[pins[name]]
-        if aur_parent and aur_parent not in parents:
-            parents.append(aur_parent)
-        recipe_sha=None
-        proposal_message = f'Update {name} via {watcher_id}\n\nArch-Source-Target: ' + recipe_state.digest({'lock': lock, 'provenance': receipt['provenance']})
-        recipe_branch=branch
-        recipe_tip=ref_head(recipe_branch)
-        if recipe_tip!=retained_tip:
-            raise ValueError('recipe proposal ref moved after ownership validation')
-        previous_recipe=existing['head']['sha'] if existing else None
-        reusable = previous_recipe if existing else recipe_tip
-        if matches_commit(reusable, recipe_tree['sha'], parents, proposal_message):
-            recipe_sha = reusable
-        if recipe_sha is None:
-            recipe_commit=api(route('/git/commits'),'POST',{'message':proposal_message,'tree':recipe_tree['sha'],'parents':parents,'author':{'name':'github-actions[bot]','email':'41898282+github-actions[bot]@users.noreply.github.com'}})
-            recipe_sha=recipe_commit['sha']
-        check_proposal_ref(recipe_tip,recipe_sha,previous_recipe,pins[name])
-        if main_sha()!=base or ref_head('pkg/'+name)!=pins[name]:
-            raise ValueError('control or recipe base changed before proposal write')
-        current_pending = recipe_state.pending_build(name, snapshot=recipe_state.StateSnapshot())
-        if current_pending != active:
-            # A concurrent reservation or result changed the source-update decision.
-            continue
-        durable={**receipt,'repository':repository(),'proposal_origin':'watcher','watcher_ids':[watcher_id],'head_branch':recipe_branch,'recipe_head':recipe_sha,'recipe_base':pins[name],'recipe_tree':recipe_tree['sha']}
-        retained=recipe_state.load_optional('proposal',recipe_sha)
-        if retained is not None:
-            if retained.get('proposal_origin')!='watcher' or retained['head_branch']!=recipe_branch:
-                raise ValueError('recipe object has human/adoption origin; refusing bot ownership')
-            for key in ('repository','pkgbase','watcher_id','watcher_ids','recipe_base','recipe_head','recipe_tree','lock','provenance'):
-                if retained[key]!=durable[key]:
-                    raise ValueError('immutable proposal source receipt differs')
-            for key in ('tree','aur_conflicts'):
-                if key in retained and retained[key]!=durable[key]:
-                    raise ValueError('immutable proposal payload receipt differs')
-        else:
-            recipe_state.save('proposal',recipe_sha,durable)
-        sources.git('fetch','https://github.com/'+repository()+'.git',recipe_sha,cwd=ROOT)
-        if recipe_tip!=recipe_sha:
-            push_ref(ROOT,recipe_sha,recipe_branch,recipe_tip)
-        recipe_state.attest('proposal',recipe_sha,retained or durable,recipe_sha)
-        body=f'Native recipe proposal for {name}. Trusted control `{base}`; accepted recipe `{pins[name]}`; frozen recipe `{recipe_sha}`. Candidate checks independently verify exact sources and native metadata.'
-        if existing:
-            number=existing['number']
-            if recipe_sha != existing['head']['sha']:
-                api(route('/pulls/'+str(number)),'PATCH',{'body':body})
-        else:
-            result=api(route('/pulls'),'POST',{'head':recipe_branch,'base':'pkg/'+name,'title':f'Update {name} ({watcher_id})','body':body})
-            number=result['number']
-        if existing is None or recipe_sha != existing['head']['sha']:
-            dispatch(number)
+                previous_commit, previous_base = None, None
+            retained_tip = existing['head']['sha'] if existing else ref_head(branch)
+            if existing is None and retained_tip:
+                owned_proposal({'head': {'sha': retained_tip}}, name, watcher_id)
+            policy=policies[name];lock=receipt['lock'];validate_source_policy(lock,policy)
+            work=directory/name/watcher_id;recipe=work/'recipe'
+            if tree_manifest(recipe)!=receipt['tree'] or (recipe/'.SRCINFO').read_text()!=receipt['metadata']['srcinfo'] or parse_srcinfo(receipt['metadata']['srcinfo'])['version']!=lock['version']:
+                raise ValueError('static metadata/tree receipt mismatch')
+            # Re-render enrolled spans or reconstruct the authentic AUR merge.
+            rendered=work/'trusted-render';recipes.copy_recipe(ROOT/'recipes'/name,rendered)
+            if watcher['kind']=='aur':
+                configured={**watcher,'work_dir':str(work/'writer-aur')}
+                actual=sources.discover_aur(configured,provenance.get('aur') or {})
+                if actual!=receipt['transition']:
+                    raise ValueError('AUR receipt identity changed')
+                integration=apply_aur_transition(rendered,actual,policy,work/'writer-three-way')
+                if integration['conflicts']!=receipt.get('aur_conflicts'):
+                    raise ValueError('AUR integration conflicts differ from typed receipt')
+            else:
+                render_recipe(rendered,policy,receipt['metadata']['pkgver'],{s['id']:s['checksums'] for s in lock['sources']},pkgrel=receipt['metadata']['pkgrel'])
+                (rendered/'.SRCINFO').write_text(receipt['metadata']['srcinfo'])
+            if tree_manifest(rendered)!=receipt['tree']:
+                raise ValueError('proposal differs from trusted typed rendering')
+            verify_provenance(provenance,receipt['provenance'],lock,policy,watcher_id)
+            oldlock=load(ROOT/'inputs'/f'{name}.json')
+            allowed_ids={watcher.get('source_id'),*watcher.get('related_source_ids',[])}
+            for source in lock['sources']:
+                previous=next(s for s in oldlock['sources'] if s['id']==source['id'])
+                if source!=previous and not next(s for s in policy['sources'] if s['id']==source['id'])['mutable'] and watcher['kind']!='aur':
+                    raise ValueError('watcher changed fixed auxiliary source')
+                if source!=previous and source['id'] not in allowed_ids and watcher['kind']!='aur':
+                    raise ValueError('watcher changed unrelated source')
+                if source['kind']=='git' and source!=previous:
+                    sources.materialize_sources({'schema':1,'version':lock['version'],'sources':[source]},work/('verify-'+source['id']))
+                elif source['kind'] not in {'local','git'}:
+                    sources.freeze_source(source)
+                elif source['kind']=='local':
+                    path=rendered/source['source']
+                    if not path.resolve().is_relative_to(rendered.resolve()):
+                        raise ValueError('local source escapes recipe')
+                    for algorithm,value in source['checksums'].items():
+                        if value!='SKIP' and sources.new_hash(algorithm,path.read_bytes()).hexdigest()!=value:
+                            raise ValueError('typed local source checksum mismatch')
+            aur_parent=None
+            if watcher['kind']=='aur':
+                aur_parent=retain_aur_history(name,watcher,actual,provenance['aur'],work)
+            blobs=[]
+            for file in rendered.rglob('*'):
+                if file.is_symlink():
+                    if not file.resolve(strict=False).is_relative_to(rendered.resolve()):
+                        raise ValueError('rendered symlink escapes recipe')
+                    data=os.readlink(file).encode();mode='120000'
+                elif file.is_file():
+                    data=file.read_bytes();mode='100755' if file.stat().st_mode&0o111 else '100644'
+                elif file.is_dir():
+                    continue
+                else:
+                    raise ValueError('unsupported rendered file')
+                path=recipe_payload_path(file.relative_to(rendered).as_posix())
+                blob=api(route('/git/blobs'),'POST',{'content':base64.b64encode(data).decode(),'encoding':'base64'})
+                blobs.append({'path':path.as_posix(),'mode':mode,'type':'blob','sha':blob['sha']})
+            recipe_tree=api(route('/git/trees'),'POST',{'tree':blobs})
+            parents=[pins[name]]
+            if aur_parent and aur_parent not in parents:
+                parents.append(aur_parent)
+            recipe_sha=None
+            proposal_message = f'Update {name} via {watcher_id}\n\nArch-Source-Target: ' + recipe_state.digest({'lock': lock, 'provenance': receipt['provenance']})
+            recipe_branch=branch
+            recipe_tip=ref_head(recipe_branch)
+            if recipe_tip!=retained_tip:
+                raise ValueError('recipe proposal ref moved after ownership validation')
+            previous_recipe=existing['head']['sha'] if existing else None
+            reusable = previous_recipe if existing else recipe_tip
+            if matches_commit(reusable, recipe_tree['sha'], parents, proposal_message):
+                recipe_sha = reusable
+            if recipe_sha is None:
+                recipe_commit=api(route('/git/commits'),'POST',{'message':proposal_message,'tree':recipe_tree['sha'],'parents':parents,'author':{'name':'github-actions[bot]','email':'41898282+github-actions[bot]@users.noreply.github.com'}})
+                recipe_sha=recipe_commit['sha']
+            check_proposal_ref(recipe_tip,recipe_sha,previous_recipe,pins[name])
+            if main_sha()!=base:
+                raise BatchFailure('control base changed before proposal write')
+            if ref_head('pkg/'+name)!=pins[name]:
+                raise ValueError('recipe base changed before proposal write')
+            current_pending = recipe_state.pending_build(name, snapshot=recipe_state.StateSnapshot())
+            if current_pending != active:
+                # A concurrent reservation or result changed the source-update decision.
+                continue
+            durable={**receipt,'repository':repository(),'proposal_origin':'watcher','watcher_ids':[watcher_id],'head_branch':recipe_branch,'recipe_head':recipe_sha,'recipe_base':pins[name],'recipe_tree':recipe_tree['sha']}
+            retained=recipe_state.load_optional('proposal',recipe_sha)
+            if retained is not None:
+                if retained.get('proposal_origin')!='watcher' or retained['head_branch']!=recipe_branch:
+                    raise ValueError('recipe object has human/adoption origin; refusing bot ownership')
+                for key in ('repository','pkgbase','watcher_id','watcher_ids','recipe_base','recipe_head','recipe_tree','lock','provenance'):
+                    if retained[key]!=durable[key]:
+                        raise ValueError('immutable proposal source receipt differs')
+                for key in ('tree','aur_conflicts'):
+                    if key in retained and retained[key]!=durable[key]:
+                        raise ValueError('immutable proposal payload receipt differs')
+            else:
+                recipe_state.save('proposal',recipe_sha,durable)
+            sources.git('fetch','https://github.com/'+repository()+'.git',recipe_sha,cwd=ROOT)
+            if recipe_tip!=recipe_sha:
+                push_ref(ROOT,recipe_sha,recipe_branch,recipe_tip)
+            recipe_state.attest('proposal',recipe_sha,retained or durable,recipe_sha)
+            body=f'Native recipe proposal for {name}. Trusted control `{base}`; accepted recipe `{pins[name]}`; frozen recipe `{recipe_sha}`. Candidate checks independently verify exact sources and native metadata.'
+            if existing:
+                number=existing['number']
+                if recipe_sha != existing['head']['sha']:
+                    api(route('/pulls/'+str(number)),'PATCH',{'body':body})
+            else:
+                result=api(route('/pulls'),'POST',{'head':recipe_branch,'base':'pkg/'+name,'title':f'Update {name} ({watcher_id})','body':body})
+                number=result['number']
+            if existing is None or recipe_sha != existing['head']['sha']:
+                dispatch(number)
+    failures.finish()
 
 
 def cli():
@@ -1455,7 +1475,10 @@ def cli():
     p=sub.add_parser('pack');p.add_argument('--archive',required=True);p.add_argument('--directory',required=True)
     for command in ('discover','write','bootstrap'):
         p=sub.add_parser(command);p.add_argument('--directory',required=True)
+        if command != 'bootstrap':
+            p.add_argument('--defer-package-failures', action='store_true')
     p=sub.add_parser('reconcile');p.add_argument('--pr',type=int)
+    p.add_argument('--defer-package-failures', action='store_true')
     sub.add_parser('initialize-recipe-branches')
     p=sub.add_parser('migrate-existing');p.add_argument('--pr',type=int,default=3)
     p=sub.add_parser('prepare');p.add_argument('--pr',required=True);p.add_argument('--directory',required=True);p.add_argument('--retry',action='store_true')
@@ -1464,35 +1487,42 @@ def cli():
         if command == 'validate-build':p.add_argument('--directory',required=True)
     p=sub.add_parser('finalize');p.add_argument('--pr',required=True);p.add_argument('--base',required=True);p.add_argument('--head',required=True);p.add_argument('--record',required=True);p.add_argument('--directory',required=True)
     args=parser.parse_args()
-    if args.command=='pack':
-        with tarfile.open(args.archive,'w') as archive:
-            archive.add(args.directory,arcname='source-data')
-    elif args.command=='extract':
-        allowed=set(policy_at(ROOT))|{'receipts.json','bootstrap.json'} if args.source_receipts else {'recipes','bundle.json'}
-        extract_tree(args.archive,args.directory,allowed,args.source_receipts)
-    elif args.command=='bootstrap':bootstrap(args.directory)
-    elif args.command=='discover':discover(args.directory)
-    elif args.command=='write':write_proposals(args.directory)
-    elif args.command=='prepare':prepare(args.pr,args.directory,retry=args.retry)
-    elif args.command=='validate-build':validate_build(args.record,args.directory)
-    elif args.command=='fail-build':
-        record=load(args.record)
-        if record.get('kind')=='recipe':
-            from tools.recipe_state import assert_recipe_identity
-            assert_recipe_identity(record)
-            status(record['head'],'candidate-build','failure','Whole worker or durable result validation failed')
-        else:
-            pr_identity(record['pr_number'],record['base'],record['head'])
-            source_status(record['pr_number'], record['base'], record['head'], 'failure')
-    elif args.command=='reconcile':
-        from tools.recipe_acceptance import reconcile
-        print(json.dumps(reconcile(args.pr),sort_keys=True))
-    elif args.command=='initialize-recipe-branches':
-        print(json.dumps(initialize_recipe_branches(),sort_keys=True))
-    elif args.command=='migrate-existing':
-        from tools.recipe_acceptance import migrate_existing
-        print(json.dumps(migrate_existing(args.pr),sort_keys=True))
-    else:finalize(args.pr,args.base,args.head,args.record,args.directory)
+    try:
+        if args.command=='pack':
+            with tarfile.open(args.archive,'w') as archive:
+                archive.add(args.directory,arcname='source-data')
+        elif args.command=='extract':
+            allowed=set(policy_at(ROOT))|{'receipts.json','bootstrap.json'} if args.source_receipts else {'recipes','bundle.json'}
+            extract_tree(args.archive,args.directory,allowed,args.source_receipts)
+        elif args.command=='bootstrap':bootstrap(args.directory)
+        elif args.command=='discover':discover(args.directory)
+        elif args.command=='write':write_proposals(args.directory)
+        elif args.command=='prepare':prepare(args.pr,args.directory,retry=args.retry)
+        elif args.command=='validate-build':validate_build(args.record,args.directory)
+        elif args.command=='fail-build':
+            record=load(args.record)
+            if record.get('kind')=='recipe':
+                from tools.recipe_state import assert_recipe_identity
+                assert_recipe_identity(record)
+                status(record['head'],'candidate-build','failure','Whole worker or durable result validation failed')
+            else:
+                pr_identity(record['pr_number'],record['base'],record['head'])
+                source_status(record['pr_number'], record['base'], record['head'], 'failure')
+        elif args.command=='reconcile':
+            from tools.recipe_acceptance import reconcile
+            print(json.dumps(reconcile(args.pr),sort_keys=True))
+        elif args.command=='initialize-recipe-branches':
+            print(json.dumps(initialize_recipe_branches(),sort_keys=True))
+        elif args.command=='migrate-existing':
+            from tools.recipe_acceptance import migrate_existing
+            print(json.dumps(migrate_existing(args.pr),sort_keys=True))
+        else:finalize(args.pr,args.base,args.head,args.record,args.directory)
+        if args.command in {'reconcile', 'discover', 'write'}:
+            report_failures([])
+    except PackageErrors as error:
+        report_failures(error.errors)
+        if not getattr(args, 'defer_package_failures', False):
+            raise SystemExit(2)
 
 
 if __name__=='__main__':
