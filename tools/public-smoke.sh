@@ -19,15 +19,20 @@ consumer_scratch=/fresh/data/public-proofs/$name
 mkdir -p "$consumer_scratch"
 cd "$consumer_scratch"
 export TMPDIR="$consumer_scratch"
+completion_values() {
+  python - "$@" <<'PY'
+import json, sys
+actual = {item['value'] for item in json.load(open(sys.argv[1]))['values']}
+expected = set(sys.argv[2:])
+assert actual == expected, (actual, expected)
+PY
+}
 case "$name" in
   carapace-bridge)
 carapace-bridge _carapace export carapace-bridge ba > completion.json
 bash --noprofile --norc -c 'source <(carapace-bridge _carapace bash); COMP_LINE="carapace-bridge ba"; COMP_POINT=${#COMP_LINE}; COMP_TYPE=9; _carapace-bridge_completion; printf "%s\n" "${COMPREPLY[@]}"' > completion.txt
 [[ $(<completion.txt) == bash ]]
-python - <<'PY'
-import json
-assert {x['value'] for x in json.load(open('completion.json'))['values']} == {'bash'}
-PY
+completion_values completion.json bash
 ;;
   regclient-regctl)
 [[ $(regctl ref localhost:5000/consumer/proof:offline --format '{{.Registry}}|{{.Repository}}|{{.Tag}}') == 'localhost:5000|consumer/proof|offline' ]]
@@ -113,17 +118,16 @@ assert 'CaptivePortalAutoLogin for Linux' not in p.stdout + p.stderr
 PY
 ;;
   carapace-spec)
-python - <<'PY'
-import pathlib, tempfile, subprocess
-scratch = pathlib.Path.home() / '.local/state/arch-packages/consumer-smoke'
-scratch.mkdir(parents=True, exist_ok=True)
-with tempfile.TemporaryDirectory(dir=scratch) as directory:
-    spec = pathlib.Path(directory) / 'invalid.yaml'
-    spec.write_text('name: [unterminated\n')
-    result = subprocess.run(['carapace-spec', 'codegen', str(spec)], capture_output=True, text=True)
-    assert result.returncode != 0
-    assert 'yaml:' in result.stderr and ('expected' in result.stderr or 'did not find' in result.stderr), result
-PY
+cat > spec.yaml <<'YAML'
+name: consumer-proof
+flags:
+  --format=: output format
+completion:
+  flag:
+    format: [json, text]
+YAML
+carapace-spec "$PWD/spec.yaml" export consumer-proof --format j > completion.json
+completion_values completion.json json
 ;;
   computer-use-linux)
 python - <<'PY'
