@@ -1,7 +1,7 @@
 # Maintainer: Eric Torres <eric.torres@its-et.me>
 pkgname=podcheck
 pkgver=1.2.0
-pkgrel=2
+pkgrel=3
 pkgdesc="CLI tool to automate podman image updates. Selective, notifications, autoprune, no pre-pulling."
 arch=('any')
 url="https://github.com/sudo-kraken/podcheck"
