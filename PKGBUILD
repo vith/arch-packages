@@ -1,7 +1,7 @@
 # Maintainer ArchEnemy
 pkgname=i915ovmf
 pkgver=1.0.2
-pkgrel=1.1
+pkgrel=1.2
 pkgdesc="i915ovmfPkg VBIOS for Intel GPU Passthrough GVT-g/GVT-d"
 arch=('x86_64')
 url="https://github.com/x78x79x82x79/i915ovmfPkg"
@@ -33,6 +33,19 @@ sha256sums=(
 
 prepare(){
     cd edk2
+    # Preserve upstream CRLF and the DEBUG copy, but not its duplicate option-ROM graph output.
+    printf '%s\r\n' \
+        '--- a/BaseTools/Conf/build_rule.template' \
+        '+++ b/BaseTools/Conf/build_rule.template' \
+        '@@ -396,7 +396,6 @@' \
+        '     <OutputFile>' \
+        '         $(OUTPUT_DIR)(+)$(MODULE_NAME).efi' \
+        '         $(OUTPUT_DIR)(+)$(MODULE_NAME).map' \
+        '-        $(DEBUG_DIR)(+)$(MODULE_NAME).efi' \
+        ' ' \
+        '     <Command.MSFT, Command.INTEL, Command.CLANGPDB>' \
+        '         "$(GENFW)" -e $(MODULE_TYPE) -o ${dst} ${src} $(GENFW_FLAGS)' \
+        | patch --binary --batch --fuzz=0 -Np1
     git init
     echo "checking out edk2 submodules..."
     git submodule update --init --depth 1 --recursive
