@@ -19,6 +19,8 @@ if [[ ${1:-} != --inside ]]; then
   docker cp "$root/tools/smoke.sh" "$container:/smoke.sh"
   docker cp "$root/tools/apexshot-smoke.sh" "$container:/apexshot-smoke.sh"
   docker cp "$root/tools/public-smoke.sh" "$container:/public-smoke.sh"
+  docker cp "$root/tools/consumer_fixtures.py" "$container:/consumer_fixtures.py"
+  docker cp "$root/tools/consumer-fixtures.json" "$container:/consumer-fixtures.json"
   docker cp "$root/tools/dependency_repo.py" "$container:/dependency_repo.py"
   docker cp "$root/tools/github_api.py" "$container:/github_api.py"
   docker cp "$root/keys/n3t.asc" "$container:/n3t.asc"
@@ -346,37 +348,11 @@ for proof,outputs in sorted(groups.items()):
             raise SystemExit('incomplete split output proof enrollment: '+proof)
         print(proof)
 PY
-# Runtime is a separately fetched, fully hash-verified prerequisite, not package payload.
-python - <<'PY'
-import hashlib,json,pathlib,re,tarfile,urllib.request
-packages=json.load(open('/expected.json'))['packages']
-package=next((p for p in packages if p['pkgbase']=='microsandbox'),None)
-if package is not None:
-    source=next(s for s in package['source_lock']['sources'] if s['id']=='microsandbox-runtime')
-    url=source['url']; digest=source['checksums']['sha256']
-    if not url.startswith('https://github.com/superradcompany/microsandbox/releases/download/') or not re.fullmatch('[a-f0-9]{64}',digest):
-        raise SystemExit('unsafe microsandbox runtime prerequisite')
-    archive=pathlib.Path('/fresh/microsandbox-runtime.tar.gz')
-    with urllib.request.urlopen(url,timeout=120) as response, archive.open('wb') as output:
-        while block:=response.read(1024*1024):
-            output.write(block)
-    with archive.open('rb') as file:
-        actual=hashlib.file_digest(file,'sha256').hexdigest()
-    if actual!=digest:
-        raise SystemExit('microsandbox runtime prerequisite digest mismatch')
-    home=pathlib.Path('/fresh/root/fresh/data/public-proofs/microsandbox/home')
-    with tarfile.open(archive) as tar:
-        members=tar.getmembers()
-        if {m.name for m in members}!={'msb','libkrunfw.so.5.6.1'} or not all(m.isfile() for m in members):
-            raise SystemExit('unexpected runtime prerequisite archive members')
-        for member in members:
-            destination=home/('bin' if member.name=='msb' else 'lib')/member.name
-            destination.parent.mkdir(parents=True,exist_ok=True)
-            destination.write_bytes(tar.extractfile(member).read())
-            destination.chmod(0o755)
-    proof={'source':source,'sha256':digest,'role':'separately acquired runtime prerequisite, not package payload'}
-    pathlib.Path('/evidence/microsandbox-prerequisite.json').write_text(json.dumps(proof,sort_keys=True)+'\n')
-PY
+# Reviewed fixtures are prerequisites, not package payload or synthetic source-lock entries.
+python /consumer_fixtures.py /expected.json /consumer-fixtures.json \
+  /fresh/microsandbox-runtime.tar.gz \
+  /fresh/root/fresh/data/public-proofs/microsandbox/home \
+  /evidence/microsandbox-prerequisite.json
 chown -R 1000:1000 /fresh/root/fresh/data
 mapfile -t public_targets < /evidence/public-targets.txt
 for name in "${public_targets[@]}"; do

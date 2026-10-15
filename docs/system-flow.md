@@ -51,6 +51,10 @@ Pending state is directly keyed by package. Immutable build requests and results
 
 An operation-level `StateSnapshot` resolves the state tip once, batch-loads exact records through GraphQL, and caches immutable values. PR heads/checks come from paginated GraphQL. Controllers compare locally and write only changes. Writers use exact leases/CAS and refresh around competing writes. Concurrency groups help serialization but do not replace request reservation.
 
+The same operation scope reuses successful full-SHA commit/tree API responses and public SHA-pinned recipe archives. JSON consumers receive independent values, and authorized reads are separated by credential identity. Archive reuse retains streaming bounds and atomic destination replacement; owned cached files are removed when the operation ends. Mutable refs, PRs, statuses, writes, failed reads, and other download URLs are not cached.
+
+Recipe exports always validate the complete enrolled pin roster. Reconciliation starts with pin metadata; discovery exports active packages, not pending imports; writing exports only changed receipt packages; single-package acceptance exports that package. Historical harness declarations referencing unselected recipe roots retain the full-payload fallback.
+
 Draft build assets are not platform-immutable just because they are on GitHub. Inclusion checks their bound IDs, sizes/digests, archive/context attestation, exact request, producer, and whole-worker success. An OIDC attestation is provenance, not a pacman signature. Compiler cache is neither output nor authority.
 
 ## Lifecycle
@@ -336,6 +340,16 @@ The disposable consumer root has private `/dev`, PTY and `/proc` mounts. Its `/d
 
 Surge's offline proof requests completion of the `completion z` prefix and checks that it resolves to `zsh`. It exercises the installed CLI rather than searching generated completion-script text for command names.
 
+Carapace-spec's offline proof loads a valid YAML specification with `json` and `text` format choices, requests completion of the `--format j` prefix, and requires exactly the `json` value in the exported result. It exercises completion behavior without relying on malformed-input exit status or diagnostic wording.
+
+Podcheck's offline proof requires an unsupported option to exit with status 2 before registry, container, or network discovery. It does not depend on Bash's diagnostic wording and does not exercise container update operations.
+
+i915ovmf's offline proof validates the installed ROM's PCI and EFI headers, declared Intel graphics identity, image boundaries, and AMD64 PE loader structure. It does not execute firmware or exercise GPU passthrough.
+
+Microsandbox's stock package installs a runtime-selecting wrapper and its `msb` alias, not the runtime pair. Reviewed `tools/consumer-fixtures.json` pins the official runtime release/asset identity, HTTPS URL and full SHA-256 by enrolled upstream version and consumer platform. This consumer-only metadata is separate from the signed package's `source_lock` and payload; it does not add package sources. Missing version/platform fixtures fail without fallback or latest-release discovery. The network-enabled preparation stage verifies the archive hash and exactly two regular members before placing the genuine runtime pair in an isolated consumer home and recording `microsandbox-prerequisite.json`.
+
+The capability-free offline Microsandbox proof executes `doctor` through both installed entry points, checks the enrolled runtime version and expected failure status in an environment without `/dev/kvm`, and preserves the authenticated runtime bytes. An invalid explicit pair must exit 127 without creating a bootstrap home; neither path may create images. Captured doctor output is retained in the consumer evidence for inspection, not matched against diagnostic prose, glyphs, padding or canonical-equivalent path spellings. These checks do not establish VM or image boot: missing KVM is an explicit environment limit.
+
 OMP is installed when enrolled but has no shared CLI/help/addon/PipeWire runtime tests. Recipe-owned checks remain in the build. ApexShot consumer proof covers version/help, native messaging, libraries, desktop assets, and extension files, not interactive live capture or recording.
 
 Publication does not dispatch this workflow. Signed consumer proof is not installation on a client's machine.
@@ -393,7 +407,7 @@ Public keys are in [keys](../keys/). The signing fingerprint is `9C293ABB1F701DA
 | Captured base behind main | Skip that candidate, continue other work, leave human branch alone |
 | Inclusion failure | Retry original successful output, no compile |
 | Missing/corrupt successful output or invalid provenance | Refuse inclusion |
-| HTTP 403 | Report API failure; do not assume authorization or quota recovery |
+| HTTP 403 | Report API failure with bounded numeric quota/retry headers when available; redact bodies, reasons, queries, tokens, and other headers. Do not assume authorization or quota recovery |
 
 Package reservation is atomic and exact. The first worker registers its producer; a different worker cannot replace it. Manager finalization binds result to the registered attempt and final GitHub conclusion. Polling is bounded (the collection interface uses a 10,800-second default); it uses direct records and exact endpoints, not historical discovery.
 
