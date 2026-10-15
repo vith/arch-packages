@@ -1,14 +1,44 @@
 """Trusted GitHub API calls and bounded public asset downloads."""
+from contextlib import contextmanager
+from contextvars import ContextVar
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 
 API = "https://api.github.com"
 MAX_JSON = 16 * 1024 * 1024
+_IMMUTABLE_JSON = re.compile(r"/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/git/(?:commits/[0-9a-f]{40}|trees/[0-9a-f]{40}(?:\?recursive=1)?)")
+_IMMUTABLE_ARCHIVE = re.compile(r"https://api\.github\.com/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/tarball/[0-9a-f]{40}")
+_READ_SCOPE = ContextVar("github_immutable_reads", default=None)
+
+
+@contextmanager
+def immutable_reads():
+    """Reuse successful immutable reads only within the outermost operation."""
+    if _READ_SCOPE.get() is not None:
+        yield
+        return
+    scope = {"json": {}, "archives": {}, "directory": None}
+    token = _READ_SCOPE.set(scope)
+    try:
+        yield
+    finally:
+        _READ_SCOPE.reset(token)
+        if scope["directory"] is not None:
+            scope["directory"].cleanup()
+
+
+def _archive_directory(scope):
+    if scope["directory"] is None:
+        from tools.recipe_acceptance import scratch_root
+        scope["directory"] = tempfile.TemporaryDirectory(prefix="github-immutable-", dir=scratch_root())
+    return scope["directory"].name
 
 
 def canonical(value):
@@ -21,9 +51,20 @@ class NoAPIRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class GitHubError(RuntimeError):
-    def __init__(self, status, method, path):
+    def __init__(self, status, method, path, headers):
         self.status = status
-        super().__init__(f"GitHub HTTP {status} for {method} {path}")
+        fields = {}
+        allowed = ("x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-used",
+                   "x-ratelimit-reset", "retry-after")
+        for name, value in (headers.items() if headers is not None else ()):
+            name = name.lower()
+            if name in allowed and isinstance(value, str):
+                value = value.strip(" \t")
+                if re.fullmatch(r"[0-9]{1,12}", value):
+                    fields[name] = str(int(value))
+        diagnostic = ", ".join(f"{name}={fields[name]}" for name in allowed if name in fields)
+        text = f"GitHub HTTP {status} for {method} {urllib.parse.urlsplit(path).path}"
+        super().__init__(text + (f" ({diagnostic})" if diagnostic else ""))
 
 
 def _request(url, method="GET", data=None, content_type="application/json", authenticated=False, maximum=MAX_JSON):
@@ -49,7 +90,7 @@ def _request(url, method="GET", data=None, content_type="application/json", auth
             return body
     except urllib.error.HTTPError as error:
         # Never return provider bodies that may echo credentials or submitted data.
-        raise GitHubError(error.code, method, parsed.path) from None
+        raise GitHubError(error.code, method, parsed.path, error.headers) from None
 
 
 def api(path, method="GET", data=None, *, authenticated=True):
@@ -57,8 +98,28 @@ def api(path, method="GET", data=None, *, authenticated=True):
         path = path[1:]
     if "://" in path or path.startswith(("..", "?")):
         raise ValueError("API relative path required")
+    scope = _READ_SCOPE.get()
+    key = None
+    if scope is not None and method == "GET" and data is None and _IMMUTABLE_JSON.fullmatch("/" + path):
+        identity = hashlib.sha256(os.environ.get("GITHUB_TOKEN", "").encode()).digest() if authenticated else None
+        key = (path, identity)
+        if key in scope["json"]:
+            body = scope["json"][key]
+            return json.loads(body) if body else None
     body = _request(API + "/" + path, method, canonical(data) if data is not None else None, authenticated=authenticated)
-    return json.loads(body) if body else None
+    value = json.loads(body) if body else None
+    if key is not None:
+        scope["json"][key] = body
+    return value
+
+
+def _copy_bounded(source, output, maximum):
+    count = 0
+    while chunk := source.read(1024 * 1024):
+        count += len(chunk)
+        if count > maximum:
+            raise ValueError("asset exceeds size limit")
+        output.write(chunk)
 
 
 def download(url, path, maximum=805306368):
@@ -69,21 +130,35 @@ def download(url, path, maximum=805306368):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     staging = path.with_name(path.name + ".part")
+    scope = _READ_SCOPE.get()
+    cacheable = scope is not None and _IMMUTABLE_ARCHIVE.fullmatch(url)
+    cached = scope["archives"].get(url) if cacheable else None
+    owned = None
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "arch-packages"}), timeout=120) as response, staging.open("xb") as output:
-            final = urllib.parse.urlsplit(response.url)
-            if final.scheme != "https":
-                raise ValueError("asset redirect downgraded transport")
-            count = 0
-            while chunk := response.read(1024 * 1024):
-                count += len(chunk)
-                if count > maximum:
-                    raise ValueError("asset exceeds size limit")
-                output.write(chunk)
+        if cached is not None:
+            with cached.open("rb") as source, staging.open("xb") as output:
+                _copy_bounded(source, output, maximum)
+        else:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "arch-packages"}), timeout=120) as response, staging.open("xb") as output:
+                final = urllib.parse.urlsplit(response.url)
+                if final.scheme != "https":
+                    raise ValueError("asset redirect downgraded transport")
+                _copy_bounded(response, output, maximum)
+            if cacheable:
+                with staging.open("rb") as source, tempfile.NamedTemporaryFile(
+                        dir=_archive_directory(scope), delete=False) as output:
+                    owned = Path(output.name)
+                    _copy_bounded(source, output, maximum)
         staging.replace(path)
+        if owned is not None:
+            scope["archives"][url] = owned
+            owned = None
     except BaseException:
         staging.unlink(missing_ok=True)
         raise
+    finally:
+        if owned is not None:
+            owned.unlink(missing_ok=True)
     return path
 
 

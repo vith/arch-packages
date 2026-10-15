@@ -51,6 +51,10 @@ Pending state is directly keyed by package. Immutable build requests and results
 
 An operation-level `StateSnapshot` resolves the state tip once, batch-loads exact records through GraphQL, and caches immutable values. PR heads/checks come from paginated GraphQL. Controllers compare locally and write only changes. Writers use exact leases/CAS and refresh around competing writes. Concurrency groups help serialization but do not replace request reservation.
 
+The same operation scope reuses successful full-SHA commit/tree API responses and public SHA-pinned recipe archives. JSON consumers receive independent values, and authorized reads are separated by credential identity. Archive reuse retains streaming bounds and atomic destination replacement; owned cached files are removed when the operation ends. Mutable refs, PRs, statuses, writes, failed reads, and other download URLs are not cached.
+
+Recipe exports always validate the complete enrolled pin roster. Reconciliation starts with pin metadata; discovery exports active packages, not pending imports; writing exports only changed receipt packages; single-package acceptance exports that package. Historical harness declarations referencing unselected recipe roots retain the full-payload fallback.
+
 Draft build assets are not platform-immutable just because they are on GitHub. Inclusion checks their bound IDs, sizes/digests, archive/context attestation, exact request, producer, and whole-worker success. An OIDC attestation is provenance, not a pacman signature. Compiler cache is neither output nor authority.
 
 ## Lifecycle
@@ -399,7 +403,7 @@ Public keys are in [keys](../keys/). The signing fingerprint is `9C293ABB1F701DA
 | Captured base behind main | Skip that candidate, continue other work, leave human branch alone |
 | Inclusion failure | Retry original successful output, no compile |
 | Missing/corrupt successful output or invalid provenance | Refuse inclusion |
-| HTTP 403 | Report API failure; do not assume authorization or quota recovery |
+| HTTP 403 | Report API failure with bounded numeric quota/retry headers when available; redact bodies, reasons, queries, tokens, and other headers. Do not assume authorization or quota recovery |
 
 Package reservation is atomic and exact. The first worker registers its producer; a different worker cannot replace it. Manager finalization binds result to the registered attempt and final GitHub conclusion. Polling is bounded (the collection interface uses a 10,800-second default); it uses direct records and exact endpoints, not historical discovery.
 
