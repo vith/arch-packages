@@ -342,6 +342,10 @@ Surge's offline proof requests completion of the `completion z` prefix and check
 
 Carapace-spec's offline proof loads a valid YAML specification with `json` and `text` format choices, requests completion of the `--format j` prefix, and requires exactly the `json` value in the exported result. It exercises completion behavior without relying on malformed-input exit status or diagnostic wording.
 
+Podcheck's offline proof requires an unsupported option to exit with status 2 before registry, container, or network discovery. It does not depend on Bash's diagnostic wording and does not exercise container update operations.
+
+i915ovmf's offline proof validates the installed ROM's PCI and EFI headers, declared Intel graphics identity, image boundaries, and AMD64 PE loader structure. It does not execute firmware or exercise GPU passthrough.
+
 OMP is installed when enrolled but has no shared CLI/help/addon/PipeWire runtime tests. Recipe-owned checks remain in the build. ApexShot consumer proof covers version/help, native messaging, libraries, desktop assets, and extension files, not interactive live capture or recording.
 
 Publication does not dispatch this workflow. Signed consumer proof is not installation on a client's machine.
