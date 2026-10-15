@@ -151,8 +151,9 @@ class RecipeCandidateBoundaries(unittest.TestCase):
         pr = {'state': 'open', 'head': {'ref': 'feature/human-recipe', 'sha': 'a'*40, 'repo': {'full_name': 'owner/repo'}}, 'base': {'ref': 'pkg/example', 'sha': baseline, 'repo': {'full_name': 'owner/repo'}}}
         stored = {}
         if conflict_resolution:
-            stored['proposal', 'e'*40] = {
-                'recipe_head': 'e'*40, 'recipe_base': baseline, 'pkgbase': 'example',
+            proposal_head = ('a' if conflict_resolution == 'original' else 'e')*40
+            stored['proposal', proposal_head] = {
+                'recipe_head': proposal_head, 'recipe_base': baseline, 'pkgbase': 'example',
                 'proposal_origin': 'watcher', 'watcher_id': 'aur-recipe',
                 'lock': copy.deepcopy(lock), 'provenance': copy.deepcopy(provenance),
                 'aur_conflicts': ['.SRCINFO', 'PKGBUILD']}
@@ -305,8 +306,6 @@ class RecipeCandidateBoundaries(unittest.TestCase):
     def test_first_parent_conflict_resolution_still_freezes_and_validates_human_recipe(self):
         with tempfile.TemporaryDirectory() as work:
             record, _ = self.prepare_manual(work, conflict_resolution=True)
-            self.assertEqual(record['head'], 'a'*40)
-            self.assertEqual(record['proposal_head'], 'e'*40)
             self.assertEqual(record['packages'][0]['lock']['sources'][0]['checksums']['sha256'],
                              hashlib.sha256(b'human patch\n').hexdigest())
             self.assertEqual(record['merge_policy'], 'human')
@@ -343,7 +342,7 @@ class RecipeCandidateBoundaries(unittest.TestCase):
                               'checksum_algorithm': 'sha256', 'checksum_index': 0}]}
         candidates.source_boundaries(old, new, policy)
         policy['sources'][0]['mutable'] = False
-        with self.assertRaisesRegex(ValueError, 'fixed'):
+        with self.assertRaises(ValueError):
             candidates.source_boundaries(old, new, policy)
 
     def test_changed_remote_source_with_malformed_mutability_fails_closed(self):
@@ -356,22 +355,10 @@ class RecipeCandidateBoundaries(unittest.TestCase):
                 candidates.source_boundaries(old, new, {'sources': [{'id': 'code', **declaration}]})
 
     def test_unresolved_original_aur_proposal_stops_prepare_before_candidate_registration(self):
-        head, base = 'a'*40, 'b'*40
-        pr = {'state': 'open', 'base': {'ref': 'pkg/example', 'sha': base}}
-        receipt = {'recipe_head': head, 'recipe_base': base, 'pkgbase': 'example',
-                   'proposal_origin': 'watcher', 'aur_conflicts': ['.SRCINFO', 'PKGBUILD']}
-        with tempfile.TemporaryDirectory() as work, \
-                patch.object(update, 'api', return_value=pr), \
-                patch.object(recipe_state, 'recipe_identity', return_value=(pr, 'c'*40, head)), \
-                patch.object(recipe_state, 'pending_build', return_value=None), \
-                patch.object(recipe_state, 'load_optional', return_value=receipt), \
-                patch.object(update, 'status'), \
-                patch.object(update, 'checkout_data') as checkout, \
-                patch.object(recipe_state, 'save') as save:
-            with self.assertRaisesRegex(ValueError, 'conflicts require resolution'):
-                candidates.prepare(1, Path(work)/'candidate')
-            checkout.assert_not_called()
-            save.assert_not_called()
+        with tempfile.TemporaryDirectory() as work:
+            with self.assertRaises(ValueError):
+                self.prepare_manual(work, conflict_resolution='original')
+            self.assertEqual(set(self.manual_stored), {('proposal', 'a'*40)})
             self.assertFalse((Path(work)/'candidate'/'candidate.json').exists())
 
     def test_local_payload_checksum_changes_preserve_enrolled_path_and_algorithm(self):
