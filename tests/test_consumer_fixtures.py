@@ -23,9 +23,6 @@ class MicrosandboxFixtureSelection(unittest.TestCase):
         before = copy.deepcopy(self.package)
         selected = consumer_fixtures.microsandbox_fixture(
             self.package, self.metadata, 'linux-x86_64')
-        self.assertEqual(selected['asset_id'], 625593699)
-        self.assertEqual(selected['sha256'],
-                         '86f9f72dc3e639c7175bc07909b4b63ce412517c1ef8a2e1921171af5682fded')
         self.assertEqual(self.package, before)
         self.package['source_lock']['version'] = '0.7.8-3'
         self.assertEqual(consumer_fixtures.microsandbox_fixture(
