@@ -376,10 +376,24 @@ def verify_bookkeeping_shape(pr, commit, supplied, before, after):
     return P
 
 
+def _bookkeeping_identity(pr, C):
+    from tools import update as u
+    current = u.api(u.route('/pulls/' + str(pr['number'])))
+    if (current['state'] != 'open' or current['base']['ref'] != 'main'
+            or current['base']['repo']['full_name'] != u.repository()
+            or current['head']['repo']['full_name'] != u.repository()
+            or current['head']['sha'] != pr['head']['sha']
+            or current['head']['ref'] != pr['head']['ref']):
+        raise ValueError('bookkeeping pull request identity changed')
+    if u.main_sha() != C:
+        raise BatchFailure('main advanced during bookkeeping recovery')
+    return current
+
+
 def reconcile_bookkeeping(pr, C, enrolled):
     from tools import update as u
+    pr = _bookkeeping_identity(pr, C)
     H = pr['head']['sha']
-    u.pr_identity(pr['number'], C, H)
     commit = u.api(u.route('/git/commits/' + H))
     parents = commit.get('parents', [])
     if len(parents) != 1:
@@ -396,25 +410,30 @@ def reconcile_bookkeeping(pr, C, enrolled):
     verify_bookkeeping_shape(pr, commit, supplied, before, after)
     if claims[0] != 'acceptance/' + supplied['pkgbase'] + '.json' or supplied['pkgbase'] not in enrolled:
         raise ValueError('claimed bookkeeping package is not currently enrolled')
-    receipt = accepted_receipt(supplied['pr_number'], C)
-    if receipt['accepted'] != supplied['accepted'] or receipt['pkgbase'] != supplied['pkgbase']:
-        raise ValueError('stale bookkeeping source acceptance differs')
-    if P == C:
-        if supplied != receipt:
-            raise ValueError('current bookkeeping receipt is not independently verified')
-        dispatched = u.dispatch(pr['number'])
-        return {'pr_number': pr['number'], 'dispatched': dispatched}
-    replacement = write_bookkeeping(receipt)
-    replacement_head = replacement['head']['sha']
-    u.pr_identity(replacement['number'], C, replacement_head)
-    if (replacement['number'] == pr['number']
-            or leaves(replacement_head) != expected_leaves(leaves(C), receipt)):
-        raise ValueError('bookkeeping replacement identity or reconstruction differs')
-    u.pr_identity(pr['number'], C, H)
-    if u.main_sha() != C:
-        raise BatchFailure('main advanced before stale bookkeeping retirement')
+    if supplied != recipe_state.load('acceptance', P + '-' + supplied['accepted']):
+        raise ValueError('bookkeeping differs from durable acceptance')
+    from tools import recipes
+    pin = u.pin_at(C, supplied['pkgbase'])
+    result = {'pr_number': pr['number'], 'closed': True}
+    if pin != supplied['accepted'] and not recipes.is_ancestor(u.repository(), supplied['accepted'], pin):
+        receipt = accepted_receipt(supplied['pr_number'], C)
+        if receipt['accepted'] != supplied['accepted'] or receipt['pkgbase'] != supplied['pkgbase']:
+            raise ValueError('stale bookkeeping source acceptance differs')
+        if P == C:
+            if supplied != receipt:
+                raise ValueError('current bookkeeping receipt is not independently verified')
+            dispatched = u.dispatch(pr['number'])
+            return {'pr_number': pr['number'], 'dispatched': dispatched}
+        replacement = write_bookkeeping(receipt)
+        replacement_head = replacement['head']['sha']
+        u.pr_identity(replacement['number'], C, replacement_head)
+        if (replacement['number'] == pr['number']
+                or leaves(replacement_head) != expected_leaves(leaves(C), receipt)):
+            raise ValueError('bookkeeping replacement identity or reconstruction differs')
+        result['replacement'] = replacement['number']
+    _bookkeeping_identity(pr, C)
     u.api(u.route('/pulls/' + str(pr['number'])), 'PATCH', {'state': 'closed'})
-    return {'pr_number': pr['number'], 'replacement': replacement['number'], 'closed': True}
+    return result
 
 
 def reconcile(number=None):

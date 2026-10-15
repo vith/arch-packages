@@ -226,6 +226,17 @@ def affected_packages(base,head,policies):
     return sorted(affected),shared
 
 
+def source_is_mutable(enrolled):
+    if 'mutable' in enrolled:
+        if type(enrolled['mutable']) is not bool:
+            raise ValueError('source mutability must be boolean')
+        return enrolled['mutable']
+    index = enrolled.get('native_source_index')
+    if type(index) is int and index >= 0:
+        return True
+    raise ValueError('source policy requires explicit mutability or a native source index')
+
+
 def validate_source_policy(lock,policy):
     sources.validate_lock(lock)
     expected={s['id']:s for s in policy['sources']}
@@ -541,7 +552,7 @@ def _transition(old,new,name,policy,work,verify_context,aur_transition,verify_so
         raise ValueError('source record order changed')
     for previous,current in zip(oldlock['sources'],newlock['sources']):
         enrolled=next(s for s in policy['sources'] if s['id']==current['id'])
-        if previous!=current and not enrolled['mutable'] and current['kind']!='local':
+        if previous!=current and not source_is_mutable(enrolled) and current['kind']!='local':
             return None
     changed=[(a,b) for a,b in zip(oldlock['sources'],newlock['sources']) if a!=b]
     if len(oldlock['sources'])!=len(newlock['sources']) or not changed and oldpro==newpro:
@@ -1374,7 +1385,7 @@ def write_proposals(directory):
             allowed_ids={watcher.get('source_id'),*watcher.get('related_source_ids',[])}
             for source in lock['sources']:
                 previous=next(s for s in oldlock['sources'] if s['id']==source['id'])
-                if source!=previous and not next(s for s in policy['sources'] if s['id']==source['id'])['mutable'] and watcher['kind']!='aur':
+                if source!=previous and not source_is_mutable(next(s for s in policy['sources'] if s['id']==source['id'])) and watcher['kind']!='aur':
                     raise ValueError('watcher changed fixed auxiliary source')
                 if source!=previous and source['id'] not in allowed_ids and watcher['kind']!='aur':
                     raise ValueError('watcher changed unrelated source')

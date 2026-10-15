@@ -91,6 +91,8 @@ A successful internal compile step, uploaded archive, passing candidate status, 
 
 After recipe merge, reconciliation verifies the exact head/merge relationship and generates main bookkeeping. It records the gitlink, actual source/version data, upstream information, and original build reference. Pending imports can activate at this point. An accepted package's exact current intent can install its prospective policy and tracking at this same boundary; bookkeeping atomically removes the consumed intent. Bookkeeping selects zero workers and requires no second recipe approval or build.
 
+Stale bookkeeping is authenticated against its exact generated tree and immutable controller receipt. If the current recipe pin already contains its accepted merge, reconciliation closes the obsolete PR without a replacement or build. Otherwise it reconstructs bookkeeping against current main before closing the old exact head. Normal candidate freshness checks remain unchanged.
+
 All main documentation, source, controller, image, and bookkeeping candidates use one source-test route with zero package workers. A human-classified PR stays open until ordinary protected Merge, which the assistant may perform for authorized internal changes. External PKGBUILD changes require user approval. Generated exact bookkeeping can merge automatically after validation. No alternative manual source-review workflow remains in the core.
 
 ## Recipes and actual metadata
@@ -103,6 +105,8 @@ git clone --recurse-submodules https://github.com/vith/arch-packages.git
 
 Recipe PRs target `pkg/<package>`. The Files changed tab contains the actual `PKGBUILD`, patches, install scripts, and payload. Changed package contents require a version or `pkgrel` bump. Recipe-root branches have no workflows; writers, reconciliation, or humans explicitly dispatch validation.
 
+An original AUR proposal with recorded merge conflicts cannot reserve a new native build request. Resolve the recipe in a subsequent first-parent commit; that edited head still undergoes full source enrollment, metadata and review-policy validation.
+
 Pending import registration freezes source data without executing a recipe. Pending imports are not routine discovery/publication inputs. Their first conversion builds as an exact recipe PR and waits for human Merge.
 
 Initial AUR imports use the authenticated AUR version floor, not an unpublished legacy recipe counter. Local release corrections use fractions above the AUR counter and below its next integer. Final candidate preparation revalidates the intended policy, sources, and AUR provenance before allowing this initial reset; published recipes retain their version-increase requirement.
@@ -110,6 +114,8 @@ Initial AUR imports use the authenticated AUR version floor, not an unpublished 
 Normal native `makepkg` performs Git checkout with its branch, history, and reachable tags. Planned source locks are detection/classification snapshots, not instructions to rewrite source references or force a different checkout. No source bundle or extra source-submodule scheme is introduced.
 
 Fixed Git commit declarations retain their literal object identity and genuine reachable tag context without invented refs. Fragment-free Git sources enroll the actual remote HEAD branch; a changed default is rejected rather than silently selecting the old branch. Indexed source declarations and explicit single-character version translation retain native package versions, source ordering, and checksum algorithms while supporting upstream tag spelling.
+
+Version-dependent remote source changes support both explicit legacy mutability flags and native-indexed declarations. Template and source-identity checks still apply, and an explicit fixed-source flag takes precedence over a native index. Missing or malformed mutability declarations fail closed.
 
 Local AUR source files retain their native regular or executable mode. Admission verifies the declared checksum in either case; an executable bit does not authorize running the source during metadata authentication.
 
