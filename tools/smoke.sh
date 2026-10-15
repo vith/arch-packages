@@ -244,6 +244,22 @@ names = {i['name'] for p in json.load(open('/expected.json'))['packages'] for i 
 sys.exit(0 if names.intersection(sys.argv[1:]) else 1)
 PY
 }
+if enrolled oh-my-pi-vith-git; then
+offline_consumer omp --version > /evidence/omp-version.txt
+python - <<'PY'
+import json,pathlib,re
+versions={item['version'] for package in json.load(open('/expected.json'))['packages']
+          for item in package['files'] if item['name']=='oh-my-pi-vith-git'}
+if len(versions)!=1: raise SystemExit('signed OMP package version absent/ambiguous')
+version=versions.pop()
+match=re.fullmatch(r'(.+)\.vith\.r([0-9]+)\.g([0-9a-f]{12})-[0-9]+(?:\.[0-9]+)*',version)
+if not match: raise SystemExit('unsupported signed OMP fork version: '+version)
+release,count,commit=match.groups()
+expected=f'omp/{release}+vith-fork.{count}.{commit}'
+actual=pathlib.Path('/evidence/omp-version.txt').read_text().strip()
+if actual!=expected: raise SystemExit(f'installed OMP runtime mismatch: {actual!r} != {expected!r}')
+PY
+fi
 if enrolled archive-mounter; then
 desktop=/fresh/root/usr/share/applications/mount-archive.desktop
 desktop-file-validate "$desktop"
