@@ -342,7 +342,7 @@ Nasc's corresponding-source archive is selected by its locked checksum from the 
 
 `PROOF_WORK` is `/home/runner/.local/state/arch-packages/work/consumers-<run>-<attempt>`, with `TMPDIR` below it. `consumer-proof-<run>-<attempt>` uploads evidence under `always()`, retained for 14 days; missing evidence warns.
 
-The disposable consumer root has private `/dev`, PTY and `/proc` mounts. Its `/dev/fd` points to `/proc/self/fd` so Bash process substitution works without exposing host devices. Consumer processes still run with no capabilities.
+The disposable consumer root has private `/dev`, PTY and `/proc` mounts. Its `/dev/fd` points to `/proc/self/fd`, with standard `stdin`, `stdout` and `stderr` aliases, so process substitution and package hooks can use their own file descriptors without exposing host devices. Consumer processes still run with no capabilities.
 
 Setup alone has `CAP_SETFCAP` so pacman can restore packaged file capabilities. Before consumer execution, proof compares GStreamer's installed PTP helper capabilities with the official package's static install data and retains the declaration, observed capabilities and comparison.
 

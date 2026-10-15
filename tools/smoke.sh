@@ -42,7 +42,11 @@ mount -t tmpfs -o mode=755,nosuid tmpfs /fresh/root/dev
 mkdir /fresh/root/dev/pts
 mount -t devpts -o newinstance,ptmxmode=0666,mode=0620 devpts /fresh/root/dev/pts
 ln -s pts/ptmx /fresh/root/dev/ptmx
-ln -s /proc/self/fd /fresh/root/dev/fd
+for spec in 'fd /proc/self/fd' 'stdin /proc/self/fd/0' \
+            'stdout /proc/self/fd/1' 'stderr /proc/self/fd/2'; do
+  read -r name target <<<"$spec"
+  ln -s "$target" "/fresh/root/dev/$name"
+done
 for spec in 'null 1 3' 'zero 1 5' 'random 1 8' 'urandom 1 9' 'tty 5 0'; do
   read -r name major minor <<<"$spec"
   mknod -m 666 "/fresh/root/dev/$name" c "$major" "$minor"
