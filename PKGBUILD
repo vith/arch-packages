@@ -1,7 +1,7 @@
 # Maintainer: Jason Papakostas <jason.papakostas@gmail.com>
 pkgname=captiveportalautologin-vith-git
-pkgver=r694.000b352
-pkgrel=4
+pkgver=r695.6ae9838
+pkgrel=1
 pkgdesc='Automatically detect and log in to supported captive portals (vith fork)'
 arch=('any')
 url='https://git.n3t.work/vith/CaptivePortalAutoLogin'
