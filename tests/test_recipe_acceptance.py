@@ -1,6 +1,6 @@
 import copy
 import os
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -9,7 +9,7 @@ import tempfile
 from tools import update
 
 from tools import recipe_acceptance as acceptance
-from tools import build_store
+from tools import build_store, recipe_state
 
 
 class AcceptanceInvariants(unittest.TestCase):
@@ -399,6 +399,100 @@ class AcceptanceInvariants(unittest.TestCase):
         after['tools/update.py'] = ('100644', 'blob', '2'*40)
         with self.assertRaises(ValueError):
             acceptance.verify_bookkeeping_shape(pr, commit, supplied, before, after)
+
+    @contextmanager
+    def bookkeeping_fixture(self, *, pin=None, ancestor=False, tampered=False):
+        P, C, A, H, R = (value * 40 for value in 'bcade')
+        receipt = {'pkgbase': 'demo', 'base': P, 'accepted': A, 'pr_number': 7,
+                   'lock': {'version': '2'}, 'provenance': {'watchers': []}}
+        old = {'recipes/demo': ('160000', 'commit', 'f' * 40)}
+        current = acceptance.expected_leaves(old, receipt)
+        current['recipes/demo'] = ('160000', 'commit', pin or A)
+        fresh = {**receipt, 'base': C}
+        pr = {'number': 8, 'state': 'open',
+              'base': {'ref': 'main', 'sha': P, 'repo': {'full_name': 'owner/repo'}},
+              'head': {'ref': f'bookkeeping/demo/{A}/{P}', 'sha': H,
+                       'repo': {'full_name': 'owner/repo'}}}
+        replacement = {'number': 9, 'state': 'open',
+                       'base': {'ref': 'main', 'sha': C, 'repo': {'full_name': 'owner/repo'}},
+                       'head': {'sha': R}}
+        commit = {'parents': [{'sha': P}],
+                  'message': 'Accept demo recipe\n\nArch-Recipe-Acceptance: ' + A}
+        closed = []
+        def response(path, method='GET', data=None):
+            if path.endswith('/pulls/8'):
+                if method == 'PATCH':
+                    closed.append(data)
+                return pr
+            if path.endswith('/pulls/9'):
+                return replacement
+            if path.endswith('/git/commits/' + H):
+                return commit
+            raise AssertionError((path, method))
+        trees = {P: old, H: acceptance.expected_leaves(old, receipt), C: current,
+                 R: acceptance.expected_leaves(current, fresh)}
+        with tempfile.TemporaryDirectory(dir=acceptance.scratch_root()) as directory:
+            update.dump(Path(directory) / 'acceptance/demo.json', receipt)
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(update, 'api', side_effect=response))
+                main = stack.enter_context(patch.object(update, 'main_sha', return_value=C))
+                stack.enter_context(patch.object(update, 'checkout_data', return_value=Path(directory)))
+                stack.enter_context(patch.object(update, 'pin_at', return_value=pin or A))
+                stack.enter_context(patch.object(acceptance, 'leaves', side_effect=trees.__getitem__))
+                stored = {**receipt, 'lock': {'version': '3'}} if tampered else receipt
+                stack.enter_context(patch.object(recipe_state, 'load', return_value=stored))
+                from tools import recipes
+                stack.enter_context(patch.object(recipes, 'is_ancestor', return_value=ancestor))
+                accept = stack.enter_context(patch.object(acceptance, 'accepted_receipt', return_value=fresh))
+                write = stack.enter_context(patch.object(acceptance, 'write_bookkeeping', return_value=replacement))
+                dispatch = stack.enter_context(patch.object(update, 'dispatch'))
+                yield {'pr': pr, 'control': C, 'closed': closed, 'accept': accept,
+                       'write': write, 'dispatch': dispatch, 'main': main}
+
+    def test_already_accepted_stale_bookkeeping_closes_without_rebuild_or_replacement(self):
+        with self.bookkeeping_fixture() as fixture:
+            result = acceptance.reconcile_bookkeeping(fixture['pr'], fixture['control'], {'demo'})
+            self.assertEqual(result, {'pr_number': 8, 'closed': True})
+            self.assertEqual(fixture['closed'], [{'state': 'closed'}])
+            fixture['accept'].assert_not_called()
+            fixture['write'].assert_not_called()
+            fixture['dispatch'].assert_not_called()
+
+    def test_superseded_stale_bookkeeping_closes_only_on_accepted_recipe_ancestry(self):
+        with self.bookkeeping_fixture(pin='1' * 40, ancestor=True) as fixture:
+            result = acceptance.reconcile_bookkeeping(fixture['pr'], fixture['control'], {'demo'})
+            self.assertTrue(result['closed'])
+            self.assertEqual(fixture['closed'], [{'state': 'closed'}])
+            fixture['write'].assert_not_called()
+
+    def test_unapplied_stale_bookkeeping_gets_current_main_replacement(self):
+        with self.bookkeeping_fixture(pin='f' * 40) as fixture:
+            result = acceptance.reconcile_bookkeeping(fixture['pr'], fixture['control'], {'demo'})
+            self.assertEqual(result, {'pr_number': 8, 'replacement': 9, 'closed': True})
+            self.assertEqual(fixture['closed'], [{'state': 'closed'}])
+            fixture['write'].assert_called_once()
+
+    def test_stale_bookkeeping_must_match_immutable_controller_receipt_before_closure(self):
+        with self.bookkeeping_fixture(tampered=True) as fixture:
+            with self.assertRaises(ValueError):
+                acceptance.reconcile_bookkeeping(fixture['pr'], fixture['control'], {'demo'})
+            self.assertEqual(fixture['closed'], [])
+            fixture['write'].assert_not_called()
+
+    def test_changed_stale_bookkeeping_head_is_not_closed(self):
+        with self.bookkeeping_fixture() as fixture:
+            original = copy.deepcopy(fixture['pr'])
+            fixture['pr']['head']['sha'] = '2' * 40
+            with self.assertRaises(ValueError):
+                acceptance.reconcile_bookkeeping(original, fixture['control'], {'demo'})
+            self.assertEqual(fixture['closed'], [])
+
+    def test_main_movement_prevents_stale_bookkeeping_closure(self):
+        with self.bookkeeping_fixture() as fixture:
+            fixture['main'].side_effect = [fixture['control'], '2' * 40]
+            with self.assertRaises(ValueError):
+                acceptance.reconcile_bookkeeping(fixture['pr'], fixture['control'], {'demo'})
+            self.assertEqual(fixture['closed'], [])
 
     def test_pagination_recovers_later_pages(self):
         calls = []
