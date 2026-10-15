@@ -301,16 +301,25 @@ PY
 export spotify_fixture="$consumer_scratch/spotify-apps"
 mkdir -p "$spotify_fixture"
 printf 'before;adsEnabled:!0;after' > "$spotify_fixture/xpui-snapshot.js"
+# Model an existing archive: zip --update only replaces members with newer timestamps.
+touch -t 200001010000 "$spotify_fixture/xpui-snapshot.js"
 (cd "$spotify_fixture" && zip -q xpui.spa xpui-snapshot.js && rm xpui-snapshot.js)
 cp "$spotify_fixture/xpui.spa" "$spotify_fixture/original.spa"
 cd() { [[ "$1" == /opt/spotify/Apps ]] || return 99; builtin cd "$spotify_fixture"; }
 export -f cd
 bash /usr/share/spotify-remove-ad-banner/remove.sh
-[[ "$(unzip -p "$spotify_fixture/xpui.spa" xpui-snapshot.js)" == 'before;adsEnabled:false;after' ]]
+[[ "$(unzip -p "$spotify_fixture/xpui.spa" xpui-snapshot.js)" == 'before;adsEnabled:false;after' ]] || {
+  printf '%s\n' 'Spotify banner fixture transformation failed; archive inventory follows:' >&2
+  unzip -l "$spotify_fixture/xpui.spa" >&2
+  exit 1
+}
 cmp "$spotify_fixture/original.spa" "$spotify_fixture/xpui.spa.bak"
 bash /usr/share/spotify-remove-ad-banner/restore.sh
 cmp "$spotify_fixture/original.spa" "$spotify_fixture/xpui.spa"
-[[ ! -e "$spotify_fixture/xpui.spa.bak" ]]
+[[ ! -e "$spotify_fixture/xpui.spa.bak" ]] || {
+  printf '%s\n' 'Spotify banner fixture backup remains after restoration' >&2
+  exit 1
+}
 unset -f cd
 
 ;;
