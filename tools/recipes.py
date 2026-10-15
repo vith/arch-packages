@@ -69,6 +69,23 @@ def _modules(root, repository):
     return names
 
 
+def export_selection(root, repository, selected=None):
+    """Select payloads without omitting authenticated historical harness inputs."""
+    if selected is None:
+        return None
+    root = Path(root)
+    selected = set(selected)
+    if not selected <= set(_modules(root, repository)):
+        raise ValueError("unregistered recipe export selection")
+    from tools.recipe_gate import _manifest_files
+    # Parse historical declarations as data, never execute their source code.
+    if any(path.startswith("recipes/") and path.split("/")[1] not in selected
+           for path in _manifest_files(
+               root, "tools/recipe_gate.py", "HARNESS_FILES", "harness_digest", "files")):
+        return None
+    return selected
+
+
 def copy_recipe(source, destination):
     """Copy complete tracked recipe data, excluding only root Git administration."""
     source, destination = Path(source), Path(destination)

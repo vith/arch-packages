@@ -126,6 +126,16 @@ class ImmutableRecipeTests(unittest.TestCase):
         self.head = self.git('commit-tree', tree, '-m', 'Complete roster')
         return pins
 
+    def test_metadata_only_control_preserves_all_pins_without_exporting_payloads(self):
+        pins = self.roster()
+        with patch.object(update, 'ROOT', self.control), patch.object(
+                update, 'repository', return_value='owner/repo'), patch.object(
+                update, 'trusted_checkout_sha', return_value=self.head):
+            base, actual = update.control_checkout(selected=[])
+        self.assertEqual(base, self.head)
+        self.assertEqual(actual, pins)
+        self.assertEqual(list((self.control / 'recipes').iterdir()), [])
+
     def test_selected_body_preserves_complete_pin_roster(self):
         pins = self.roster()
         actual = recipes.materialize(self.control, self.head, 'owner/repo',

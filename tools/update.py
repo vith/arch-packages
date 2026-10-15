@@ -147,16 +147,7 @@ def checkout_data(sha,destination,pins=None,selected=None):
     archive=Path(str(destination)+'.tar.gz')
     download('https://api.github.com/repos/'+repository()+'/tarball/'+sha,archive,maximum=MAX_TREE)
     root=extract_tree(archive,destination)
-    if selected is not None:
-        selected=set(selected)
-        if not selected <= set(recipes._modules(root,repository())):
-            raise ValueError('unregistered recipe export selection')
-        # Parse authenticated historical declarations as data, never source code.
-        # Cross-root harness inputs require the complete historical payload set.
-        if any(path.startswith('recipes/') and path.split('/')[1] not in selected
-               for path in recipe_gate._manifest_files(
-                   root, 'tools/recipe_gate.py', 'HARNESS_FILES', 'harness_digest', 'files')):
-            selected=None
+    selected=recipes.export_selection(root,repository(),selected)
     exact=recipes.materialize(root,sha,repository(),extract_tree,selected=selected)
     if pins is not None:
         pins.update(exact)
@@ -937,10 +928,11 @@ def trusted_checkout_sha():
     return base
 
 
-def control_checkout():
-    """Materialize only a clean immutable control checkout, never moving tips."""
+def control_checkout(selected=None):
+    """Materialize selected data from a clean immutable control, never moving tips."""
     base=trusted_checkout_sha()
-    pins=recipes.materialize(ROOT,base,repository(),extract_tree)
+    selected=recipes.export_selection(ROOT,repository(),selected)
+    pins=recipes.materialize(ROOT,base,repository(),extract_tree,selected=selected)
     return base,pins
 
 
@@ -1082,8 +1074,9 @@ def bootstrap(output):
 
 def discover(output):
     output=Path(output);output.mkdir(parents=True,exist_ok=False)
-    base,pins=control_checkout()
-    policies=policy_at(ROOT);receipts=[]
+    policies=policy_at(ROOT)
+    base,pins=control_checkout(selected=policies)
+    receipts=[]
     failures = SweepFailures()
     for name,policy in policies.items():
         previous_receipts = len(receipts)
@@ -1294,7 +1287,8 @@ def write_proposals(directory):
     directory=Path(directory);batch=load(directory/'receipts.json');base=main_sha()
     if batch.get('schema')!=1 or batch['base']!=base:
         raise ValueError('discovery base changed; rerun sweep')
-    checkout,pins=control_checkout()
+    selected={receipt['pkgbase'] for receipt in batch['receipts'] if not receipt['unchanged']}
+    checkout,pins=control_checkout(selected=selected)
     policies=policy_at(ROOT)
     if checkout!=base:
         raise ValueError('writer control checkout is not current main')

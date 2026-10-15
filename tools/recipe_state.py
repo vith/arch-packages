@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 from tools import sources
+from tools.github_api import immutable_reads
 from tools.recipe_gate import manifest_digest
 from tools.update_sweep import BatchFailure
 
@@ -141,9 +142,10 @@ class StateSnapshot:
 def read_snapshot():
     current=_ACTIVE_SNAPSHOT.get()
     snapshot=current if current is not None else StateSnapshot()
-    token=_ACTIVE_SNAPSHOT.set(snapshot)
-    try:yield snapshot
-    finally:_ACTIVE_SNAPSHOT.reset(token)
+    with immutable_reads():
+        token=_ACTIVE_SNAPSHOT.set(snapshot)
+        try:yield snapshot
+        finally:_ACTIVE_SNAPSHOT.reset(token)
 
 
 def load_optional(namespace,key):
