@@ -258,6 +258,38 @@ class PendingImports(unittest.TestCase):
         self.assertEqual(update.policy_at(self.new), {})
         self.assertFalse((self.root/'EXECUTED').exists())
 
+    def test_maintained_refresh_binds_mutability_by_source_id_not_policy_order(self):
+        self.stage_maintained_revision()
+        fixed_definition = {'id': 'patch', 'kind': 'local', 'mutable': False,
+                            'source_template': 'fix.patch',
+                            'checksum_algorithm': 'sha256', 'checksum_index': 1}
+        fixed_source = {**dict.fromkeys(sources.FIELDS), 'id': 'patch', 'kind': 'local',
+                        'source': 'fix.patch',
+                        'checksums': {'sha256': hashlib.sha256(b'native patch').hexdigest()}}
+        for root in (self.old, self.new):
+            registry = update.load(root/'packages.json')
+            registry['imports'][0]['policy']['sources'].insert(0, fixed_definition)
+            lock = update.load(root/'inputs'/'example.json')
+            lock['sources'].append(fixed_source)
+            update.dump(root/'packages.json', registry)
+            update.dump(root/'inputs'/'example.json', lock)
+        self.assertEqual(self.revise(), ['example'])
+        changed = update.load(self.new/'inputs'/'example.json')
+        changed['sources'][1]['checksums']['sha256'] = '0'*64
+        update.dump(self.new/'inputs'/'example.json', changed)
+        with self.assertRaises(ValueError):
+            self.revise()
+
+    def test_maintained_refresh_preserves_native_index_mutability(self):
+        self.stage_maintained_revision()
+        for root in (self.old, self.new):
+            registry = update.load(root/'packages.json')
+            definition = registry['imports'][0]['policy']['sources'][0]
+            del definition['mutable']
+            definition['native_source_index'] = 0
+            update.dump(root/'packages.json', registry)
+        self.assertEqual(self.revise(), ['example'])
+
     def test_maintained_tag_revision_allows_only_bound_metadata_movement(self):
         self.stage_maintained_revision()
         sources.git('tag', 'v2', cwd=self.origin)
