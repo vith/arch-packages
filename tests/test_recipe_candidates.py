@@ -32,7 +32,7 @@ class RecipeCandidateBoundaries(unittest.TestCase):
                 candidates.proposal_receipt('1', 'base', 'example')
 
 
-    def prepare_manual(self, work, invalid=False, pkgrel='2', accepted_version='1-1', dynamic=False, count_git=False, executable_pkgver=False, declared_mismatch=False, pending=False, legacy_pkgrel='1', pending_aur=True):
+    def prepare_manual(self, work, invalid=False, pkgrel='2', accepted_version='1-1', dynamic=False, count_git=False, executable_pkgver=False, declared_mismatch=False, pending=False, legacy_pkgrel='1', pending_aur=True, conflict_resolution=False):
         root = Path(work)
         old, recipe = root/'accepted', root/'human'
         for directory in (old/'recipes/example', old/'inputs', old/'upstream', recipe):
@@ -138,6 +138,8 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             update.dump(old/'packages.json', {'schema': 1, 'packages': [], 'imports': [item]})
         else:
             update.dump(old/'packages.json', {'schema': 1, 'packages': [policy]})
+        if conflict_resolution:
+            provenance['watchers'] = [{'id': 'aur-recipe', 'kind': 'aur'}]
         update.dump(old/'inputs/example.json', lock)
         update.dump(old/'upstream/example.json', provenance)
         (old/'build-image.txt').write_text('ghcr.io/archlinux/archlinux@sha256:' + 'f'*64)
@@ -148,6 +150,12 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             shutil.copyfile(repo/filename, destination)
         pr = {'state': 'open', 'head': {'ref': 'feature/human-recipe', 'sha': 'a'*40, 'repo': {'full_name': 'owner/repo'}}, 'base': {'ref': 'pkg/example', 'sha': baseline, 'repo': {'full_name': 'owner/repo'}}}
         stored = {}
+        if conflict_resolution:
+            stored['proposal', 'e'*40] = {
+                'recipe_head': 'e'*40, 'recipe_base': baseline, 'pkgbase': 'example',
+                'proposal_origin': 'watcher', 'watcher_id': 'aur-recipe',
+                'lock': copy.deepcopy(lock), 'provenance': copy.deepcopy(provenance),
+                'aur_conflicts': ['.SRCINFO', 'PKGBUILD']}
         self.manual_stored = stored
         def checkout(control, destination, pins=None, selected=None):
             if pins is not None:
@@ -161,7 +169,7 @@ class RecipeCandidateBoundaries(unittest.TestCase):
             if '/pulls/' in route:
                 return pr
             if route.endswith('a'*40):
-                return {'tree': {'sha': 'd'*40}, 'parents': [{'sha': baseline}]}
+                return {'tree': {'sha': 'd'*40}, 'parents': [{'sha': 'e'*40 if conflict_resolution else baseline}]}
             raise AssertionError(route)
         public_url = update.sources.public_url
         actual_git = update.sources.git
@@ -294,6 +302,18 @@ class RecipeCandidateBoundaries(unittest.TestCase):
                     self.prepare_manual(work, legacy_pkgrel='2', accepted_version='1-2', pkgrel=pkgrel)
                 self.assertNotIn(('proposal', 'a'*40), self.manual_stored)
 
+    def test_first_parent_conflict_resolution_still_freezes_and_validates_human_recipe(self):
+        with tempfile.TemporaryDirectory() as work:
+            record, _ = self.prepare_manual(work, conflict_resolution=True)
+            self.assertEqual(record['head'], 'a'*40)
+            self.assertEqual(record['proposal_head'], 'e'*40)
+            self.assertEqual(record['packages'][0]['lock']['sources'][0]['checksums']['sha256'],
+                             hashlib.sha256(b'human patch\n').hexdigest())
+            self.assertEqual(record['merge_policy'], 'human')
+        with tempfile.TemporaryDirectory() as work:
+            with self.assertRaises(ValueError):
+                self.prepare_manual(work, conflict_resolution=True, invalid=True)
+
     def test_direct_human_unenrolled_source_does_not_create_manual_receipt(self):
         with tempfile.TemporaryDirectory() as work:
             with self.assertRaises(ValueError):
@@ -308,6 +328,51 @@ class RecipeCandidateBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'fixed'):
             candidates.source_boundaries(old, new, {'sources': [{'id': 'aux', 'mutable': False}]})
 
+
+    def test_modern_indexed_version_source_change_preserves_enrollment(self):
+        template = 'https://example.invalid/example-{version}.tar.gz'
+        old = {'version': '1-1', 'sources': [{'id': 'code', 'kind': 'archive',
+            'source': template.format(version='1'), 'url': template.format(version='1'),
+            'checksums': {'sha256': 'a'*64}}]}
+        new = copy.deepcopy(old)
+        new.update(version='2-1')
+        new['sources'][0].update(source=template.format(version='2'), url=template.format(version='2'),
+                                 checksums={'sha256': 'b'*64})
+        policy = {'sources': [{'id': 'code', 'kind': 'archive', 'native_source_index': 0,
+                              'source_template': template, 'url_template': template,
+                              'checksum_algorithm': 'sha256', 'checksum_index': 0}]}
+        candidates.source_boundaries(old, new, policy)
+        policy['sources'][0]['mutable'] = False
+        with self.assertRaisesRegex(ValueError, 'fixed'):
+            candidates.source_boundaries(old, new, policy)
+
+    def test_changed_remote_source_with_malformed_mutability_fails_closed(self):
+        old = {'sources': [{'id': 'code', 'kind': 'archive', 'checksums': {'sha256': 'a'*64}}]}
+        new = copy.deepcopy(old)
+        new['sources'][0]['checksums']['sha256'] = 'b'*64
+        for declaration in ({}, {'native_source_index': -1}, {'native_source_index': True},
+                            {'native_source_index': '0'}, {'mutable': 'yes', 'native_source_index': 0}):
+            with self.subTest(declaration=declaration), self.assertRaises(ValueError):
+                candidates.source_boundaries(old, new, {'sources': [{'id': 'code', **declaration}]})
+
+    def test_unresolved_original_aur_proposal_stops_prepare_before_candidate_registration(self):
+        head, base = 'a'*40, 'b'*40
+        pr = {'state': 'open', 'base': {'ref': 'pkg/example', 'sha': base}}
+        receipt = {'recipe_head': head, 'recipe_base': base, 'pkgbase': 'example',
+                   'proposal_origin': 'watcher', 'aur_conflicts': ['.SRCINFO', 'PKGBUILD']}
+        with tempfile.TemporaryDirectory() as work, \
+                patch.object(update, 'api', return_value=pr), \
+                patch.object(recipe_state, 'recipe_identity', return_value=(pr, 'c'*40, head)), \
+                patch.object(recipe_state, 'pending_build', return_value=None), \
+                patch.object(recipe_state, 'load_optional', return_value=receipt), \
+                patch.object(update, 'status'), \
+                patch.object(update, 'checkout_data') as checkout, \
+                patch.object(recipe_state, 'save') as save:
+            with self.assertRaisesRegex(ValueError, 'conflicts require resolution'):
+                candidates.prepare(1, Path(work)/'candidate')
+            checkout.assert_not_called()
+            save.assert_not_called()
+            self.assertFalse((Path(work)/'candidate'/'candidate.json').exists())
 
     def test_local_payload_checksum_changes_preserve_enrolled_path_and_algorithm(self):
         source = {'id': 'patch', 'kind': 'local', 'source': 'fix.patch', 'checksums': {'sha256': 'old'}}

@@ -38,6 +38,7 @@ def proposal_receipt(head, base, name):
 
 
 def source_boundaries(old, new, policy):
+    from tools import update as u
     if [s['id'] for s in old['sources']] != [s['id'] for s in new['sources']]:
         raise ValueError('source enrollment/order changed')
     enrolled = {s['id']: s for s in policy['sources']}
@@ -47,7 +48,7 @@ def source_boundaries(old, new, policy):
         if previous['kind'] == current['kind'] == 'local':
             if any(previous.get(key) != current.get(key) for key in previous.keys() | current.keys() if key != 'checksums') or set(previous['checksums']) != set(current['checksums']):
                 raise ValueError('human recipe edit changed local source enrollment')
-        elif not enrolled[current['id']]['mutable']:
+        elif not u.source_is_mutable(enrolled[current['id']]):
             raise ValueError('human recipe edit changed fixed source')
 
 
@@ -228,6 +229,8 @@ def prepare(number, output, retry=False):
     for context in ('verify', 'candidate-build', 'recipe-policy'):
         u.status(head, context, 'pending', 'Validating exact recipe head')
     receipt = proposal_receipt(head, base, name)
+    if receipt is not None and receipt.get('aur_conflicts') and head == receipt['recipe_head']:
+        raise ValueError('AUR recipe conflicts require resolution in a subsequent recipe commit')
     origin = 'manual' if receipt is None else receipt['proposal_origin']
     if origin not in {'manual', 'watcher', 'legacy-accepted'}:
         raise ValueError('unknown durable proposal origin')
