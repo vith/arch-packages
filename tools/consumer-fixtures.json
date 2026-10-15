@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "microsandbox": {
+    "0.7.8": {
+      "linux-x86_64": {
+        "release_id": 408139101,
+        "asset_id": 625593699,
+        "url": "https://github.com/superradcompany/microsandbox/releases/download/v0.7.8/microsandbox-linux-x86_64.tar.gz",
+        "sha256": "86f9f72dc3e639c7175bc07909b4b63ce412517c1ef8a2e1921171af5682fded"
+      }
+    }
+  }
+}
