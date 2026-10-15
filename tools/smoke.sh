@@ -14,7 +14,7 @@ if [[ ${1:-} != --inside ]]; then
   existing=("$output"/*)
   ((${#existing[@]} == 0)) || { echo 'smoke evidence directory must be empty' >&2; exit 1; }
   shopt -u nullglob dotglob
-  container=$(docker create --platform linux/amd64 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_CHROOT --cap-add SYS_ADMIN --cap-add MKNOD --security-opt no-new-privileges --security-opt apparmor=unconfined "$image" /bin/bash /smoke.sh --inside "$snapshot")
+  container=$(docker create --platform linux/amd64 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SETFCAP --cap-add SYS_CHROOT --cap-add SYS_ADMIN --cap-add MKNOD --security-opt no-new-privileges --security-opt apparmor=unconfined "$image" /bin/bash /smoke.sh --inside "$snapshot")
   trap 'docker rm -f "$container" >/dev/null' EXIT
   docker cp "$root/tools/smoke.sh" "$container:/smoke.sh"
   docker cp "$root/tools/apexshot-smoke.sh" "$container:/apexshot-smoke.sh"
@@ -122,7 +122,9 @@ for name in sorted(names):
     print(expected['pacman_repository']+'/'+name)
 PY
 mapfile -t targets < /evidence/targets.txt
-pacman --config /fresh/pacman.conf -S --noconfirm -- base python util-linux tmux desktop-file-utils binutils ca-certificates man-db zip unzip "${dependency_targets[@]}" "${targets[@]}"
+# Kernel and headers belong only to this disposable proof root, not the runner.
+# Normal package install scripts and ALPM hooks restore file caps and build DKMS.
+pacman --config /fresh/pacman.conf -S --noconfirm -- base core/linux core/linux-headers python util-linux tmux desktop-file-utils binutils ca-certificates man-db zip unzip "${dependency_targets[@]}" "${targets[@]}"
 # Resolver configuration is the only host configuration copied into the disposable root.
 mkdir -p /fresh/root/etc /fresh/root/fresh/home /fresh/root/fresh/config /fresh/root/fresh/data /fresh/root/fresh/runtime
 cp /etc/resolv.conf /fresh/root/etc/resolv.conf
@@ -140,6 +142,90 @@ for package in packages:
         if actual != name+' '+item['version']: raise SystemExit('installed version differs: '+actual)
 enrolled={item['name'] for package in json.load(open('/enrollment.json'))['packages'] for item in package['outputs']}
 if names != enrolled: raise SystemExit('smoke requires every enrolled output')
+PY
+# Verify setup effects before dropping every capability for actual consumers.
+python - <<'PY'
+import json,pathlib,re,subprocess
+root=pathlib.Path('/fresh/root')
+evidence=pathlib.Path('/evidence')
+pacman=['pacman','--config','/fresh/pacman.conf']
+def owned(name):
+    return subprocess.check_output(pacman+['--root','/','-Qlq',name],text=True).splitlines()
+def version(name):
+    return subprocess.check_output(pacman+['-Q',name],text=True).strip().split()[1]
+names={i['name'] for p in json.load(open('/expected.json'))['packages'] for i in p['files']}
+installed_names={line.split()[0] for line in (evidence/'installed.txt').read_text().splitlines()}
+if 'gstreamer' in installed_names:
+    # The installed official package's static install data is the authority.
+    package_version=version('gstreamer')
+    install=pathlib.Path('/fresh/db/local')/('gstreamer-'+package_version)/'install'
+    script=install.read_text()
+    (evidence/'gstreamer.install').write_text(script)
+    helper='usr/lib/gstreamer-1.0/gst-ptp-helper'
+    if '/'+helper not in owned('gstreamer') or not (root/helper).is_file():
+        raise SystemExit('official GStreamer helper missing from installed package')
+    intended=re.findall(r'^\s*setcap\s+([a-z_,+]+)\s+'+re.escape(helper)+r'\s*$',script,re.M)
+    if len(intended)!=1:
+        raise SystemExit('official GStreamer intended file capabilities absent/ambiguous')
+    match=re.fullmatch(r'(cap_[a-z_,]+)\+([eip]+)',intended[0])
+    if not match:
+        raise SystemExit('unsupported official GStreamer capability declaration')
+    expected_caps={cap:''.join(sorted(match[2])) for cap in match[1].split(',')}
+    actual=subprocess.check_output(['chroot',str(root),'getcap','/'+helper],text=True).strip()
+    (evidence/'gstreamer-capabilities.txt').write_text(actual+'\n')
+    observed={}
+    for group in actual.removeprefix('/'+helper).split():
+        declaration=re.fullmatch(r'(cap_[a-z_,]+)=([eip]+)',group)
+        if not declaration:
+            raise SystemExit('unexpected installed GStreamer capability output: '+actual)
+        observed.update({cap:''.join(sorted(declaration[2])) for cap in declaration[1].split(',')})
+    result={'package':'gstreamer','version':package_version,'path':'/'+helper,
+            'intended':intended[0],'expected':expected_caps,'actual':observed,
+            'matches':observed==expected_caps}
+    (evidence/'gstreamer-capabilities.json').write_text(json.dumps(result,sort_keys=True)+'\n')
+    if not result['matches']:
+        raise SystemExit('installed GStreamer capabilities differ from official package install data')
+if 'looking-glass-module-dkms' in names:
+    kernel_version=version('linux')
+    headers_version=version('linux-headers')
+    kernel_files=owned('linux')
+    headers_files=set(owned('linux-headers'))
+    kernels={m[1] for path in kernel_files
+             if (m:=re.fullmatch(r'/usr/lib/modules/([^/]+)/vmlinuz',path))}
+    if kernel_version!=headers_version or len(kernels)!=1:
+        raise SystemExit('official linux/kernel headers version mismatch or ambiguous kernel')
+    kernel=kernels.pop()
+    module_root=root/'usr/lib/modules'/kernel
+    uts='/usr/lib/modules/'+kernel+'/build/include/generated/utsrelease.h'
+    if (not (module_root/'kernel').is_dir() or not (module_root/'build/include').is_dir()
+            or uts not in headers_files
+            or re.findall(r'^#define UTS_RELEASE "([^"]+)"$',(root/uts.lstrip('/')).read_text(),re.M)!=[kernel]):
+        raise SystemExit('installed official kernel modules and headers do not match')
+    configs=[path for path in owned('looking-glass-module-dkms')
+             if re.fullmatch(r'/usr/src/([^/]+)-([^/]+)/dkms\.conf',path)]
+    if len(configs)!=1 or not (root/configs[0].lstrip('/')).is_file():
+        raise SystemExit('enrolled DKMS package owned configuration absent/ambiguous')
+    # Match the official DKMS hook's module/version derivation from owned paths.
+    identity=re.fullmatch(r'/usr/src/([^/]+)-([^/]+)/dkms\.conf',configs[0])
+    module,module_version=identity.groups()
+    command=['chroot',str(root),'dkms','status','-m',module,'-v',module_version,'-k',kernel]
+    status=subprocess.run(command,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    (evidence/'looking-glass-dkms-status.txt').write_text(status.stdout)
+    installed=f'{module}/{module_version}, {kernel}, x86_64: installed'
+    result={'package':'looking-glass-module-dkms','version':version('looking-glass-module-dkms'),
+            'linux_version':kernel_version,'linux_headers_version':headers_version,
+            'kernel':kernel,'config':configs[0],'module':module,'module_version':module_version,
+            'command':command,'returncode':status.returncode,'status':status.stdout,
+            'installed':status.returncode==0 and status.stdout.strip()==installed}
+    # Preserve the hook's compiler output as well as exact installed status.
+    log=root/'var/lib/dkms'/module/module_version/kernel/'x86_64/log/make.log'
+    result['build_log']=str(log.relative_to(root))
+    result['build_log_present']=log.is_file() and log.stat().st_size>0
+    if result['build_log_present']:
+        (evidence/'looking-glass-dkms-build.log').write_bytes(log.read_bytes())
+    (evidence/'looking-glass-dkms.json').write_text(json.dumps(result,sort_keys=True)+'\n')
+    if not result['installed'] or not result['build_log_present']:
+        raise SystemExit('enrolled DKMS module lacks exact-kernel installed status/build log')
 PY
 chroot /fresh/root useradd --uid 1000 --home-dir /fresh/home --shell /bin/bash smoke
 chown -R 1000:1000 /fresh/root/fresh/home /fresh/root/fresh/config /fresh/root/fresh/data /fresh/root/fresh/runtime

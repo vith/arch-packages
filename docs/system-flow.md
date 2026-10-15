@@ -344,6 +344,10 @@ Nasc's corresponding-source archive is selected by its locked checksum from the 
 
 The disposable consumer root has private `/dev`, PTY and `/proc` mounts. Its `/dev/fd` points to `/proc/self/fd` so Bash process substitution works without exposing host devices. Consumer processes still run with no capabilities.
 
+Setup alone has `CAP_SETFCAP` so pacman can restore packaged file capabilities. Before consumer execution, proof compares GStreamer's installed PTP helper capabilities with the official package's static install data and retains the declaration, observed capabilities and comparison.
+
+The same disposable root installs official `linux` and matching `linux-headers`; normal DKMS hooks remain enabled. Proof binds Looking Glass's package-owned DKMS configuration to the exact installed kernel and headers, requires installed module status and retains compiler output. It does not load the module, expose a host modules tree, or establish hardware functionality. These kernel packages are consumer-test dependencies, not recipe dependencies or runner/client installations.
+
 Surge's offline proof requests completion of the `completion z` prefix and checks that it resolves to `zsh`. It exercises the installed CLI rather than searching generated completion-script text for command names.
 
 Carapace-spec's offline proof loads a valid YAML specification with `json` and `text` format choices, requests completion of the `--format j` prefix, and requires exactly the `json` value in the exported result. It exercises completion behavior without relying on malformed-input exit status or diagnostic wording.
@@ -367,8 +371,8 @@ Six step-level entrypoints from five repositories are used. Restore/save share a
 | Entrypoint and full pin | Role | Workflow users |
 | --- | --- | --- |
 | `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1` | Checkout | All seven workflows |
-| `actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | Expiring handoff/evidence | update, publish, consumer-proof |
-| `actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c` | Artifact handoff | update, publish |
+| `actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9` | Expiring handoff/evidence | update, publish, consumer-proof |
+| `actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333` | Artifact handoff | update, publish |
 | `actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6` | Original worker OIDC archive/context attestation; YAML labels v4.2.2 | build-package |
 | `actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9` | Isolated own-head or exact accepted-producer restore | build-package |
 | `actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9` | Noncancelled attempted-build progress | build-package |
