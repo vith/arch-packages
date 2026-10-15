@@ -360,7 +360,7 @@ Microsandbox's stock package installs a runtime-selecting wrapper and its `msb` 
 
 The capability-free offline Microsandbox proof executes `doctor` through both installed entry points, checks the enrolled runtime version and expected failure status in an environment without `/dev/kvm`, and preserves the authenticated runtime bytes. An invalid explicit pair must exit 127 without creating a bootstrap home; neither path may create images. Captured doctor output is retained in the consumer evidence for inspection, not matched against diagnostic prose, glyphs, padding or canonical-equivalent path spellings. These checks do not establish VM or image boot: missing KVM is an explicit environment limit.
 
-OMP is installed when enrolled but has no shared CLI/help/addon/PipeWire runtime tests. Recipe-owned checks remain in the build. ApexShot consumer proof covers version/help, native messaging, libraries, desktop assets, and extension files, not interactive live capture or recording.
+When OMP is enrolled, the capability-free offline consumer executes the installed `omp --version` launcher and requires its release, fork count and commit to match the signed package version. Its output is retained as `omp-version.txt`. This does not exercise interactive TUI, help, addons or PipeWire; recipe-owned checks remain in the build. ApexShot consumer proof covers version/help, native messaging, libraries, desktop assets, and extension files, not interactive live capture or recording.
 
 Publication does not dispatch this workflow. Signed consumer proof is not installation on a client's machine.
 
