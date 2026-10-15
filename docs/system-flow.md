@@ -346,6 +346,10 @@ Podcheck's offline proof requires an unsupported option to exit with status 2 be
 
 i915ovmf's offline proof validates the installed ROM's PCI and EFI headers, declared Intel graphics identity, image boundaries, and AMD64 PE loader structure. It does not execute firmware or exercise GPU passthrough.
 
+Microsandbox's stock package installs a runtime-selecting wrapper and its `msb` alias, not the runtime pair. Reviewed `tools/consumer-fixtures.json` pins the official runtime release/asset identity, HTTPS URL and full SHA-256 by enrolled upstream version and consumer platform. This consumer-only metadata is separate from the signed package's `source_lock` and payload; it does not add package sources. Missing version/platform fixtures fail without fallback or latest-release discovery. The network-enabled preparation stage verifies the archive hash and exactly two regular members before placing the genuine runtime pair in an isolated consumer home and recording `microsandbox-prerequisite.json`.
+
+The capability-free offline Microsandbox proof executes `doctor` through both installed entry points, checks the enrolled runtime version and expected failure status in an environment without `/dev/kvm`, and preserves the authenticated runtime bytes. An invalid explicit pair must exit 127 without creating a bootstrap home; neither path may create images. Captured doctor output is retained in the consumer evidence for inspection, not matched against diagnostic prose, glyphs, padding or canonical-equivalent path spellings. These checks do not establish VM or image boot: missing KVM is an explicit environment limit.
+
 OMP is installed when enrolled but has no shared CLI/help/addon/PipeWire runtime tests. Recipe-owned checks remain in the build. ApexShot consumer proof covers version/help, native messaging, libraries, desktop assets, and extension files, not interactive live capture or recording.
 
 Publication does not dispatch this workflow. Signed consumer proof is not installation on a client's machine.
