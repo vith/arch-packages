@@ -184,8 +184,9 @@ def validate_maintained_revision(previous_policy, policy, previous_lock, lock,
         raise ValueError('maintained refresh changed enrolled policy')
     if [s['id'] for s in previous_lock['sources']] != [s['id'] for s in lock['sources']]:
         raise ValueError('maintained refresh changed source enrollment')
-    for previous, current, definition in zip(previous_lock['sources'], lock['sources'], policy['sources']):
-        if previous != current and not definition.get('mutable'):
+    definitions = {definition['id']: definition for definition in policy['sources']}
+    for previous, current in zip(previous_lock['sources'], lock['sources']):
+        if previous != current and not u.source_is_mutable(definitions[current['id']]):
             raise ValueError('maintained refresh changed fixed source')
         if previous['kind'] != current['kind'] or previous['kind'] == 'git' and previous['url'] != current['url']:
             raise ValueError('maintained refresh changed source identity')
@@ -198,7 +199,7 @@ def validate_maintained_revision(previous_policy, policy, previous_lock, lock,
             raise ValueError('maintained refresh has ambiguous watcher bindings')
         covered.update(identities)
     if any(source['id'] not in covered for source in lock['sources']
-           if source['kind'] != 'local' and next(s for s in policy['sources'] if s['id'] == source['id']).get('mutable')):
+           if source['kind'] != 'local' and u.source_is_mutable(definitions[source['id']])):
         raise ValueError('maintained refresh has unwatched mutable source')
     u.verify_provenance(previous_provenance, provenance, lock, policy)
 
