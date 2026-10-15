@@ -1,7 +1,7 @@
 pkgbase = carapace-spec-man
 	pkgdesc = Generate completion specs from manpages
 	pkgver = 1.0.0
-	pkgrel = 2
+	pkgrel = 3
 	url = https://github.com/carapace-sh/carapace-spec-man
 	arch = x86_64
 	license = MIT
