@@ -216,6 +216,101 @@ class PendingImports(unittest.TestCase):
         with self.assertRaises(ValueError):
             imports.validate_admission(self.old, self.new, {}, {}, self.root/'proof')
 
+    def stage_maintained_revision(self):
+        self.policy['authority'] = 'maintained'
+        self.policy['sources'] = [{
+            'id': 'software', 'kind': 'git', 'mutable': True,
+            'source_template': 'git+'+self.item['origin']['url']+'#branch=master',
+            'url_template': self.item['origin']['url'],
+            'checksum_algorithm': 'sha256', 'checksum_index': 0}]
+        self.lock['sources'] = [{
+            **dict.fromkeys(sources.FIELDS), 'id': 'software', 'kind': 'git',
+            'source': self.policy['sources'][0]['source_template'],
+            'url': self.item['origin']['url'], 'ref': 'refs/heads/master',
+            'commit': self.commit, 'checksums': {'sha256': 'SKIP'},
+            'git_context': {'object_format': 'sha1', 'version_tag': None}}]
+        self.provenance['watchers'] = [{
+            'id': 'software-branch', 'kind': 'git', 'source_id': 'software',
+            'url': self.item['origin']['url'], 'ref': 'refs/heads/master'}]
+        sources.git('branch', '-M', 'master', cwd=self.origin)
+        for root in (self.old, self.new):
+            update.dump(root/'packages.json', {'schema': 1, 'packages': [], 'imports': [self.item]})
+            update.dump(root/'inputs'/'example.json', self.lock)
+            update.dump(root/'upstream'/'example.json', self.provenance)
+        shutil.copyfile(self.new/'.gitmodules', self.old/'.gitmodules')
+        shutil.copytree(self.new/'recipes', self.old/'recipes')
+        (self.origin/'next').write_text('new source revision')
+        sources.git('add', 'next', cwd=self.origin)
+        sources.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+                    'commit', '-m', 'next', cwd=self.origin)
+        self.lock['sources'][0]['commit'] = sources.git('rev-parse', 'HEAD', cwd=self.origin)
+        self.lock['version'] = '2-1'
+        update.dump(self.new/'inputs'/'example.json', self.lock)
+
+    def revise(self):
+        work = self.root/('revision-proof-'+str(len(list(self.root.glob('revision-proof-*')))))
+        return imports.validate_admission(self.old, self.new, {'example': self.commit},
+                                          {'example': self.commit}, work)
+
+    def test_maintained_git_revision_preserves_registered_identity_without_execution(self):
+        self.stage_maintained_revision()
+        self.assertEqual(self.revise(), ['example'])
+        self.assertEqual(update.policy_at(self.new), {})
+        self.assertFalse((self.root/'EXECUTED').exists())
+
+    def test_maintained_tag_revision_allows_only_bound_metadata_movement(self):
+        self.stage_maintained_revision()
+        sources.git('tag', 'v2', cwd=self.origin)
+        self.policy['sources'][0]['source_template'] = 'git+'+self.item['origin']['url']+'#tag=v{version}'
+        for root, tag in ((self.old, 'v1'), (self.new, 'v2')):
+            lock = update.load(root/'inputs'/'example.json')
+            source = lock['sources'][0]
+            source.update(source='git+'+self.item['origin']['url']+'#tag='+tag,
+                          ref='refs/tags/'+tag, tag_object=source['commit'],
+                          peeled_commit=source['commit'])
+            lock['version'] = tag[1:]+'-1'
+            watcher = {'id': 'software-tag', 'kind': 'tag', 'source_id': 'software',
+                       'url': self.item['origin']['url'], 'tag_pattern': '^v([0-9]+)$',
+                       'accepted_tag': tag, 'accepted_tag_object': source['commit'],
+                       'accepted_peeled_commit': source['commit']}
+            update.dump(root/'packages.json', {'schema': 1, 'packages': [], 'imports': [self.item]})
+            update.dump(root/'inputs'/'example.json', lock)
+            update.dump(root/'upstream'/'example.json', {**self.provenance, 'watchers': [watcher]})
+        changed = update.load(self.new/'packages.json')
+        changed['imports'][0]['policy']['automatic']['version']['literal_assignment'] = 'pkgver=2'
+        original = update.load(self.old/'packages.json')
+        original['imports'][0]['policy']['automatic']['version']['literal_assignment'] = 'pkgver=1'
+        update.dump(self.old/'packages.json', original)
+        update.dump(self.new/'packages.json', changed)
+        self.assertEqual(self.revise(), ['example'])
+        changed['imports'][0]['policy']['automatic']['version']['assignment'] = 'other'
+        update.dump(self.new/'packages.json', changed)
+        with self.assertRaises(ValueError):
+            self.revise()
+
+    def test_maintained_revision_rejects_source_and_watcher_substitution(self):
+        self.stage_maintained_revision()
+        baseline = copy.deepcopy(self.provenance)
+        item = copy.deepcopy(self.item)
+        for change in ('source-url', 'watcher-url', 'watcher-ref', 'watcher-source',
+                       'authority', 'duplicate-watcher'):
+            with self.subTest(change=change):
+                changed, provenance = copy.deepcopy(item), copy.deepcopy(baseline)
+                if change == 'source-url':
+                    changed['policy']['sources'][0]['url_template'] = 'https://example.test/other.git'
+                elif change == 'authority':
+                    changed['policy']['authority'] = 'aur'
+                elif change == 'duplicate-watcher':
+                    provenance['watchers'].append({**provenance['watchers'][0], 'id': 'duplicate'})
+                else:
+                    key = {'watcher-url': 'url', 'watcher-ref': 'ref', 'watcher-source': 'source_id'}[change]
+                    provenance['watchers'][0][key] = 'https://example.test/other.git' if key == 'url' else 'other'
+                update.dump(self.new/'packages.json', {'schema': 1, 'packages': [], 'imports': [changed]})
+                update.dump(self.new/'upstream'/'example.json', provenance)
+                with self.assertRaises(ValueError):
+                    self.revise()
+        self.assertFalse((self.root/'EXECUTED').exists())
+
     def stage_aur_revision(self):
         shutil.rmtree(self.old); shutil.copytree(self.new, self.old)
         aur = self.root/'aur'; aur.mkdir()
@@ -239,6 +334,7 @@ class PendingImports(unittest.TestCase):
                       'watchers': [{'id': 'aur-recipe', 'kind': 'aur',
                                     **{k: v for k, v in identity.items() if k != 'commit'},
                                     'baseline_commit': commit, 'mode': 'authoritative-import'}]}
+        update.dump(self.old/'upstream'/'example.json', provenance)
         update.dump(self.new/'packages.json', {'schema': 1, 'packages': [], 'imports': [changed]})
         update.dump(self.new/'inputs'/'example.json', lock)
         update.dump(self.new/'upstream'/'example.json', provenance)

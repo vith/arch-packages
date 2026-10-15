@@ -146,11 +146,61 @@ def validate_admission(old, new, oldpins, newpins, work):
         raise ValueError('admission contains non-metadata or existing package changes')
     for name in sorted(intended):
         item = verify_predecessor(new, name, newpins, Path(work)/name)
-        validate_intended(name, item['policy'],
-                          u.load(Path(new)/'inputs'/f'{name}.json'),
-                          u.load(Path(new)/'upstream'/f'{name}.json'),
-                          work, canonical_aur=name in revised)
+        lock = u.load(Path(new)/'inputs'/f'{name}.json')
+        provenance = u.load(Path(new)/'upstream'/f'{name}.json')
+        canonical_aur = False
+        if name in revised:
+            previous = u.load(Path(old)/'upstream'/f'{name}.json')
+            canonical_aur = previous.get('aur') is not None
+            if canonical_aur != (provenance.get('aur') is not None):
+                raise ValueError('pending revision cannot switch AUR authority')
+            if not canonical_aur:
+                validate_maintained_revision(pending[name]['policy'], item['policy'],
+                                            u.load(Path(old)/'inputs'/f'{name}.json'),
+                                            lock, previous, provenance)
+        validate_intended(name, item['policy'], lock, provenance, work,
+                          canonical_aur=canonical_aur)
     return sorted(intended)
+
+
+def validate_maintained_revision(previous_policy, policy, previous_lock, lock,
+                                previous_provenance, provenance):
+    """Refresh registered maintained inputs without widening their authority."""
+    from tools import update as u
+    if previous_policy.get('authority') != 'maintained' or policy.get('authority') != 'maintained':
+        raise ValueError('non-AUR refresh requires registered maintained authority')
+    def semantics(value):
+        result = copy.deepcopy(value)
+        automatic = result.get('automatic', {})
+        for key in ('version', 'pkgrel'):
+            automatic.get(key, {}).pop('literal_assignment', None)
+        array = automatic.get('checksum_array', {})
+        array.pop('literal', None)
+        array.pop('values', None)
+        for checksum in automatic.get('checksums', []):
+            checksum.pop('literal', None)
+        return result
+    if semantics(previous_policy) != semantics(policy):
+        raise ValueError('maintained refresh changed enrolled policy')
+    if [s['id'] for s in previous_lock['sources']] != [s['id'] for s in lock['sources']]:
+        raise ValueError('maintained refresh changed source enrollment')
+    for previous, current, definition in zip(previous_lock['sources'], lock['sources'], policy['sources']):
+        if previous != current and not definition.get('mutable'):
+            raise ValueError('maintained refresh changed fixed source')
+        if previous['kind'] != current['kind'] or previous['kind'] == 'git' and previous['url'] != current['url']:
+            raise ValueError('maintained refresh changed source identity')
+    covered = set()
+    for watcher in previous_provenance['watchers']:
+        if watcher.get('kind') not in {'git', 'tag', 'release'}:
+            raise ValueError('non-AUR refresh has unsupported watcher')
+        identities = [watcher.get('source_id'), *watcher.get('related_source_ids', [])]
+        if None in identities or covered.intersection(identities) or len(set(identities)) != len(identities):
+            raise ValueError('maintained refresh has ambiguous watcher bindings')
+        covered.update(identities)
+    if any(source['id'] not in covered for source in lock['sources']
+           if source['kind'] != 'local' and next(s for s in policy['sources'] if s['id'] == source['id']).get('mutable')):
+        raise ValueError('maintained refresh has unwatched mutable source')
+    u.verify_provenance(previous_provenance, provenance, lock, policy)
 
 
 def validate_intended(name, policy, lock, provenance, work, *, canonical_aur=False):
