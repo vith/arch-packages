@@ -1,7 +1,7 @@
 # Maintainer: vith
 # Independently maintained recipe; upstream installer/build shell wrappers are not used.
 pkgname=apexshot
-pkgver=0.2.35
+pkgver=0.2.36
 pkgrel=1
 pkgdesc='Linux screenshot, annotation, OCR, and screen recording tool'
 arch=('x86_64')
@@ -56,7 +56,7 @@ optdepends=(
   'wtype: Wayland input for scrolling captures'
 )
 source=("apexshot::git+https://github.com/apex-shot/apexshot.git#tag=v${pkgver}")
-sha256sums=('7889090aead5427da303e7c6bb390977d177ae05bc80e07ae6c66a8d3654a85e')
+sha256sums=('a0e61dc30917a82700be497b8e1a54f1454f821988da4182cf1f716e579e2657')
 options=('!lto')
 
 prepare() {
