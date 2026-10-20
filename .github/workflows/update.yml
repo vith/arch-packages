@@ -35,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       package_failures: ${{ steps.reconcile.outputs.package_failures }}
+      package_errors: ${{ steps.reconcile.outputs.package_errors }}
     permissions:
       contents: write
       pull-requests: write
@@ -93,6 +94,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       package_failures: ${{ steps.discover.outputs.package_failures }}
+      package_errors: ${{ steps.discover.outputs.package_errors }}
     permissions:
       contents: read
     steps:
@@ -129,6 +131,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       package_failures: ${{ steps.write.outputs.package_failures }}
+      package_errors: ${{ steps.write.outputs.package_errors }}
     permissions:
       contents: write
       pull-requests: write
@@ -159,16 +162,14 @@ jobs:
     needs: [reconcile, discover, write-proposals]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Report contained package failures after other packages finish
         env:
-          RECONCILE_FAILURES: ${{ needs.reconcile.outputs.package_failures }}
-          DISCOVER_FAILURES: ${{ needs.discover.outputs.package_failures }}
-          WRITE_FAILURES: ${{ needs.write-proposals.outputs.package_failures }}
-        run: |
-          failed=$(( ${RECONCILE_FAILURES:-0} + ${DISCOVER_FAILURES:-0} + ${WRITE_FAILURES:-0} ))
-          if [ "$failed" -gt 0 ]; then
-            echo "::error::$failed package update operations failed; other packages were processed. See package-specific annotations."
-            exit 1
-          fi
+          UPDATE_NEEDS: ${{ toJSON(needs) }}
+        run: python3 -m tools.update_sweep
