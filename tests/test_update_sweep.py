@@ -1,5 +1,6 @@
 from contextlib import contextmanager, redirect_stderr
 import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -179,7 +180,11 @@ class PackageSweepIsolation(unittest.TestCase):
                     with patch.object(sys, 'argv', ['update', 'pack', '--directory', str(directory),
                                                   '--archive', str(archive)]):
                         update.cli()
-                self.assertEqual(output.read_text(), 'package_failures=1\n')
+                outputs = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                self.assertEqual(outputs['package_failures'], '1')
+                errors = json.loads(outputs['package_errors'])
+                self.assertEqual([(error['pkgbase'], error['stage']) for error in errors],
+                                 [('bad', 'discover')])
                 self.assertEqual([r['pkgbase'] for r in update.load(directory/'receipts.json')['receipts']],
                                  ['good'])
 
