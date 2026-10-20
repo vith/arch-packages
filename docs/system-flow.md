@@ -129,6 +129,8 @@ Native archive names include the full version, including an epoch. The worker va
 
 Manual and human-edited heads use `declared_metadata` mode. Automatic discovery and unedited automation proposals retain their independent derivation checks. Mode selection is not permission to accept inconsistent sources or unsupported recipes.
 
+An explicit native Git checksum change refreezes the declared ref even when its tag name is unchanged. This lets a reviewed recipe transition adopt a republished tag with a version or `pkgrel` bump and exact replacement object provenance. Unchanged checksums preserve the accepted source identity; automatic discovery still rejects retargeted accepted tags.
+
 Accepted inputs advance only after accepted recipe merge. Discovery, a queued request, a successful but unmerged build, and a failure leave main's accepted baseline unchanged.
 
 ## Exact workflow inventory
@@ -172,7 +174,7 @@ Normal reconciliation, discovery, and proposal writing isolate package-local fai
 
 The updater CLI exits with status 2 for contained package failures after processing the batch. Workflow stages use `--defer-package-failures` to report errors and export their counts and structured details without stopping downstream healthy work; `report-package-failures` repeats each package, stage, watcher/PR identity, and error in its own annotations and job summary before failing the overall run. Missing diagnostic records are reported explicitly rather than hiding a nonzero failure count. The flag does not defer shared-batch failures or weaken validation. Packing and extraction do not replace an earlier stage's failure count.
 
-Reconciliation tracks directly known open, merged, and closed PRs. Same queued/running/successful input is a no-op; the same failure is reported without automatic retry. If upstream moves during a build, wait for the actual result before refreshing the same automation-owned PR. Preserve human edits and one update PR per package. An unchanged source receipt with no open proposal leaves its retained branch untouched. Writes, refreshes, and dispatches require authenticated watcher ownership.
+Reconciliation tracks directly known open, merged, and closed PRs. Same queued/running/successful input is a no-op; the same failure is reported without automatic retry. If upstream moves during a build, wait for the actual result before refreshing the same automation-owned PR. Preserve human edits and one update PR per package. An unchanged source receipt with no open proposal leaves its retained branch untouched. For a new proposal with no open PR, a retained head already ancestral to the exact accepted recipe pin needs no bot receipt: accepted human edits remain part of the new recipe's ancestry. Unaccepted retained heads and open automation proposals still require authenticated watcher ownership. Exact ref leases and accepted-pin rechecks remain mandatory.
 
 New watcher proposals use one per-package leaf, `recipe-updates/<pkgbase>/candidate`; retained legacy `recipe-updates/<pkgbase>/<watcher-id>` refs remain unchanged. The writer and authenticated ownership checker share this construction. Fresh legacy migrations use the current leaf, while authenticated immutable originals replay their original `head_branch`.
 
