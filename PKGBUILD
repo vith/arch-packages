@@ -1,6 +1,6 @@
 # Maintainer: vith
 pkgname=oh-my-pi-vith-git
-pkgver=18.11.0.vith.r411.g9dd10c660036
+pkgver=18.12.3.vith.r418.g2cc5347c1841
 pkgrel=1
 pkgdesc='Oh My Pi coding agent — vith fork'
 arch=('x86_64')
