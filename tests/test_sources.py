@@ -67,6 +67,45 @@ class SourceContracts(unittest.TestCase):
         self.assertEqual(lock['sources'][0]['ref'], current)
         self.assertEqual(lock['sources'][0]['commit'], current)
 
+    def test_same_tag_checksum_change_refreezes_explicit_recipe_transition(self):
+        sources.git('tag', '-a', 'v1.0.1', '-m', 'original', cwd=self.repo)
+        native = 'code::git+'+self.url+'#tag=v1.0.1'
+        spec = {'id': 'code', 'kind': 'git', 'source': native, 'url': self.url,
+                'ref': 'refs/tags/v1.0.1', 'checksums': {'sha256': '0'*64},
+                'work_dir': str(self.root/'original')}
+        with patch.object(sources, 'public_url', lambda value: value):
+            original = sources.freeze_source(spec)
+        original['checksums'] = sources.git_checksums(original, self.root/'original/freeze.git')
+        (self.repo/'file').write_text('replacement')
+        sources.git('add', 'file', cwd=self.repo)
+        sources.git('commit', '-m', 'replacement', cwd=self.repo)
+        sources.git('tag', '-f', '-a', 'v1.0.1', '-m', 'replacement', cwd=self.repo)
+        replacement = sources.git('rev-parse', 'HEAD', cwd=self.repo)
+        replacement_tag = sources.git('rev-parse', 'refs/tags/v1.0.1', cwd=self.repo)
+        archive = subprocess.run(['git', '-c', 'core.abbrev=no', 'archive', '--format', 'tar',
+                                  'refs/tags/v1.0.1'], cwd=self.repo, check=True, capture_output=True).stdout
+        replacement_checksums = {'sha256': hashlib.sha256(archive).hexdigest()}
+        recipe = self.root/'recipe'; recipe.mkdir()
+        policy = {'sources': [{'id': 'code', 'kind': 'git', 'native_source_index': 0,
+                               'source_template': 'code::git+'+self.url+'#tag=v{version}',
+                               'url_template': self.url, 'checksum_algorithm': 'sha256', 'checksum_index': 0}]}
+        for changed in (False, True):
+            with self.subTest(checksum_changed=changed):
+                checksums = replacement_checksums if changed else original['checksums']
+                (recipe/'.SRCINFO').write_text(
+                    'pkgbase = example\npkgver = 1.0.1\npkgrel = 2\narch = x86_64\nsource = '+
+                    native+'\nsha256sums = '+checksums['sha256']+'\npkgname = example\n')
+                lock = {'schema': 1, 'version': '1.0.1-1',
+                        'sources': [json.loads(json.dumps(original))]}
+                work = self.root/('aligned-'+str(changed))
+                with patch.object(sources, 'public_url', lambda value: value):
+                    update.align_aur_lock(recipe, lock, policy, work)
+                    source = lock['sources'][0]
+                    self.assertEqual(source['commit'], replacement if changed else self.head)
+                    self.assertEqual(source['tag_object'], replacement_tag if changed else original['tag_object'])
+                    if changed:
+                        self.assertEqual(sources.git_checksums(source, work/'code/freeze.git'), checksums)
+
     def test_default_git_branch_change_does_not_force_old_checkout(self):
         frozen = self.freeze(self.root/'default-freeze')
         frozen['source'] = 'code::git+'+self.url

@@ -905,11 +905,11 @@ def align_aur_lock(recipe,lock,policy,work):
         values=[v for _,key,v in metadata['fields'] if key in {algorithm+'sums',algorithm+'sums_x86_64'}]
         native=[v for _,key,v in metadata['fields'] if key in {'source','source_x86_64'}]
         expanded,commit=sources.enrolled_native_source(enrolled,native,version,source['commit'])
-        old=dict(source)
+        old={**source,'checksums':dict(source['checksums'])}
         source['source']=expanded
         source['url']=sources.format_source(enrolled['url_template'],enrolled,version,commit) if enrolled.get('url_template') else None
         source['checksums'][algorithm]=values[enrolled['checksum_index']]
-        if source['kind']=='git' and source['source']!=old['source']:
+        if source['kind']=='git' and (source['source']!=old['source'] or source['checksums']!=old['checksums']):
             source['ref']=sources.native_ref(expanded,enrolled)
             source['commit']=source['ref'] if sources.HEX.fullmatch(source['ref']) else None
             source['tag_object']=None;source['peeled_commit']=None
@@ -1359,7 +1359,8 @@ def write_proposals(directory):
             else:
                 previous_commit, previous_base = None, None
             retained_tip = existing['head']['sha'] if existing else ref_head(branch)
-            if existing is None and retained_tip:
+            # Accepted human edits need no bot receipt; unaccepted heads still do.
+            if existing is None and retained_tip and not recipes.is_ancestor(repository(), retained_tip, pins[name]):
                 owned_proposal({'head': {'sha': retained_tip}}, name, watcher_id)
             policy=policies[name];lock=receipt['lock'];validate_source_policy(lock,policy)
             work=directory/name/watcher_id;recipe=work/'recipe'
