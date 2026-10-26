@@ -1,6 +1,6 @@
 pkgbase = cloudflare-speed-cli
 	pkgdesc = CLI tool for Cloudflare speed testing with TUI interface
-	pkgver = 1.0.10
+	pkgver = 1.0.11
 	pkgrel = 1
 	url = https://github.com/kavehtehrani/cloudflare-speed-cli
 	arch = x86_64
@@ -9,7 +9,7 @@ pkgbase = cloudflare-speed-cli
 	makedepends = git
 	depends = gcc-libs
 	options = !lto
-	source = cloudflare-speed-cli::git+https://github.com/kavehtehrani/cloudflare-speed-cli.git#tag=v1.0.10
-	sha256sums = cb02a020b5bf557c688662b15e441b995dc205ede7d2ac45e66817953cc51435
+	source = cloudflare-speed-cli::git+https://github.com/kavehtehrani/cloudflare-speed-cli.git#tag=v1.0.11
+	sha256sums = 7103d1511be7bc634b3769921b00b70ac759a3ad7de4bde7ca57ec56be0679d4
 
 pkgname = cloudflare-speed-cli
