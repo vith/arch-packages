@@ -1,15 +1,18 @@
 pkgbase = computer-use-linux
 	pkgdesc = Control a real Linux desktop from any MCP host (AT-SPI, portals, multi-compositor window targeting)
-	pkgver = 0.7.32
+	pkgver = 0.7.36
 	pkgrel = 1
 	url = https://github.com/agent-sh/computer-use-linux
 	arch = x86_64
 	arch = aarch64
 	license = MIT
 	checkdepends = dbus
+	checkdepends = python-gobject
 	makedepends = cargo
-	source = computer-use-linux-0.7.32.tar.gz::https://github.com/agent-sh/computer-use-linux/archive/refs/tags/v0.7.32.tar.gz
-	sha256sums = 79420bbbc26736e668eba3726efd053024be701554080b12e23f2e3bdee2d22d
+	source = computer-use-linux-0.7.36.tar.gz::https://github.com/agent-sh/computer-use-linux/archive/refs/tags/v0.7.36.tar.gz
+	source = gnome-indicator-test.patch
+	sha256sums = f20d7ac0c4fe37e6448e07675f1d9034cf3241ae2911ca77bfce9554b2db74c4
+	sha256sums = 3ee3fdbc16683dff37f012ae0f2a73954db3da3c67a226a1ee3776a811e1bf0d
 
 pkgname = computer-use-linux
 	depends = at-spi2-core
