@@ -1,7 +1,7 @@
 # Maintainer: Your Name <youremail@example.com>
 pkgname=cloudflare-speed-cli
 _pkgname=cloudflare-speed-cli
-pkgver=1.0.11
+pkgver=1.0.12
 pkgrel=1
 pkgdesc="CLI tool for Cloudflare speed testing with TUI interface"
 arch=('x86_64')
@@ -10,7 +10,7 @@ license=('GPL3')
 depends=('gcc-libs')
 makedepends=('cargo' 'git')
 source=("$_pkgname::git+$url.git#tag=v$pkgver")
-sha256sums=('7103d1511be7bc634b3769921b00b70ac759a3ad7de4bde7ca57ec56be0679d4')
+sha256sums=('b8c347f0aba25ac6642cd6912c597993d35a0a4efb0c0823f0af97ee49952502')
 options=('!lto')
 
 prepare() {
