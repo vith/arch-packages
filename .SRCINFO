@@ -1,7 +1,7 @@
 pkgbase = apexshot
 	pkgdesc = Linux screenshot, annotation, OCR, and screen recording tool
 	pkgver = 0.2.36
-	pkgrel = 2
+	pkgrel = 3
 	url = https://github.com/apex-shot/apexshot
 	arch = x86_64
 	license = GPL-3.0-or-later

@@ -2,7 +2,7 @@
 # Independently maintained recipe; upstream installer/build shell wrappers are not used.
 pkgname=apexshot
 pkgver=0.2.36
-pkgrel=2
+pkgrel=3
 pkgdesc='Linux screenshot, annotation, OCR, and screen recording tool'
 arch=('x86_64')
 url='https://github.com/apex-shot/apexshot'
@@ -118,10 +118,11 @@ package() {
       "$pkgdir/usr/share/locale/$lang/LC_MESSAGES/apexshot.mo"
   done
 
+  # Ship every top-level runtime module, without nested tests or documentation.
   # System extension only: no autostart file, enable hook, or user configuration.
   local ext_dir="$pkgdir/usr/share/gnome-shell/extensions/apexshot-gnome-integration@apexshot.github.io"
-  for asset in metadata.json extension.js cursor-classifier.js shell-overlay.js window-list.js preview-stacking.js; do
-    install -Dm644 "gnome-extension/$asset" "$ext_dir/$asset"
+  for asset in gnome-extension/metadata.json gnome-extension/*.js; do
+    install -Dm644 "$asset" "$ext_dir/${asset##*/}"
   done
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
