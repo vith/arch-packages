@@ -130,3 +130,39 @@
 	path = recipes/zig0.15
 	url = https://github.com/vith/arch-packages.git
 	branch = pkg/zig0.15
+[submodule "recipes/arping-th"]
+	path = recipes/arping-th
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/arping-th
+[submodule "recipes/batdoc"]
+	path = recipes/batdoc
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/batdoc
+[submodule "recipes/ccze"]
+	path = recipes/ccze
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/ccze
+[submodule "recipes/crunch"]
+	path = recipes/crunch
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/crunch
+[submodule "recipes/fish-tide"]
+	path = recipes/fish-tide
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/fish-tide
+[submodule "recipes/nwipe"]
+	path = recipes/nwipe
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/nwipe
+[submodule "recipes/opentracker-cli"]
+	path = recipes/opentracker-cli
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/opentracker-cli
+[submodule "recipes/terminus-font-ttf"]
+	path = recipes/terminus-font-ttf
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/terminus-font-ttf
+[submodule "recipes/python-ftfy"]
+	path = recipes/python-ftfy
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/python-ftfy
