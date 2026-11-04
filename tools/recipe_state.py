@@ -572,9 +572,43 @@ def assert_recipe_identity(record,merged=False,control=None):
             raise ValueError('accepted recipe identity changed')
         if record.get('accepted') and pr.get('merge_commit_sha')!=record['accepted']:
             raise ValueError('accepted recipe merge changed')
+    return _assert_recipe_pr(record, pr)
+
+
+def _assert_recipe_pr(record, pr):
+    from tools import update as u
     expected_branch=record['head_branch']
-    if pr['base']['ref']!='pkg/'+record['pkgbase'] or pr['base']['sha']!=record['recipe_base'] or pr['head']['ref']!=expected_branch or any(pr[side]['repo']['full_name']!=u.repository() for side in ('base','head')):
+    if pr['base']['ref']!='pkg/'+record['pkgbase'] or pr['base']['sha']!=record['recipe_base'] or pr['head']['sha']!=record['head'] or pr['head']['ref']!=expected_branch or any(pr[side]['repo']['full_name']!=u.repository() for side in ('base','head')):
         raise ValueError('recipe candidate base/head changed')
     tree=u.api(u.route('/git/commits/'+record['head']))['tree']['sha']
     if tree!=record['recipe_tree']:raise ValueError('recipe tree identity mismatch')
+    return pr
+
+
+def assert_failed_build_identity(record):
+    """Authorize only terminal failed-attempt reporting under an older controller."""
+    from tools import build_store, recipes, update as u
+    snapshot = StateSnapshot()
+    if build_request(record['request_id'], snapshot=snapshot) != record:
+        raise ValueError('failed build differs from immutable original request')
+    pending = pending_build(record['pkgbase'], snapshot=snapshot)
+    if (pending is None or pending['request_id'] != record['request_id']
+            or pending['head'] != record['head'] or pending['state'] != 'failure'
+            or not pending.get('worker')):
+        raise ValueError('failed build is no longer the exact current terminal attempt')
+    checkout = u.trusted_checkout_sha()
+    if (not recipes.is_ancestor(record['repository'], record['base'], checkout)
+            or not recipes.is_ancestor(record['repository'], checkout, u.main_sha())):
+        raise ValueError('failed build controller is not in protected-main lineage')
+    run = build_store.producer_run(record, pending['worker'], completed=False)
+    if run['status'] != 'completed' or run['conclusion'] in (None, 'success'):
+        raise ValueError('exact original package worker has not failed')
+    pr = u.api(u.route('/pulls/' + str(record['pr_number'])))
+    if pr['state'] != 'open' or u.ref_head('pkg/' + record['pkgbase']) != record['recipe_base']:
+        raise ValueError('failed recipe candidate is no longer current')
+    protected_branch(record['pkgbase'])
+    _assert_recipe_pr(record, pr)
+    # Refresh mutable attempt state after API reads, immediately before reporting.
+    if pending_build(record['pkgbase'], snapshot=StateSnapshot()) != pending:
+        raise ValueError('failed build attempt changed before status reporting')
     return pr

@@ -17,6 +17,175 @@ import shutil
 from tools import attestations, build_store, imports, native, recipe_candidates as candidates, recipe_state, update
 
 
+class RecipePreparationFailures(unittest.TestCase):
+    @contextmanager
+    def fixture(self, directory):
+        pr = {'state': 'open',
+              'base': {'ref': 'pkg/example', 'sha': 'b'*40, 'repo': {'full_name': 'owner/repo'}},
+              'head': {'ref': 'recipe/example', 'sha': 'd'*40, 'repo': {'full_name': 'owner/repo'}}}
+        current = copy.deepcopy(pr)
+        writes = []
+        def api(route, method='GET', data=None):
+            if '/pulls/' in route:
+                return copy.deepcopy(current)
+            if '/branches/pkg%2F' in route:
+                return {'protected': True}
+            if '/statuses/' in route:
+                writes.append(copy.deepcopy(data))
+                return data
+            raise AssertionError(route)
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo', 'EXPECTED_HEAD': 'd'*40}), \
+                patch.object(update, 'api', side_effect=api), \
+                patch.object(update, 'main_sha', return_value='c'*40) as main, \
+                patch.object(update, 'trusted_checkout_sha', return_value='c'*40), \
+                patch.object(update, 'ref_head', side_effect=lambda branch: current['base']['sha']), \
+                patch.object(recipe_state, 'pending_build', return_value=None), \
+                patch.object(candidates, 'proposal_receipt') as receipt:
+            yield current, writes, receipt, main
+
+    def test_failed_preparation_terminates_all_pending_contexts_without_candidate(self):
+        with tempfile.TemporaryDirectory() as directory, self.fixture(directory) as (_, writes, receipt, _):
+            receipt.return_value = {'aur_conflicts': ['PKGBUILD'], 'recipe_head': 'd'*40}
+            with self.assertRaisesRegex(ValueError, 'conflicts require resolution'):
+                update.prepare(7, directory)
+            for context in ('verify', 'candidate-build', 'recipe-policy'):
+                self.assertEqual([row['state'] for row in writes if row['context'] == context],
+                                 ['pending', 'failure'])
+            self.assertTrue(all('preparation failed' in row['description'].lower()
+                                for row in writes if row['state'] == 'failure'))
+            self.assertFalse((Path(directory)/'candidate.json').exists())
+
+    def test_moved_recipe_identity_does_not_overwrite_new_evidence(self):
+        for field in ('head', 'base', 'control'):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory, \
+                    self.fixture(directory) as (current, writes, receipt, main):
+                failure = RuntimeError('original preparation error')
+                def moved(*args):
+                    if field == 'control':
+                        main.return_value = 'e'*40
+                    else:
+                        current[field]['sha'] = 'e'*40
+                    raise failure
+                receipt.side_effect = moved
+                with self.assertRaises(RuntimeError) as raised:
+                    update.prepare(7, directory)
+                self.assertIs(raised.exception, failure)
+                self.assertEqual([row['state'] for row in writes], ['pending']*3)
+                self.assertIn('failure status was not published', failure.__notes__[0])
+
+    def test_identity_movement_during_failure_reporting_stops_remaining_writes(self):
+        with tempfile.TemporaryDirectory() as directory, self.fixture(directory) as (current, writes, receipt, _):
+            receipt.return_value = {'aur_conflicts': ['PKGBUILD'], 'recipe_head': 'd'*40}
+            original_status = update.status
+            def status(head, context, state, description):
+                result = original_status(head, context, state, description)
+                if state == 'failure':
+                    current['head']['sha'] = 'e'*40
+                return result
+            with patch.object(update, 'status', side_effect=status), \
+                    self.assertRaisesRegex(ValueError, 'conflicts require resolution') as raised:
+                update.prepare(7, directory)
+            self.assertEqual([(row['context'], row['state']) for row in writes if row['state'] == 'failure'],
+                             [('verify', 'failure')])
+            self.assertIn('failure status was not published', raised.exception.__notes__[0])
+
+    def test_status_error_does_not_replace_original_preparation_error(self):
+        with tempfile.TemporaryDirectory() as directory, self.fixture(directory) as (_, writes, receipt, _):
+            failure = RuntimeError('original preparation error')
+            def fail(*args):
+                raise failure
+            receipt.side_effect = fail
+            original_status = update.status
+            def status(head, context, state, description):
+                if state == 'failure':
+                    raise OSError('status unavailable')
+                return original_status(head, context, state, description)
+            with patch.object(update, 'status', side_effect=status), self.assertRaises(RuntimeError) as raised:
+                update.prepare(7, directory)
+            self.assertIs(raised.exception, failure)
+            self.assertIn('status unavailable', failure.__notes__[0])
+            self.assertEqual([row['state'] for row in writes], ['pending']*3)
+
+
+class FailedWorkerStatuses(unittest.TestCase):
+    @contextmanager
+    def fixture(self):
+        record = {'repository': 'owner/repo', 'pkgbase': 'example', 'pr_number': 7,
+                  'base': 'c'*40, 'head': 'd'*40, 'recipe_base': 'b'*40,
+                  'recipe_tree': 'f'*40, 'head_branch': 'recipe/example', 'request_id': 'request'}
+        producer = {'run_id': '10', 'run_attempt': '1', 'head_sha': 'c'*40}
+        pending = {'request_id': 'request', 'head': 'd'*40, 'state': 'failure', 'worker': producer}
+        pr = {'state': 'open',
+              'base': {'ref': 'pkg/example', 'sha': 'b'*40, 'repo': {'full_name': 'owner/repo'}},
+              'head': {'ref': 'recipe/example', 'sha': 'd'*40, 'repo': {'full_name': 'owner/repo'}}}
+        writes = []
+        def api(route, method='GET', data=None):
+            if '/pulls/' in route:
+                return copy.deepcopy(pr)
+            if '/branches/pkg%2F' in route:
+                return {'protected': True}
+            if '/git/commits/' in route:
+                return {'tree': {'sha': 'f'*40}}
+            if '/statuses/' in route:
+                writes.append(copy.deepcopy(data))
+                return data
+            raise AssertionError(route)
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo'}), \
+                patch.object(update, 'api', side_effect=api), \
+                patch.object(update, 'main_sha', return_value='e'*40), \
+                patch.object(update, 'trusted_checkout_sha', return_value='c'*40), \
+                patch.object(update, 'ref_head', return_value='b'*40), \
+                patch.object(recipe_state, 'StateSnapshot'), \
+                patch.object(recipe_state, 'pending_build', side_effect=lambda *a, **k: copy.deepcopy(pending)), \
+                patch.object(recipe_state, 'build_request', return_value=record), \
+                patch.object(candidates.recipes, 'is_ancestor', return_value=True), \
+                patch.object(build_store, 'producer_run', return_value={'status': 'completed', 'conclusion': 'failure'}):
+            yield record, pending, pr, writes
+
+    def test_failed_exact_worker_reports_after_controller_main_advances(self):
+        with self.fixture() as (record, _, _, writes):
+            update._recipe_failure_status(record)
+        self.assertEqual([(row['context'], row['state']) for row in writes], [('candidate-build', 'failure')])
+
+    def test_current_controller_also_refuses_an_older_attempt(self):
+        with self.fixture() as (record, pending, _, writes), \
+                patch.object(update, 'main_sha', return_value='c'*40):
+            pending['request_id'] = 'new-request'
+            with self.assertRaisesRegex(ValueError, 'exact current attempt'):
+                update._recipe_failure_status(record)
+            self.assertEqual(writes, [])
+
+    def test_successful_or_running_producer_cannot_authorize_old_controller(self):
+        for run in ({'status': 'completed', 'conclusion': 'success'},
+                    {'status': 'in_progress', 'conclusion': None}):
+            with self.subTest(run=run), self.fixture() as (record, _, _, writes), \
+                    patch.object(build_store, 'producer_run', return_value=run):
+                with self.assertRaisesRegex(ValueError, 'has not failed'):
+                    update._recipe_failure_status(record)
+                self.assertEqual(writes, [])
+
+    def test_attempt_movement_during_reporting_does_not_overwrite(self):
+        with self.fixture() as (record, pending, _, writes):
+            replacement = {**pending, 'request_id': 'new-request'}
+            with patch.object(recipe_state, 'pending_build', side_effect=[pending, replacement]):
+                with self.assertRaisesRegex(ValueError, 'attempt changed'):
+                    update._recipe_failure_status(record)
+            self.assertEqual(writes, [])
+
+    def test_new_attempt_or_moved_recipe_cannot_be_overwritten(self):
+        for movement in ('request', 'head', 'base', 'tree'):
+            with self.subTest(movement=movement), self.fixture() as (record, pending, pr, writes):
+                if movement == 'request':
+                    pending['request_id'] = 'new-request'
+                elif movement == 'tree':
+                    record = {**record, 'recipe_tree': 'a'*40}
+                else:
+                    pr[movement]['sha'] = 'a'*40
+                with self.assertRaises(ValueError):
+                    update._recipe_failure_status(record)
+                self.assertEqual(writes, [])
+
+
 class RecipeCandidateBoundaries(unittest.TestCase):
     def setUp(self):
         environment = patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo'})

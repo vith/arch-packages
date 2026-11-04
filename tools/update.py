@@ -310,8 +310,24 @@ def prepare(number,output,retry=False):
     if metadata['base']['ref']=='main' and metadata.get('head',{}).get('ref','').startswith('updates/'):
         raise ValueError('legacy main recipe proposal disabled; use migrate-existing')
     if metadata['base']['ref'].startswith('pkg/'):
+        from tools import recipe_state
         from tools.recipe_candidates import prepare as recipe_prepare
-        return recipe_prepare(number,output,retry=retry)
+        merged = metadata['state'] == 'closed' and metadata.get('merged') is True
+        pr, control, head = recipe_state.recipe_identity(number, merged=merged)
+        try:
+            return recipe_prepare(number,output,retry=retry)
+        except Exception as failure:
+            try:
+                for context in ('verify', 'candidate-build', 'recipe-policy'):
+                    current, _, _ = recipe_state.recipe_identity(number, base=control, head=head, merged=merged)
+                    if (current['base']['ref'] != pr['base']['ref']
+                            or current['base']['sha'] != pr['base']['sha']
+                            or current['head']['ref'] != pr['head']['ref']):
+                        raise ValueError('recipe preparation base/head changed; redispatch required')
+                    status(head, context, 'failure', 'Recipe preparation failed; no package result accepted')
+            except Exception as status_failure:
+                failure.add_note('Recipe preparation failure status was not published: ' + str(status_failure))
+            raise
     pr,base,head=pr_identity(number)
     if ((pr.get('head') or {}).get('repo') or {}).get('full_name') != repository():
         raise ValueError('main source candidate requires same-repository head')
@@ -1475,6 +1491,21 @@ def write_proposals(directory):
     failures.finish()
 
 
+def _recipe_failure_status(record):
+    from tools import recipe_state
+    if trusted_checkout_sha() == main_sha():
+        pending = recipe_state.pending_build(record['pkgbase'], snapshot=recipe_state.StateSnapshot())
+        if (pending is None or pending['request_id'] != record['request_id']
+                or pending['head'] != record['head']):
+            raise ValueError('failed build is no longer the exact current attempt')
+        recipe_state.assert_recipe_identity(record)
+        if recipe_state.pending_build(record['pkgbase'], snapshot=recipe_state.StateSnapshot()) != pending:
+            raise ValueError('failed build attempt changed before status reporting')
+    else:
+        recipe_state.assert_failed_build_identity(record)
+    status(record['head'], 'candidate-build', 'failure', 'Whole worker or durable result validation failed')
+
+
 def cli():
     parser=argparse.ArgumentParser();sub=parser.add_subparsers(dest='command',required=True)
     p=sub.add_parser('extract');p.add_argument('--archive',required=True);p.add_argument('--directory',required=True);p.add_argument('--source-receipts',action='store_true')
@@ -1508,9 +1539,7 @@ def cli():
         elif args.command=='fail-build':
             record=load(args.record)
             if record.get('kind')=='recipe':
-                from tools.recipe_state import assert_recipe_identity
-                assert_recipe_identity(record)
-                status(record['head'],'candidate-build','failure','Whole worker or durable result validation failed')
+                _recipe_failure_status(record)
             else:
                 pr_identity(record['pr_number'],record['base'],record['head'])
                 source_status(record['pr_number'], record['base'], record['head'], 'failure')
