@@ -2,7 +2,7 @@
 
 pkgname='terminus-font-ttf'
 pkgver=4.49.3
-pkgrel=1
+pkgrel=1.1
 pkgdesc="Monospaced bitmap font designed for long work with computers (TTF version, mainly for Java applications)"
 arch=('any')
 url="https://files.ax86.net/terminus-ttf"
