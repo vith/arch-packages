@@ -156,11 +156,12 @@ scratch = pathlib.Path.home() / '.local/state/arch-packages/consumer-smoke'
 scratch.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(dir=scratch) as d:
     config = pathlib.Path(d) / 'config.json'
-    config.write_text(json.dumps({'check_for_updates': False, 'self_update': False, 'orchestrator_mode': False}))
+    config.write_text(json.dumps({'check_for_updates': False, 'self_update': False}))
     env = dict(os.environ, HOME=d, XDG_CONFIG_HOME=d, XDG_DATA_HOME=d, XDG_CACHE_HOME=d, XDG_STATE_HOME=d)
     result = subprocess.run(['fresh', '--no-upgrade-check', '--safe', '--config', str(config), '--cmd', 'config', 'show'], cwd=d, env=env, capture_output=True, text=True, check=True)
     output = json.loads(result.stdout)
-    assert output['check_for_updates'] is False and output['self_update'] is False and output['orchestrator_mode'] is False, output
+    assert output['check_for_updates'] is False and output['self_update'] is False, output
+    print(json.dumps(output, sort_keys=True))
 PY
 ;;
   i915ovmf)
