@@ -1,10 +1,10 @@
-# vith-gh
+# vith-github
 
 > [!WARNING]
 > **AI slop**
 > AI assistants authored substantial project automation and documentation. Source code and tests exist but do not guarantee correctness or security. Independently review the project before trusting or installing it.
 
-Personal x86_64 Arch Linux packages, built on GitHub Actions and distributed as signed GitHub Releases. All executable packages are built from source, not repackaged upstream binaries. Packages appear as `vith-gh/<package>` in pacman and paru. The source project remains at [vith/arch-packages](https://github.com/vith/arch-packages).
+Personal x86_64 Arch Linux packages, built on GitHub Actions and distributed as signed GitHub Releases. All executable packages are built from source, not repackaged upstream binaries. Packages appear as `vith-github/<package>` in pacman and paru. The source project remains at [vith/arch-packages](https://github.com/vith/arch-packages).
 
 ## Packages
 
@@ -42,7 +42,7 @@ sudo pacman-key --lsign-key 9C293ABB1F701DA04BA2C0D5711FC9BDDC5AF617
 Add this section to `/etc/pacman.conf`, then run `sudo pacman -Syu`:
 
 ```ini
-[vith-gh]
+[vith-github]
 SigLevel = Required
 Server = https://github.com/vith/arch-packages/releases/latest/download
 ```
@@ -51,9 +51,9 @@ Packages and repository databases are signed. If a database/signature download s
 
 For a fixed snapshot, replace `releases/latest/download` with `releases/download/SNAPSHOT_TAG`.
 
-If you previously configured `[arch-packages]`, rename that section to `[vith-gh]` after the new database is published. Keep its server URL and `SigLevel = Required`; the signing key is unchanged. Do not rename a separate `[vith-arch]` repository.
+If you previously configured `[arch-packages]` or `[vith-gh]`, rename that section to `[vith-github]` after the new database is published. Keep its server URL and `SigLevel = Required`; the signing key is unchanged. A separate n3t repository is not this GitHub repository.
 
-Historical snapshots retain their original database filenames. When selecting one explicitly, use `[arch-packages]` if it contains `arch-packages.db`, or `[vith-gh]` if it contains `vith-gh.db`.
+Historical snapshots retain their original database filenames. When selecting one explicitly, use the section matching its database: `[vith-github]` for `vith-github.db`, `[vith-gh]` for `vith-gh.db`, or `[arch-packages]` for `arch-packages.db`.
 
 ## Source and system guide
 

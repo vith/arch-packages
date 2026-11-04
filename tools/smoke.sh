@@ -67,7 +67,7 @@ server=https://github.com/vith/arch-packages/releases/latest/download
 repository=$(python - <<'PY'
 import json
 name=json.load(open('/expected.json'))['pacman_repository']
-if name not in ('vith-gh','arch-packages'):
+if name not in ('vith-github','vith-gh','arch-packages'):
     raise SystemExit('unsupported snapshot repository name')
 print(name)
 PY

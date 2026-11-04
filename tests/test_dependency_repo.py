@@ -58,7 +58,7 @@ class DependencyResolution(unittest.TestCase):
         self.root = Path(self.session.name)
         self.config = self.root / 'pacman.conf'
         self.config.write_text('[core]\n[extra]\n')
-        self.packages = {'core': set(), 'extra': set(), 'vith-gh': set(), 'vith-arch': set()}
+        self.packages = {'core': set(), 'extra': set(), 'vith-github': set(), 'vith-n3t-private': set()}
         self.providers = {}
         self.query_failure = None
         append = dependency_repo._append_repository
@@ -103,21 +103,21 @@ class DependencyResolution(unittest.TestCase):
         self.assertEqual(self.repositories(), ['core', 'extra'])
 
     def test_signed_github_satisfies_missing_dependency_without_external_fallback(self):
-        self.packages['vith-gh'] = {'carapace'}
+        self.packages['vith-github'] = {'carapace'}
         dependency_repo.configure(self.root, self.root, self.execute, {'carapace'})
-        self.assertEqual(self.repositories(), ['core', 'extra', 'vith-gh'])
+        self.assertEqual(self.repositories(), ['core', 'extra', 'vith-github'])
         self.assertIn('SigLevel = Required', self.config.read_text())
 
     def test_external_fallback_is_used_only_after_github_cannot_resolve(self):
-        self.packages['vith-arch'] = {'spotify'}
+        self.packages['vith-n3t-private'] = {'spotify'}
         dependency_repo.configure(self.root, self.root, self.execute, {'spotify'})
-        self.assertEqual(self.repositories(), ['core', 'extra', 'vith-gh', 'vith-arch'])
+        self.assertEqual(self.repositories(), ['core', 'extra', 'vith-github', 'vith-n3t-private'])
         self.assertEqual(self.config.read_text().count('SigLevel = Required'), 2)
 
     def test_missing_dependency_after_all_tiers_is_an_explicit_failure(self):
         with self.assertRaisesRegex(RuntimeError, 'target not found: absent'):
             dependency_repo.configure(self.root, self.root, self.execute, {'absent'})
-        self.assertEqual(self.repositories(), ['core', 'extra', 'vith-gh', 'vith-arch'])
+        self.assertEqual(self.repositories(), ['core', 'extra', 'vith-github', 'vith-n3t-private'])
 
     def test_missing_target_does_not_mask_an_operational_database_failure(self):
         self.query_failure = 'error: target not found: cargo\nerror: database is corrupted\n'

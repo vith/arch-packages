@@ -28,9 +28,9 @@ PACKAGE_NAME = re.compile(r'[a-z0-9][a-z0-9+_.-]*\Z')
 PKG_KEYS = {'pkgname','pkgbase','pkgver','pkgdesc','url','builddate','packager','size','arch','license','replaces','group','depend','optdepend','conflict','provides','backup','xdata','makedepend','checkdepend'}
 
 
-PACMAN_REPOSITORY = 'vith-gh'
-# Historical signed snapshots remain immutable and verifiable under their old name.
-SNAPSHOT_REPOSITORIES = (PACMAN_REPOSITORY, 'arch-packages')
+PACMAN_REPOSITORY = 'vith-github'
+# Historical signed snapshots remain immutable under their original database names.
+SNAPSHOT_REPOSITORIES = (PACMAN_REPOSITORY, 'vith-gh', 'arch-packages')
 SHA256 = re.compile(r'[0-9a-f]{64}\Z')
 
 

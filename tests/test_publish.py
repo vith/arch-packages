@@ -196,7 +196,7 @@ class PublicationBoundaries(unittest.TestCase):
         return {'schema':1,'repository':publish.REPOSITORY,'snapshot':snapshot,'accepted_sha':'a'*40,'key_fingerprint':'A'*40,'recipes':{'example':{'recipe_commit':'e'*40}},'files':files,'source_assets':{},'retained_packages':{},'retained_snapshots':{}}
 
     def test_complete_catalog_requires_exact_pacman_aliases_and_canonical_archives(self):
-        for repository in ('vith-gh', 'arch-packages'):
+        for repository in ('vith-github', 'vith-gh', 'arch-packages'):
             catalog = self.catalog_fixture(repository)
             publish.validate_catalog(catalog,publish.REPOSITORY,'A'*40)
             for name in catalog['files']:
@@ -206,6 +206,18 @@ class PublicationBoundaries(unittest.TestCase):
                 del broken['files'][name]
                 with self.subTest(repository=repository,asset=name), self.assertRaises(ValueError):
                     publish.validate_catalog(broken,publish.REPOSITORY,'A'*40)
+
+    def test_new_repository_preserves_both_historical_database_names(self):
+        catalog = self.catalog_fixture('vith-github')
+        for repository in ('vith-gh', 'arch-packages'):
+            snapshot = 'snapshot-old-' + repository
+            old = self.catalog_fixture(repository, snapshot)
+            catalog['retained_snapshots'][snapshot] = {'files': old['files']}
+        publish.validate_catalog(catalog, publish.REPOSITORY, 'A' * 40)
+        entry = catalog['retained_snapshots']['snapshot-old-vith-gh']['files']['vith-gh.db']
+        entry['url'] = publish.release_url(publish.REPOSITORY, 'snapshot-fixture', 'vith-gh.db')
+        with self.assertRaisesRegex(ValueError, 'Wrong asset snapshot'):
+            publish.validate_catalog(catalog, publish.REPOSITORY, 'A' * 40)
 
     def test_renamed_catalog_retains_immutable_historical_database_urls(self):
         catalog = self.catalog_fixture('vith-gh')
