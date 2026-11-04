@@ -3,7 +3,7 @@
 # Source package - builds from source
 
 pkgname=fresh-editor
-pkgver=0.5.4
+pkgver=0.5.7
 pkgrel=1
 pkgdesc="A lightweight, fast terminal-based text editor with LSP support and TypeScript plugins"
 url="https://sinelaw.github.io/fresh/"
@@ -13,9 +13,14 @@ depends=("gcc-libs" "glibc")
 makedepends=("cargo" "clang")
 provides=("fresh-editor")
 conflicts=("fresh-editor-bin")
-options=('!debug')
+# `!lto`: makepkg's default `lto` option adds -flto=auto to CFLAGS, so clang
+# emits the C dependencies (QuickJS, ...) as LLVM bitcode. rustc then links
+# with its own bundled rust-lld, which cannot read bitcode from a newer system
+# clang ("Unknown attribute kind (105)"). Plain object files have no LLVM
+# version coupling; Rust's own LTO (profile.release) is unaffected.
+options=('!debug' '!lto')
 source=("fresh-editor-${pkgver}-source.tar.gz::https://github.com/sinelaw/fresh/releases/download/v${pkgver}/fresh-editor-${pkgver}-source.tar.gz")
-sha256sums=("be86a8152a676f211415471405aa5719be2cd0555a1763af11cbb0feb4126668")
+sha256sums=("b297cb76f200f0e976596d9e3495fa8d24e290f41efb37367f635957f4bd9e42")
 
 prepare() {
     cd "fresh-$pkgver"
