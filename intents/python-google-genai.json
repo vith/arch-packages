@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "pkgbase": "python-google-genai",
+  "predecessor": "208d18876d3dcf891148be7072332867f59688d2",
+  "policy": {
+    "authority": "aur",
+    "automatic": {
+      "checksum_array": {
+        "assignment": "sha256sums",
+        "literal": "sha256sums=('fa13547aa6e416ed02f1062d5c389ce561cec653fe3f386ac3c4ccf95846c112'\n            '3d18903ca18ae3d2913d87d6423df903e2a96408aa2dd671271347ce52f02d28')",
+        "values": [
+          "fa13547aa6e416ed02f1062d5c389ce561cec653fe3f386ac3c4ccf95846c112",
+          "3d18903ca18ae3d2913d87d6423df903e2a96408aa2dd671271347ce52f02d28"
+        ]
+      },
+      "checksums": [
+        {
+          "algorithm": "sha256",
+          "assignment": "sha256sums",
+          "index": 0,
+          "literal": "fa13547aa6e416ed02f1062d5c389ce561cec653fe3f386ac3c4ccf95846c112",
+          "source_id": "python-google-genai-0"
+        },
+        {
+          "algorithm": "sha256",
+          "assignment": "sha256sums",
+          "index": 1,
+          "literal": "3d18903ca18ae3d2913d87d6423df903e2a96408aa2dd671271347ce52f02d28",
+          "source_id": "python-google-genai-1"
+        }
+      ],
+      "pkgrel": {
+        "assignment": "pkgrel",
+        "literal_assignment": "pkgrel=1",
+        "value": "1"
+      },
+      "srcinfo_fields": [
+        "pkgver",
+        "pkgrel",
+        "source",
+        "source_x86_64",
+        "sha256sums",
+        "sha256sums_x86_64"
+      ],
+      "version": {
+        "assignment": "pkgver",
+        "derivation": "literal-upstream-version",
+        "literal_assignment": "pkgver=2.33.0",
+        "template": "^[0-9A-Za-z][0-9A-Za-z.+_]*$"
+      }
+    },
+    "native_verification": "pending-github-native-probe",
+    "outputs": [
+      {
+        "arch": "any",
+        "name": "python-google-genai"
+      }
+    ],
+    "pkgbase": "python-google-genai",
+    "sources": [
+      {
+        "checksum_algorithm": "sha256",
+        "checksum_index": 0,
+        "id": "python-google-genai-0",
+        "kind": "archive",
+        "native_source_index": 0,
+        "source_template": "https://github.com/googleapis/python-genai/archive/refs/tags/v{version}.tar.gz",
+        "url_template": "https://github.com/googleapis/python-genai/archive/refs/tags/v{version}.tar.gz"
+      },
+      {
+        "checksum_algorithm": "sha256",
+        "checksum_index": 1,
+        "id": "python-google-genai-1",
+        "kind": "archive",
+        "native_source_index": 1,
+        "source_template": "https://github.com/googleapis/python-genai/pull/3064.patch",
+        "url_template": "https://github.com/googleapis/python-genai/pull/3064.patch"
+      }
+    ]
+  },
+  "lock": {
+    "schema": 1,
+    "sources": [
+      {
+        "asset_id": null,
+        "checksums": {
+          "sha256": "fa13547aa6e416ed02f1062d5c389ce561cec653fe3f386ac3c4ccf95846c112"
+        },
+        "commit": null,
+        "git_context": null,
+        "id": "python-google-genai-0",
+        "kind": "archive",
+        "peeled_commit": null,
+        "ref": null,
+        "release_id": null,
+        "source": "https://github.com/googleapis/python-genai/archive/refs/tags/v2.33.0.tar.gz",
+        "tag_object": null,
+        "url": "https://github.com/googleapis/python-genai/archive/refs/tags/v2.33.0.tar.gz"
+      },
+      {
+        "asset_id": null,
+        "checksums": {
+          "sha256": "3d18903ca18ae3d2913d87d6423df903e2a96408aa2dd671271347ce52f02d28"
+        },
+        "commit": null,
+        "git_context": null,
+        "id": "python-google-genai-1",
+        "kind": "archive",
+        "peeled_commit": null,
+        "ref": null,
+        "release_id": null,
+        "source": "https://github.com/googleapis/python-genai/pull/3064.patch",
+        "tag_object": null,
+        "url": "https://github.com/googleapis/python-genai/pull/3064.patch"
+      }
+    ],
+    "version": "2.33.0-1"
+  },
+  "provenance": {
+    "aur": {
+      "commit": "d2d460c9cc0f9bd91c57d710016cdd98ec55b2c7",
+      "package": "python-google-genai",
+      "ref": "refs/heads/master",
+      "url": "https://aur.archlinux.org/python-google-genai.git"
+    },
+    "pkgbase": "python-google-genai",
+    "schema": 1,
+    "watchers": [
+      {
+        "baseline_commit": "d2d460c9cc0f9bd91c57d710016cdd98ec55b2c7",
+        "id": "python-google-genai-aur",
+        "kind": "aur",
+        "package": "python-google-genai",
+        "ref": "refs/heads/master",
+        "url": "https://aur.archlinux.org/python-google-genai.git"
+      }
+    ]
+  }
+}
