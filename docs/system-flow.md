@@ -227,7 +227,9 @@ flowchart TD
 
 Required contexts remain `verify`, `recipe-policy`, and `candidate-build`. `recipe-policy` means supported inputs and trusted merge classification, not human approval to execute. Changed heads cannot reuse old checks.
 
-Source verification markers bind base and PR; the status SHA supplies head identity. Terminal source failure needs `retry=true`; an unchanged failed/running/successful source validation is not redispatched. Failures during source preparation are caught and reported only after a fresh identity check. The workflow's last failure step does not cover unsuccessful prepare, so that guarded reporting belongs in preparation code. A stale identity cannot write a failure onto a replacement head.
+Source verification markers bind base and PR; the status SHA supplies head identity. Terminal source failure needs `retry=true`; an unchanged failed/running/successful source validation is not redispatched. Source and recipe preparation failures are caught and reported only after fresh PR/base/head/controller checks. Recipe preparation marks all three candidate contexts failed without claiming a worker ran. The workflow's last failure step does not cover unsuccessful prepare, so that guarded reporting belongs in preparation code. A stale identity cannot write a failure onto a replacement head, and reporting errors preserve the original exception.
+
+An older controller may report a worker failure after main advances only when its immutable request still identifies the current failed attempt and the exact authenticated worker actually failed. The controller must remain in protected-main lineage, and the live recipe PR, base, head, tree and pending attempt must still match. This failure-only authorization does not permit success, acceptance, result reuse or automatic retry under a stale controller.
 
 Main candidates use the sole source helper in this job. It checks allowed scope, executes complete exact tracked-source tests without credentials, and records evidence. Generated bookkeeping is independently reconstructed rather than treated as arbitrary package edits. Human source branches are not rebased by automation.
 
@@ -415,7 +417,8 @@ Public keys are in [keys](../keys/). The signing fingerprint is `9C293ABB1F701DA
 | Worker failed after compilation or upload | Whole attempt failed; do not salvage |
 | Missing/ambiguous registration | Fail visibly; do not search history or dispatch repeatedly |
 | Source terminal failure | Retry only explicitly with exact identity |
-| Source preparation exception | Guard current base/head/PR afresh before reporting failure |
+| Source or recipe preparation exception | Guard current base/head/PR/controller afresh before reporting failure |
+| Worker failure after main advances | Report only the authenticated current failed attempt; do not weaken success or acceptance freshness |
 | Captured base behind main | Skip that candidate, continue other work, leave human branch alone |
 | Inclusion failure | Retry original successful output, no compile |
 | Missing/corrupt successful output or invalid provenance | Refuse inclusion |
