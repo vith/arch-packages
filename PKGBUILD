@@ -4,7 +4,7 @@
 pkgname=fish-tide
 _pkgname=tide
 pkgver=7.2.1
-pkgrel=1
+pkgrel=1.1
 pkgdesc="🌊 The ultimate Fish prompt."
 arch=('any')
 url="https://github.com/plttn/tide"
