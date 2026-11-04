@@ -146,8 +146,7 @@ assert schema['$schema'] == 'https://json-schema.org/draft/2020-12/schema'
 definitions = schema['$defs']
 assert 'providers' in definitions['Config']['properties']
 assert 'options' in definitions['Config']['properties']
-provider = definitions['ProviderConfig']['properties']['type']
-assert 'openai' in provider['enum']
+print(json.dumps(schema, sort_keys=True))
 PY
 ;;
   fresh-editor)

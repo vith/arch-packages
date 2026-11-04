@@ -366,6 +366,8 @@ The capability-free offline Microsandbox proof executes `doctor` through both in
 
 When OMP is enrolled, the capability-free offline consumer executes the installed `omp --version` launcher and requires its release, fork count and commit to match the signed package version. Its output is retained as `omp-version.txt`. This does not exercise interactive TUI, help, addons or PipeWire; recipe-owned checks remain in the build. ApexShot consumer proof covers version/help, native messaging, libraries, desktop assets, and extension files, not interactive live capture or recording.
 
+Crush consumer proof retains the installed CLI's generated configuration schema and checks its public configuration fields. Provider-type identifiers come from upstream; the proof does not pin a particular identifier or replace renamed values.
+
 Publication does not dispatch this workflow. Signed consumer proof is not installation on a client's machine.
 
 ## Administration, evidence, and clients
