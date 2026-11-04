@@ -2,7 +2,7 @@
 
 pkgname=batdoc
 pkgver=1.7.1
-pkgrel=1
+pkgrel=1.1
 pkgdesc='cat(1) for doc, docx, xls, xlsx, pptx, pdf, and image files (OCR) -- renders to markdown with bat'
 arch=('x86_64')
 url='https://github.com/daemonp/batdoc'
