@@ -24,7 +24,7 @@ Personal x86_64 Arch Linux packages, built on GitHub Actions and distributed as 
 
 The Google SDK recipe omits the unavailable `python-sentencepiece` build/test dependency. Upstream already excludes tokenizer tests; the optional runtime dependency is unchanged.
 
-ApexShot includes its native capture overlay and optional GNOME Shell integration for Shell 48–50. The extension is installed system-wide but is not enabled automatically. Log out and back in after installation, then enable **ApexShot** in GNOME Extensions if desired. The package does not enable desktop autostart.
+ApexShot includes its native capture overlay and optional GNOME Shell integration for Shell 48–50. Its extension payload includes every top-level runtime JavaScript module, without upstream tests or development documentation. The extension is installed system-wide but is not enabled automatically. Log out and back in after installation, then enable **ApexShot** in GNOME Extensions if desired. The package does not enable desktop autostart.
 
 ## Install
 
