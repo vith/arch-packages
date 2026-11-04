@@ -115,8 +115,8 @@ def configure(root, work, run, dependencies):
     dependencies = sorted(set(dependencies))
     result = _resolve_dependencies(dependencies, run)
     repositories = (
-        ('vith-gh', root / 'keys/arch-packages.asc', FINGERPRINT, latest_server),
-        ('vith-arch', root / 'keys/n3t.asc', N3T_FINGERPRINT,
+        ('vith-github', root / 'keys/arch-packages.asc', FINGERPRINT, latest_server),
+        ('vith-n3t-private', root / 'keys/n3t.asc', N3T_FINGERPRINT,
          lambda: 'https://arch.n3t.work/repo'),
     )
     for name, key, fingerprint, server in repositories:
@@ -133,7 +133,7 @@ def configure_n3t(work, run=None, *, config='/etc/pacman.conf', gpgdir=None):
     if run is None:
         from tools.native import run
     root = Path(__file__).resolve().parent.parent
-    _append_repository('vith-arch', root / 'keys/n3t.asc',
+    _append_repository('vith-n3t-private', root / 'keys/n3t.asc',
                        N3T_FINGERPRINT, 'https://arch.n3t.work/repo', work, run,
                        config=config, gpgdir=gpgdir)
     command = ['pacman', '--config', str(config)]

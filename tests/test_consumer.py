@@ -39,6 +39,12 @@ class SignedConsumerInputs(unittest.TestCase):
         self.assertEqual(current['pacman_repository'], 'vith-gh')
         self.assertEqual(historical['pacman_repository'], 'arch-packages')
 
+    def test_consumer_selects_the_new_database_from_the_signed_snapshot(self):
+        self.catalog['files']['vith-github.db'] = self.catalog['files'].pop('vith-gh.db')
+        with patch.object(consumer.publish, 'pkginfo', return_value=self.identity):
+            result = consumer.snapshot_inputs(self.catalog, self.directory, self.policies)
+        self.assertEqual(result['pacman_repository'], 'vith-github')
+
     def test_prepare_uses_enrollment_at_signed_commit_before_package_rename(self):
         accepted_sha = 'a' * 40
         snapshot = f"snapshot-{'b' * 40}-1-1"

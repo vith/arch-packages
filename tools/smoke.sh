@@ -67,7 +67,7 @@ server=https://github.com/vith/arch-packages/releases/latest/download
 repository=$(python - <<'PY'
 import json
 name=json.load(open('/expected.json'))['pacman_repository']
-if name not in ('vith-gh','arch-packages'):
+if name not in ('vith-github','vith-gh','arch-packages'):
     raise SystemExit('unsupported snapshot repository name')
 print(name)
 PY
@@ -107,7 +107,7 @@ def run(command, *, stream=False):
     return subprocess.run(command, check=True, text=True, stdout=None if stream else subprocess.PIPE).stdout
 configure_n3t('/fresh/n3t', run=run, config='/fresh/pacman.conf', gpgdir='/fresh/gnupg')
 PY
-  dependency_targets=(vith-arch/spotify)
+  dependency_targets=(vith-n3t-private/spotify)
 fi
 cp /fresh/pacman.conf /evidence/pacman.conf
 pacman --config /fresh/pacman.conf -Syy --noconfirm
