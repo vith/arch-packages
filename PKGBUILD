@@ -7,7 +7,7 @@
 pkgname=python-ftfy
 _name=${pkgname#python-}
 pkgver=6.3.1
-pkgrel=3
+pkgrel=3.1
 pkgdesc='Fixes mojibake and other problems with Unicode, after the fact'
 arch=(any)
 url='https://ftfy.readthedocs.io'

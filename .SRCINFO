@@ -1,7 +1,7 @@
 pkgbase = python-ftfy
 	pkgdesc = Fixes mojibake and other problems with Unicode, after the fact
 	pkgver = 6.3.1
-	pkgrel = 3
+	pkgrel = 3.1
 	url = https://ftfy.readthedocs.io
 	arch = any
 	license = Apache-2.0
