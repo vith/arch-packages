@@ -129,6 +129,10 @@ mapfile -t targets < /evidence/targets.txt
 # Kernel and headers belong only to this disposable proof root, not the runner.
 # Normal package install scripts and ALPM hooks restore file caps and build DKMS.
 pacman --config /fresh/pacman.conf -S --noconfirm -- base core/linux core/linux-headers python util-linux tmux desktop-file-utils binutils ca-certificates man-db zip unzip "${dependency_targets[@]}" "${targets[@]}"
+package_files() {
+  # Keep the explicit setup database, but report paths as seen inside the chroot.
+  pacman --config /fresh/pacman.conf --root / -Ql "$1"
+}
 # Resolver configuration is the only host configuration copied into the disposable root.
 mkdir -p /fresh/root/etc /fresh/root/fresh/home /fresh/root/fresh/config /fresh/root/fresh/data /fresh/root/fresh/runtime
 cp /etc/resolv.conf /fresh/root/etc/resolv.conf
@@ -278,8 +282,7 @@ fi
 if enrolled apexshot; then
 # Share installed ApexShot checks with the credential-free candidate proof.
 cp /apexshot-smoke.sh /fresh/root/apexshot-smoke.sh
-# Keep the explicit /fresh/db database, but report paths as seen inside the chroot.
-pacman --config /fresh/pacman.conf --root / -Ql apexshot > /fresh/root/apexshot-files.txt
+package_files apexshot > /fresh/root/apexshot-files.txt
 apexshot_version=$(python - <<'PY'
 import json
 package=next(x for x in json.load(open('/expected.json'))['packages'] if x['pkgbase']=='apexshot')
@@ -446,7 +449,9 @@ groups={
 single=('pi','podcheck','spotify-adblock','spotify-remove-ad-banner','ttf-ioskeley-mono',
         'ttf-ioskeley-mono-unhinted','vet','airgorah','asleap',
         'computer-use-linux','i915ovmf','mdevctl','microsandbox',
-        'captiveportalautologin-vith-git','carapace-spec','crush','fresh-editor','prek','swag','zig0.15')
+        'captiveportalautologin-vith-git','carapace-spec','crush','fresh-editor','prek','swag','zig0.15',
+        'arping-th','batdoc','ccze','crunch','fish-tide','nwipe',
+        'opentracker-cli','terminus-font-ttf','python-ftfy')
 groups.update({n:{n} for n in single})
 for proof,outputs in sorted(groups.items()):
     if names & outputs:
@@ -463,7 +468,9 @@ chown -R 1000:1000 /fresh/root/fresh/data
 mapfile -t public_targets < /evidence/public-targets.txt
 failed_targets=()
 for name in "${public_targets[@]}"; do
-  if offline_consumer bash /public-smoke.sh "$name" > "/evidence/$name-consumer.txt" 2>&1; then
+  if { [[ $name != terminus-font-ttf ]] ||
+       package_files "$name" > "/fresh/root/$name-files.txt" 2> "/evidence/$name-consumer.txt"; } &&
+     offline_consumer bash /public-smoke.sh "$name" > "/evidence/$name-consumer.txt" 2>&1; then
     continue
   else
     status=$?
