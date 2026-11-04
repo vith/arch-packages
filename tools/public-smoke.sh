@@ -137,8 +137,9 @@ PY
   terminus-font-ttf)
 python - <<'PY'
 import pathlib, subprocess
-files = subprocess.check_output(['pacman', '-Qql', 'terminus-font-ttf'], text=True).splitlines()
-fonts = sorted(path for path in files if path.endswith('.ttf'))
+files = pathlib.Path('/terminus-font-ttf-files.txt').read_text().splitlines()
+fonts = sorted(line.split(' ', 1)[1] for line in files
+               if line.startswith('terminus-font-ttf /') and line.endswith('.ttf'))
 assert fonts, 'no packaged fonts available to fontconfig'
 for font in fonts:
     assert pathlib.Path(font).is_file(), font
