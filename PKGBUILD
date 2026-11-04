@@ -3,8 +3,8 @@
 # Source: https://github.com/jmelahman/pkgbuilds
 
 pkgname=prek
-pkgver=0.5.5
-pkgrel=3.1
+pkgver=0.5.7
+pkgrel=2
 pkgdesc="⚡ Better 'pre-commit', re-engineered in Rust"
 arch=('x86_64')
 url='https://github.com/j178/prek'
@@ -14,9 +14,15 @@ makedepends=('git' 'rust' 'libxml2')
 # TODO: https://github.com/jmelahman/PKGBUILDs/issues/119
 # checkdepends=('cargo-nextest')
 options=('!lto')
-_commit='77cca6719ea8e3d9cc7a973e2c9e7648f4b0381d'
-source=("$pkgname::git+$url.git#commit=$_commit")
-md5sums=('SKIP')
+_commit='8569a4ac59a79212fe152f3c815505775301ec1d'
+source=(
+  "$pkgname::git+$url.git#commit=$_commit"
+  'aws-lc-rs.patch'  # https://github.com/j178/prek/pull/2933
+)
+sha256sums=(
+  'SKIP'
+  '8eb795bdd245f1646e0097432414598d466f671b5f30df1bd0c54f8a5e2f5150'
+)
 
 pkgver() {
   cd "$pkgname" || exit
@@ -26,6 +32,13 @@ pkgver() {
 
 prepare() {
   cd "$pkgname" || exit
+
+  # The locked aws-lc-sys 0.45.0 cannot build when CFLAGS carries an
+  # optimization level: cc 1.6+ snapshots the environment before aws-lc-sys
+  # filters it, so that -O lands after the -O0 jitterentropy requires and wins.
+  # 0.46.0 holds the filter for the builder's lifetime instead.
+  # https://github.com/aws/aws-lc-rs/issues/1252
+  patch -Np1 -i "$srcdir/aws-lc-rs.patch"
 
   cargo fetch --locked
 }
