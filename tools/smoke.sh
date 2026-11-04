@@ -461,10 +461,22 @@ python /consumer_fixtures.py /expected.json /consumer-fixtures.json \
   /evidence/microsandbox-prerequisite.json
 chown -R 1000:1000 /fresh/root/fresh/data
 mapfile -t public_targets < /evidence/public-targets.txt
+failed_targets=()
 for name in "${public_targets[@]}"; do
-  offline_consumer bash /public-smoke.sh "$name" > "/evidence/$name-consumer.txt" 2>&1
+  if offline_consumer bash /public-smoke.sh "$name" > "/evidence/$name-consumer.txt" 2>&1; then
+    continue
+  else
+    status=$?
+    failed_targets+=("$name")
+    printf 'Public consumer proof failed: %s (exit %s); see %s-consumer.txt\n' "$name" "$status" "$name" >&2
+  fi
 done
 if [[ -d /fresh/root/fresh/data/public-proofs ]]; then
   cp -a /fresh/root/fresh/data/public-proofs /evidence/
+fi
+if ((${#failed_targets[@]})); then
+  printf '%s\n' "${failed_targets[@]}" > /evidence/failed-public-targets.txt
+  printf 'Failed public consumer proofs: %s\n' "${failed_targets[*]}" >&2
+  exit 1
 fi
 printf 'All enrolled signed package consumer proofs passed (%s).\n' "${snapshot:-active}" > /evidence/result.txt

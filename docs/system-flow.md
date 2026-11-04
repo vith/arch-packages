@@ -368,6 +368,8 @@ When OMP is enrolled, the capability-free offline consumer executes the installe
 
 Crush consumer proof retains the installed CLI's generated configuration schema and checks its public configuration fields. Provider-type identifiers come from upstream; the proof does not pin a particular identifier or replace renamed values.
 
+Fresh Editor proof supplies explicit update settings and checks that the installed CLI honors them; removed internal configuration fields are not pinned. Public package cases all run even when an earlier case fails. Each failure retains its output and package-specific evidence, and any failure makes the overall proof fail without writing the success result.
+
 Publication does not dispatch this workflow. Signed consumer proof is not installation on a client's machine.
 
 ## Administration, evidence, and clients
