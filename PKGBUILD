@@ -2,22 +2,26 @@
 
 pkgbase=computer-use-linux
 pkgname=('computer-use-linux' 'gnome-shell-extension-computer-use-linux')
-pkgver=0.7.32
+pkgver=0.7.36
 pkgrel=1
 pkgdesc="Control a real Linux desktop from any MCP host (AT-SPI, portals, multi-compositor window targeting)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/agent-sh/computer-use-linux"
 license=('MIT')
 makedepends=('cargo')
-checkdepends=('dbus')
-source=("${pkgbase}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('79420bbbc26736e668eba3726efd053024be701554080b12e23f2e3bdee2d22d')
+checkdepends=('dbus' 'python-gobject')
+source=("${pkgbase}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz"
+        'gnome-indicator-test.patch')
+sha256sums=('f20d7ac0c4fe37e6448e07675f1d9034cf3241ae2911ca77bfce9554b2db74c4'
+            '3ee3fdbc16683dff37f012ae0f2a73954db3da3c67a226a1ee3776a811e1bf0d')
 
 _uuid=computer-use-linux@avifenesh.dev
 
 prepare() {
     cd "${pkgbase}-${pkgver}"
     export RUSTUP_TOOLCHAIN=stable
+
+    patch -Np1 -i "${srcdir}/gnome-indicator-test.patch"
 
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
