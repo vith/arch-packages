@@ -65,5 +65,6 @@ build() {
 package() {
   install -Dm755 "$srcdir/oh-my-pi/packages/coding-agent/dist/omp-linux-x64" "$pkgdir/usr/bin/omp"
   install -Dm644 "$srcdir/oh-my-pi/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 "$srcdir/oh-my-pi/THIRD-PARTY-NOTICES.txt" "$pkgdir/usr/share/licenses/$pkgname/THIRD-PARTY-NOTICES.txt"
+  install -Dm644 "$srcdir/oh-my-pi/packages/coding-agent/THIRD-PARTY-NOTICES.txt" "$pkgdir/usr/share/licenses/$pkgname/THIRD-PARTY-NOTICES.txt"
+  install -Dm644 "$srcdir/oh-my-pi/packages/natives/THIRD-PARTY-NOTICES.txt" "$pkgdir/usr/share/licenses/$pkgname/PI-NATIVES-THIRD-PARTY-NOTICES.txt"
 }
