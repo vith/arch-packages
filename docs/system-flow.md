@@ -109,6 +109,8 @@ An original AUR proposal with recorded merge conflicts cannot reserve a new nati
 
 Pending import registration freezes source data without executing a recipe. Pending imports are not routine discovery/publication inputs. Their first conversion builds as an exact recipe PR and waits for human Merge.
 
+New imports may come directly from `https://aur.archlinux.org/<pkgbase>.git` on `refs/heads/master`, or the official `https://github.com/archlinux/aur.git` mirror on `refs/heads/<pkgbase>`. Admission authenticates the exact original commit, tree and complete recipe manifest, and requires that commit to belong to the selected canonical branch. The initial AUR baseline must match that origin; pending revisions may advance the baseline but cannot retarget its repository, package or branch. Historical per-package n3t origins remain supported. No arbitrary Git origin, nested recipe submodule, or execution during admission is permitted.
+
 Initial AUR imports use the authenticated AUR version floor, not an unpublished legacy recipe counter. Local release corrections use fractions above the AUR counter and below its next integer. Final candidate preparation revalidates the intended policy, sources, and AUR provenance before allowing this initial reset; published recipes retain their version-increase requirement.
 
 Normal native `makepkg` performs Git checkout with its branch, history, and reachable tags. Planned source locks are detection/classification snapshots, not instructions to rewrite source references or force a different checkout. No source bundle or extra source-submodule scheme is introduced.
@@ -369,6 +371,8 @@ When OMP is enrolled, the capability-free offline consumer executes the installe
 Crush consumer proof retains the installed CLI's generated configuration schema and checks its public configuration fields. Provider-type identifiers come from upstream; the proof does not pin a particular identifier or replace renamed values.
 
 Fresh Editor proof supplies explicit update settings and checks that the installed CLI honors them; removed internal configuration fields are not pinned. Public package cases all run even when an earlier case fails. Each failure retains its output and package-specific evidence, and any failure makes the overall proof fail without writing the success result.
+
+Signed membership also enables bounded offline cases for arping-th packet-count rejection, batdoc local DOCX extraction, ccze syslog colorization, crunch alphabet enumeration, fish-tide status rendering, nwipe non-root refusal, opentracker malformed-configuration rejection, Terminus font parsing and ftfy Unicode repair. Dependency presence alone never enables a case. ARP traffic, disk discovery/wiping, OCR/model downloads, live account fetching and GUI font rendering are outside these cases; adding the cases does not itself establish that new packages have built or passed signed consumer verification.
 
 Publication does not dispatch this workflow. Signed consumer proof is not installation on a client's machine.
 

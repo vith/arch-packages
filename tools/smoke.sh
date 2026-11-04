@@ -446,7 +446,9 @@ groups={
 single=('pi','podcheck','spotify-adblock','spotify-remove-ad-banner','ttf-ioskeley-mono',
         'ttf-ioskeley-mono-unhinted','vet','airgorah','asleap',
         'computer-use-linux','i915ovmf','mdevctl','microsandbox',
-        'captiveportalautologin-vith-git','carapace-spec','crush','fresh-editor','prek','swag','zig0.15')
+        'captiveportalautologin-vith-git','carapace-spec','crush','fresh-editor','prek','swag','zig0.15',
+        'arping-th','batdoc','ccze','crunch','fish-tide','nwipe',
+        'opentracker-cli','terminus-font-ttf','python-ftfy')
 groups.update({n:{n} for n in single})
 for proof,outputs in sorted(groups.items()):
     if names & outputs:

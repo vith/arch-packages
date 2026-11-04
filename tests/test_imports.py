@@ -208,6 +208,132 @@ class PendingImports(unittest.TestCase):
         with self.assertRaises(ValueError):
             imports.registry(self.new)
 
+    def stage_direct_aur(self, *, mirror=False):
+        (self.origin/'fix.patch').write_bytes(b'native patch')
+        checksum = hashlib.sha256(b'native patch').hexdigest()
+        (self.origin/'.SRCINFO').write_text(
+            'pkgbase = example\n\tpkgver = 1\n\tpkgrel = 1\n\tarch = x86_64\n'
+            '\tsource = fix.patch\n\tsha256sums = '+checksum+'\npkgname = example\n')
+        sources.git('add', '.', cwd=self.origin)
+        sources.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+                    'commit', '-m', 'canonical AUR recipe', cwd=self.origin)
+        self.commit = sources.git('rev-parse', 'HEAD', cwd=self.origin)
+        self.aur_ref = 'refs/heads/example' if mirror else 'refs/heads/master'
+        sources.git('update-ref', self.aur_ref, self.commit, cwd=self.origin)
+        self.item['origin'].update(
+            url='https://github.com/archlinux/aur.git' if mirror else 'https://aur.archlinux.org/example.git',
+            commit=self.commit, tree=sources.git('rev-parse', 'HEAD^{tree}', cwd=self.origin))
+        self.policy['authority'] = 'aur'
+        self.lock['version'] = '1-1'
+        identity = {'url': self.item['origin']['url'], 'package': 'example',
+                    'ref': self.aur_ref, 'commit': self.commit}
+        self.provenance = {
+            'schema': 1, 'pkgbase': 'example', 'aur': identity,
+            'watchers': [{'id': 'aur-recipe', 'kind': 'aur',
+                          **{k: v for k, v in identity.items() if k != 'commit'},
+                          'baseline_commit': self.commit, 'mode': 'authoritative-import'}]}
+        shutil.rmtree(self.new/'recipes'/'example')
+        shutil.copytree(self.origin, self.new/'recipes'/'example',
+                        ignore=shutil.ignore_patterns('.git'))
+        self.item['origin']['manifest'] = recipe_gate.tree_manifest(self.new/'recipes'/'example')
+        self.save_direct_aur()
+
+    def save_direct_aur(self):
+        update.dump(self.new/'packages.json', {'schema': 1, 'packages': [], 'imports': [self.item]})
+        update.dump(self.new/'inputs'/'example.json', self.lock)
+        update.dump(self.new/'upstream'/'example.json', self.provenance)
+
+    def test_direct_canonical_aur_admission_is_pending_and_nonexecutable(self):
+        self.stage_direct_aur()
+        self.assertEqual(self.admit(), ['example'])
+        self.assertEqual(update.policy_at(self.new), {})
+        self.assertFalse((self.root/'EXECUTED').exists())
+        self.assertFalse((self.root/'proof'/'example'/'origin.git'/'FETCH_HEAD').exists())
+
+    def test_official_aur_mirror_admission_authenticates_package_branch(self):
+        self.stage_direct_aur(mirror=True)
+        self.assertEqual(self.admit(), ['example'])
+        self.assertFalse((self.root/'EXECUTED').exists())
+
+    def test_direct_aur_origin_must_belong_to_its_package_branch(self):
+        self.stage_direct_aur(mirror=True)
+        sources.git('update-ref', 'refs/heads/another-package', self.commit, cwd=self.origin)
+        unrelated = sources.git(
+            '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+            'commit-tree', self.item['origin']['tree'], '-m', 'independent package history',
+            cwd=self.origin)
+        sources.git('update-ref', self.aur_ref, unrelated, cwd=self.origin)
+        with self.assertRaises(ValueError):
+            imports.authenticate(self.item, self.root/'wrong-branch')
+        self.assertFalse((self.root/'EXECUTED').exists())
+
+    def test_direct_aur_initial_baseline_cannot_select_a_different_valid_commit(self):
+        self.stage_direct_aur()
+        sources.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+                    'commit', '--allow-empty', '-m', 'later identical AUR tree', cwd=self.origin)
+        later = sources.git('rev-parse', 'HEAD', cwd=self.origin)
+        sources.git('update-ref', self.aur_ref, later, cwd=self.origin)
+        self.provenance['aur']['commit'] = later
+        self.provenance['watchers'][0]['baseline_commit'] = later
+        self.save_direct_aur()
+        with self.assertRaises(ValueError):
+            self.admit()
+
+    def test_direct_aur_pending_revision_cannot_retarget_another_canonical_package(self):
+        self.stage_direct_aur(mirror=True)
+        shutil.rmtree(self.old)
+        shutil.copytree(self.new, self.old)
+        metadata = (self.origin/'.SRCINFO').read_text().replace('pkgbase = example', 'pkgbase = other')
+        (self.origin/'.SRCINFO').write_text(metadata)
+        sources.git('add', '.', cwd=self.origin)
+        sources.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+                    'commit', '-m', 'another pkgbase producing the same output', cwd=self.origin)
+        other = sources.git('rev-parse', 'HEAD', cwd=self.origin)
+        sources.git('update-ref', 'refs/heads/other', other, cwd=self.origin)
+        self.provenance['aur'].update(package='other', ref='refs/heads/other', commit=other)
+        self.provenance['watchers'][0].update(
+            package='other', ref='refs/heads/other', baseline_commit=other)
+        self.save_direct_aur()
+        with self.assertRaises(ValueError):
+            imports.validate_admission(
+                self.old, self.new, {'example': self.commit}, {'example': self.commit},
+                self.root/'retargeted-proof')
+
+    def test_direct_aur_pending_revision_keeps_origin_and_can_advance_baseline(self):
+        self.stage_direct_aur()
+        shutil.rmtree(self.old)
+        shutil.copytree(self.new, self.old)
+        metadata = (self.origin/'.SRCINFO').read_text().replace('arch = x86_64', 'arch = any')
+        (self.origin/'.SRCINFO').write_text(metadata)
+        sources.git('add', '.', cwd=self.origin)
+        sources.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+                    'commit', '-m', 'AUR architecture correction', cwd=self.origin)
+        later = sources.git('rev-parse', 'HEAD', cwd=self.origin)
+        sources.git('update-ref', self.aur_ref, later, cwd=self.origin)
+        self.policy['outputs'][0]['arch'] = 'any'
+        self.provenance['aur']['commit'] = later
+        self.provenance['watchers'][0]['baseline_commit'] = later
+        self.save_direct_aur()
+        self.assertEqual(imports.validate_admission(
+            self.old, self.new, {'example': self.commit}, {'example': self.commit},
+            self.root/'proof'), ['example'])
+        self.assertEqual(imports.registry(self.new)[2]['example']['origin'],
+                         imports.registry(self.old)[2]['example']['origin'])
+        self.assertEqual(update.policy_at(self.new), {})
+        self.assertFalse((self.root/'EXECUTED').exists())
+
+    def test_direct_aur_nested_gitlinks_cannot_disappear_during_archiving(self):
+        self.stage_direct_aur()
+        sources.git('update-index', '--add', '--cacheinfo', '160000', self.commit,
+                    'nested-recipe', cwd=self.origin)
+        sources.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+                    'commit', '-m', 'canonical tree with nested gitlink', cwd=self.origin)
+        self.item['origin']['commit'] = sources.git('rev-parse', 'HEAD', cwd=self.origin)
+        self.item['origin']['tree'] = sources.git('rev-parse', 'HEAD^{tree}', cwd=self.origin)
+        with self.assertRaises(ValueError):
+            imports.authenticate(self.item, self.root/'nested-gitlink')
+        self.assertFalse((self.root/'EXECUTED').exists())
+
     def test_admission_rejects_tooling_and_missing_registration(self):
         (self.new/'tools').mkdir(); (self.new/'tools'/'evil.py').write_text('raise RuntimeError()\n')
         with self.assertRaises(ValueError):

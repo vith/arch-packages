@@ -28,6 +28,137 @@ assert actual == expected, (actual, expected)
 PY
 }
 case "$name" in
+  arping-th)
+python - <<'PY'
+import subprocess
+p = subprocess.run(['arping-th', '-c', '-1'], capture_output=True, text=True, timeout=5)
+assert p.returncode == 1, p
+assert '-1' in p.stderr and not p.stdout, p
+print(p.stderr, end='')
+PY
+;;
+  batdoc)
+python - <<'PY'
+import pathlib, subprocess, zipfile
+document = pathlib.Path('consumer.docx')
+with zipfile.ZipFile(document, 'w') as archive:
+    archive.writestr('word/document.xml', '''<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:r><w:t>Offline document &amp; Unicode café</w:t></w:r></w:p>
+<w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p>
+</w:body></w:document>''')
+p = subprocess.run(['batdoc', '--plain', str(document)], capture_output=True, text=True, timeout=20, check=True)
+assert p.stdout.splitlines() == ['Offline document & Unicode café', '', 'Second paragraph'], repr(p.stdout)
+print(p.stdout, end='')
+PY
+;;
+  ccze)
+python - <<'PY'
+import re, subprocess
+line = 'Jan  2 03:04:05 proofhost consumer[123]: offline log message\n'
+p = subprocess.run(['ccze', '-A', '-p', 'syslog', '-o', 'nolookups'], input=line, capture_output=True, text=True, timeout=5, check=True)
+assert re.search(r'\x1b\[[0-9;]*m', p.stdout), repr(p.stdout)
+plain = re.sub(r'\x1b\[[0-9;]*m', '', p.stdout)
+assert plain == line, repr(plain)
+print(p.stdout, end='')
+PY
+;;
+  crunch)
+python - <<'PY'
+import subprocess
+p = subprocess.run(['crunch', '1', '2', 'ab'], capture_output=True, text=True, timeout=10, check=True)
+assert p.stdout.splitlines() == ['a', 'b', 'aa', 'ab', 'ba', 'bb'], p
+print(p.stdout, end='')
+PY
+;;
+  fish-tide)
+mkdir -p home config data cache
+HOME="$PWD/home" XDG_CONFIG_HOME="$PWD/config" XDG_DATA_HOME="$PWD/data" XDG_CACHE_HOME="$PWD/cache" fish --no-config > prompt.txt <<'FISH'
+set -g fish_function_path /etc/fish/functions $fish_function_path
+set -g _tide_side left
+set -g _tide_pad ''
+set -g _tide_left_items status
+set -g tide_left_prompt_prefix '['
+set -g tide_status_color white
+set -g tide_status_bg_color black
+set -g tide_status_color_failure white
+set -g tide_status_bg_color_failure red
+set -g tide_status_icon OK
+set -g tide_status_icon_failure FAIL
+set -g _tide_pipestatus 0
+set -g _tide_status 0
+set -g add_prefix true
+_tide_item_status
+printf '\n'
+set -g _tide_pipestatus 1
+set -g _tide_status 1
+set -g add_prefix true
+_tide_item_status
+printf '\n'
+FISH
+python - <<'PY'
+import pathlib, re
+text = pathlib.Path('prompt.txt').read_text()
+plain = re.sub(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\([A-Z0-9])', '', text)
+assert plain.splitlines() == ['[OK', '[FAIL 1'], repr(plain)
+print(text, end='')
+PY
+;;
+  nwipe)
+python - <<'PY'
+import os, subprocess
+assert os.geteuid() != 0
+p = subprocess.run(['nwipe'], capture_output=True, text=True, timeout=5)
+assert p.returncode == 99, p
+print(p.stdout, end='')
+PY
+;;
+  opentracker-cli)
+python - <<'PY'
+import hashlib, os, pathlib, subprocess
+home = pathlib.Path.cwd() / 'home'
+config = home / '.config/opentracker/config.json'
+config.parent.mkdir(parents=True)
+def state():
+    return {str(p.relative_to(home)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in home.rglob('*') if p.is_file()}
+fixture = b'{"providers": @N3T_CONSUMER_INVALID}\n'
+config.write_bytes(fixture)
+before = state()
+p = subprocess.run(['opentracker', 'fetch', 'opencode'], env=dict(os.environ, HOME=str(home)),
+                   stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+assert p.returncode == 1 and not p.stdout, p
+# The offending byte exists only inside the configuration, not the command or path.
+assert '@' in p.stderr, p
+assert config.read_bytes() == fixture and state() == before
+print(p.stderr, end='')
+PY
+;;
+  terminus-font-ttf)
+python - <<'PY'
+import pathlib, subprocess
+files = subprocess.check_output(['pacman', '-Qql', 'terminus-font-ttf'], text=True).splitlines()
+fonts = sorted(path for path in files if path.endswith('.ttf'))
+assert fonts, 'no packaged fonts available to fontconfig'
+for font in fonts:
+    assert pathlib.Path(font).is_file(), font
+    fields = subprocess.check_output(['fc-scan', '--format', '%{family}\n%{style}\n%{spacing}\n%{charset}\n', font], text=True).splitlines()
+    assert len(fields) == 4 and fields[0] == 'Terminus (TTF)', (font, fields)
+    assert fields[1] and fields[2] == '100', (font, fields)
+    ranges = [tuple(int(n, 16) for n in item.split('-')) for item in fields[3].split()]
+    assert all(any(r[0] <= code <= r[-1] for r in ranges) for code in (0x41, 0x61, 0xe9)), (font, fields)
+    print(font, fields[0], fields[1], 'monospaced Latin glyphs')
+PY
+;;
+  python-ftfy)
+python - <<'PY'
+import ftfy
+for broken, repaired in [('âœ” No problems', '✔ No problems'), ('l’humanitÃ©', "l'humanité"), ('IL Y MARQUÉ…', 'IL Y MARQUÉ…')]:
+    actual = ftfy.fix_text(broken)
+    assert actual == repaired, (broken, actual, repaired)
+    print(repr(broken), '->', repr(actual))
+PY
+;;
   carapace-bridge)
 carapace-bridge _carapace export carapace-bridge ba > completion.json
 bash --noprofile --norc -c 'source <(carapace-bridge _carapace bash); COMP_LINE="carapace-bridge ba"; COMP_POINT=${#COMP_LINE}; COMP_TYPE=9; _carapace-bridge_completion; printf "%s\n" "${COMPREPLY[@]}"' > completion.txt
@@ -456,6 +587,15 @@ PY
   *) echo "Unknown public consumer proof: $name" >&2; exit 2 ;;
 esac
 case "$name" in
+  arping-th) echo 'Scope: negative packet-count rejection before network initialization; no ARP traffic or interface enumeration.' ;;
+  batdoc) echo 'Scope: local OOXML text extraction with entity/Unicode decoding and paragraph boundaries; no OCR, model download or external viewer.' ;;
+  ccze) echo 'Scope: offline syslog ANSI colorization preserving message text; lookups disabled.' ;;
+  crunch) echo 'Scope: exact six-entry local alphabet enumeration only.' ;;
+  fish-tide) echo 'Scope: installed status prompt item and color renderer for success/failure in isolated noninteractive fish; no interactive shell installation.' ;;
+  nwipe) echo 'Scope: non-root refusal before configuration or device discovery; no disk enumeration, benchmark or wipe.' ;;
+  opentracker-cli) echo 'Scope: marked malformed local configuration rejection with unchanged input; no credentials, provider/account fetching or usage cache fabrication.' ;;
+  terminus-font-ttf) echo 'Scope: installed fontconfig parsing of all four packaged fonts, family, monospacing and Latin glyph coverage; no GUI rendering.' ;;
+  python-ftfy) echo 'Scope: real mojibake repair, curly-quote normalization and already-correct Unicode preservation.' ;;
   airgorah) echo 'Scope: non-root privilege refusal only; no GUI, polkit, wireless capture or audit exercised.' ;;
   asleap) echo 'Scope: required dictionary-argument rejection only; no password recovery or capture/attack exercised.' ;;
   computer-use-linux) echo 'Scope: unknown-command rejection only; no desktop, accessibility, screenshot, input or MCP backend exercised.' ;;

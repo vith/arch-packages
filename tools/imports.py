@@ -11,6 +11,51 @@ NAME = re.compile(r'[a-z0-9][a-z0-9+_.-]*')
 SHA = re.compile(r'[0-9a-f]{40}')
 
 
+def _aur_reference(package, url):
+    if url == 'https://aur.archlinux.org/'+package+'.git':
+        return 'refs/heads/master'
+    if url == 'https://github.com/archlinux/aur.git':
+        return 'refs/heads/'+package
+    return None
+
+
+def _origin(item):
+    name, origin = item['pkgbase'], item['origin']
+    if not isinstance(name, str) or not NAME.fullmatch(name):
+        raise ValueError('invalid import package identity')
+    if (not isinstance(origin, dict)
+            or set(origin) != {'url', 'commit', 'tree', 'manifest', 'pkgbase'}
+            or origin['pkgbase'] != name or not isinstance(origin['url'], str)):
+        raise ValueError('invalid import origin fields')
+    sources.public_url(origin['url'])
+    reference = _aur_reference(name, origin['url'])
+    if reference is None and origin['url'] != 'https://git.n3t.work/vith/arch-pkg-'+name+'.git':
+        raise ValueError('import origin is not canonical AUR or the trusted per-package repository')
+    if (any(not isinstance(origin[k], str) or not SHA.fullmatch(origin[k]) for k in ('commit', 'tree'))
+            or not isinstance(origin['manifest'], list) or not origin['manifest']):
+        raise ValueError('incomplete immutable import origin')
+    return origin, reference
+
+
+def _fetch_commit(repository, url, commit, reference=None):
+    repository = Path(repository)
+    if repository.exists():
+        raise ValueError('import verification repository already exists')
+    sources.git('init', '--bare', '--object-format='+('sha256' if len(commit) == 64 else 'sha1'), repository)
+    refs = [commit]
+    if reference is not None:
+        refs.append(reference+':'+reference)
+    sources.git('fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head',
+                '--', url, *refs, cwd=repository)
+    if sources.git('rev-parse', commit+'^{commit}', cwd=repository) != commit:
+        raise ValueError('import source object is not the requested commit')
+    if reference is not None and sources.git(
+            'merge-base', '--is-ancestor', commit, reference,
+            cwd=repository, check=False).returncode != 0:
+        raise ValueError('import commit is not in its canonical AUR branch history')
+    return repository
+
+
 def registry(root):
     value = json.loads((Path(root)/'packages.json').read_text())
     if value.get('schema') != 1 or not isinstance(value.get('packages'), list) or not isinstance(value.get('imports', []), list):
@@ -24,17 +69,10 @@ def registry(root):
     for item in value.get('imports', []):
         if set(item) != {'pkgbase', 'origin', 'policy'}:
             raise ValueError('invalid pending import fields')
+        _origin(item)
         name = item['pkgbase']
-        if not isinstance(name, str) or not NAME.fullmatch(name) or name in accepted or name in pending or item['policy'].get('pkgbase') != name:
+        if name in accepted or name in pending or item['policy'].get('pkgbase') != name:
             raise ValueError('invalid/duplicate pending import')
-        origin = item['origin']
-        if set(origin) != {'url', 'commit', 'tree', 'manifest', 'pkgbase'} or origin['pkgbase'] != name:
-            raise ValueError('invalid import origin fields')
-        sources.public_url(origin['url'])
-        if origin['url'] != 'https://git.n3t.work/vith/arch-pkg-' + name + '.git':
-            raise ValueError('import origin is not the trusted per-package repository')
-        if any(not isinstance(origin[k], str) or not SHA.fullmatch(origin[k]) for k in ('commit', 'tree')) or not isinstance(origin['manifest'], list) or not origin['manifest']:
-            raise ValueError('incomplete immutable import origin')
         pending[name] = item
     return value, accepted, pending
 
@@ -45,19 +83,13 @@ def policies(root):
 
 
 def authenticate(item, destination):
-    """Fetch the exact public origin object directly, never refs or submodules."""
+    """Authenticate exact origin bytes and canonical AUR membership, never execute them."""
     from tools import update as u
-    origin = item['origin']
-    name = item['pkgbase']
-    if not isinstance(name, str) or not NAME.fullmatch(name) or origin['url'] != 'https://git.n3t.work/vith/arch-pkg-'+name+'.git' or origin['pkgbase'] != name or any(not SHA.fullmatch(origin[k]) for k in ('commit', 'tree')):
-        raise ValueError('invalid trusted import origin')
-    sources.public_url(origin['url'])
+    origin, reference = _origin(item)
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=False)
-    repo = destination/'origin.git'
-    sources.git('init', '--bare', repo)
-    sources.git('fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--', origin['url'], origin['commit'], cwd=repo)
-    if sources.git('rev-parse', origin['commit']+'^{commit}', cwd=repo) != origin['commit'] or sources.git('rev-parse', origin['commit']+'^{tree}', cwd=repo) != origin['tree']:
+    repo = _fetch_commit(destination/'origin.git', origin['url'], origin['commit'], reference)
+    if sources.git('rev-parse', origin['commit']+'^{tree}', cwd=repo) != origin['tree']:
         raise ValueError('import origin commit/tree mismatch')
     # Reject gitlinks before archive; git archive silently omits their payloads.
     rows = sources.git('ls-tree', '-r', origin['commit'], cwd=repo).splitlines()
@@ -148,9 +180,19 @@ def validate_admission(old, new, oldpins, newpins, work):
         item = verify_predecessor(new, name, newpins, Path(work)/name)
         lock = u.load(Path(new)/'inputs'/f'{name}.json')
         provenance = u.load(Path(new)/'upstream'/f'{name}.json')
-        canonical_aur = False
+        origin, reference = _origin(item)
+        canonical_aur = reference is not None
+        if canonical_aur:
+            aur = provenance.get('aur')
+            identity = {'url': origin['url'], 'package': name, 'ref': reference}
+            if name in added:
+                identity['commit'] = origin['commit']
+            if not isinstance(aur, dict) or any(aur.get(k) != value for k, value in identity.items()):
+                raise ValueError('canonical AUR baseline differs from authenticated import origin')
         if name in revised:
             previous = u.load(Path(old)/'upstream'/f'{name}.json')
+            if canonical_aur and previous.get('aur') is None:
+                raise ValueError('canonical AUR import lacks its previous authority')
             canonical_aur = previous.get('aur') is not None
             if canonical_aur != (provenance.get('aur') is not None):
                 raise ValueError('pending revision cannot switch AUR authority')
@@ -240,15 +282,12 @@ def validate_intended(name, policy, lock, provenance, work, *, canonical_aur=Fal
         package = aur.get('package')
         if not isinstance(package, str) or not NAME.fullmatch(package):
             raise ValueError('invalid intention AUR package')
-        canonical = {('https://github.com/archlinux/aur.git', 'refs/heads/'+package),
-                     ('https://aur.archlinux.org/'+package+'.git', 'refs/heads/master')}
-        if (aur.get('url'), aur.get('ref')) not in canonical or watchers[0].get('baseline_commit') != aur.get('commit'):
+        reference = _aur_reference(package, aur.get('url'))
+        if reference is None or aur.get('ref') != reference or watchers[0].get('baseline_commit') != aur.get('commit'):
             raise ValueError('intention requires canonical pinned AUR baseline')
         if not sources.HEX.fullmatch(aur.get('commit', '')):
             raise ValueError('invalid AUR baseline commit')
-        repository = sources.clone(aur['url'], Path(work)/(name+'-membership.git'), aur['ref'])
-        if sources.git('merge-base', '--is-ancestor', aur['commit'], aur['ref'], cwd=repository, check=False).returncode != 0:
-            raise ValueError('AUR baseline is not in selected canonical branch history')
+        _fetch_commit(Path(work)/(name+'-membership.git'), aur['url'], aur['commit'], reference)
     identities = set()
     source_ids = {s['id'] for s in lock['sources']}
     for watcher in provenance['watchers']:
