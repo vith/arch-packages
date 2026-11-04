@@ -1,6 +1,6 @@
 # Maintainer: vith
 pkgname=oh-my-pi-vith-git
-pkgver=18.12.3.vith.r418.g2cc5347c1841
+pkgver=18.16.0.vith.r422.g1e8e79187082
 pkgrel=1
 pkgdesc='Oh My Pi coding agent — vith fork'
 arch=('x86_64')
@@ -65,5 +65,6 @@ build() {
 package() {
   install -Dm755 "$srcdir/oh-my-pi/packages/coding-agent/dist/omp-linux-x64" "$pkgdir/usr/bin/omp"
   install -Dm644 "$srcdir/oh-my-pi/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 "$srcdir/oh-my-pi/THIRD-PARTY-NOTICES.txt" "$pkgdir/usr/share/licenses/$pkgname/THIRD-PARTY-NOTICES.txt"
+  install -Dm644 "$srcdir/oh-my-pi/packages/coding-agent/THIRD-PARTY-NOTICES.txt" "$pkgdir/usr/share/licenses/$pkgname/THIRD-PARTY-NOTICES.txt"
+  install -Dm644 "$srcdir/oh-my-pi/packages/natives/THIRD-PARTY-NOTICES.txt" "$pkgdir/usr/share/licenses/$pkgname/PI-NATIVES-THIRD-PARTY-NOTICES.txt"
 }
