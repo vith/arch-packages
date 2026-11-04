@@ -1,7 +1,7 @@
 pkgbase = ccze
 	pkgdesc = Robust and modular log colorizer with many plugins
 	pkgver = 0.2.1
-	pkgrel = 13
+	pkgrel = 13.1
 	url = http://freshmeat.net/projects/ccze/
 	arch = x86_64
 	license = GPL
