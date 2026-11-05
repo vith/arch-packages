@@ -1,13 +1,15 @@
 pkgbase = journalctl-desktop-notification
 	pkgdesc = Displays notifications for journalctl error messages.
 	pkgver = 2.0.0
-	pkgrel = 1
+	pkgrel = 1.1
 	url = https://gitlab.com/Zesko/journalctl-desktop-notification
 	arch = any
 	license = GPL3
 	makedepends = git
+	depends = gettext
 	depends = libnotify
 	depends = systemd
+	optdepends = openssh: monitor a remote journal over SSH
 	provides = journalctl-desktop-notification
 	conflicts = journalctl-desktop-notification-git
 	backup = etc/journalctl-desktop-notification.conf
