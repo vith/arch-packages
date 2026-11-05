@@ -1,9 +1,10 @@
 pkgbase = gau
 	pkgdesc = Fetch known URLs from AlienVault's Open Threat Exchange, the Wayback Machine, and Common Crawl
 	pkgver = 2.2.4
-	pkgrel = 1
+	pkgrel = 1.1
 	url = https://github.com/lc/gau
-	arch = any
+	arch = x86_64
+	arch = aarch64
 	license = MIT
 	makedepends = go
 	depends = glibc
