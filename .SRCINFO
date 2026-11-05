@@ -1,11 +1,11 @@
 pkgbase = lcdtest
 	pkgdesc = A utility to display LCD monitor test patterns.
 	pkgver = 1.18
-	pkgrel = 3
+	pkgrel = 3.1
 	url = https://github.com/Energoblock/lcdtest/
 	arch = i686
 	arch = x86_64
-	license = GPL2
+	license = GPL-3.0-only
 	makedepends = scons
 	depends = sdl_image
 	depends = sdl_ttf

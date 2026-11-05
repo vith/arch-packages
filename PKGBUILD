@@ -2,13 +2,13 @@
 # Contributor: Andrej Gelenberg <andrej.gelenberg@udo.edu>
 pkgname="lcdtest"
 pkgver=1.18
-pkgrel=3
+pkgrel=3.1
 pkgdesc="A utility to display LCD monitor test patterns."
 arch=('i686' 'x86_64')
 # The original URL of the author's website is no longer available. I transferred its source codes via web.archive.org on github.
 # url="http://www.brouhaha.com/~eric/software/lcdtest/"
 url="https://github.com/Energoblock/lcdtest/"
-license=('GPL2')
+license=('GPL-3.0-only')
 depends=('sdl_image' 'sdl_ttf' 'ttf-liberation')
 makedepends=('scons')
 #source=("http://www.brouhaha.com/~eric/software/lcdtest/download/${pkgname}-${pkgver}.tar.gz")
