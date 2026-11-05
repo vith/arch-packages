@@ -3,23 +3,16 @@
 
 pkgname="osslsigncode"
 pkgver="2.14"
-pkgrel=2
+pkgrel=2.1
 pkgdesc="OpenSSL based Authenticode signing for PE/MSI/Java CAB files"
 arch=('i686' 'x86_64')
 url="https://github.com/mtrojnar/osslsigncode"
 license=('GPL-3.0-or-later')
-depends=('curl' 'openssl')
+depends=('curl' 'openssl' 'zlib')
 makedepends=('cmake' 'perl' 'python')
-checkdepends=('libfaketime')
-source=("https://github.com/mtrojnar/${pkgname}/archive/${pkgver}.tar.gz"
-        "support-for--python-cryptography-43.patch")
-sha512sums=('8a7b8118a6f62dee392079964b1aa8d737a881bf8c3e72d5a081980b3084ee683b9e05654db73bf0ce1aec440502f31ed3b2870bb72dc960b1885cceed96462e'
-            '987026a909418027081615a34cadff2aa93a2bc4b9c07dd695c4965853f3c01072c1fca6b1d4ef6f053d2e104df51562d63289427d8bdec3466e310ec2a43693')
-
-prepare() {
-  cd "$srcdir/osslsigncode-${pkgver}"
-  patch -p1 -i "$srcdir/support-for--python-cryptography-43.patch"
-}
+checkdepends=('python-cryptography>=37.0.2')
+source=("https://github.com/mtrojnar/${pkgname}/archive/${pkgver}.tar.gz")
+sha512sums=('8a7b8118a6f62dee392079964b1aa8d737a881bf8c3e72d5a081980b3084ee683b9e05654db73bf0ce1aec440502f31ed3b2870bb72dc960b1885cceed96462e')
 
 build() {
   cd "$srcdir"
@@ -32,16 +25,11 @@ build() {
 
 check() {
   cd "$srcdir/build"
-  ctest Release
+  ctest -C Release --output-on-failure --no-tests=error
 }
 
 package() {
-  # The HTTP server is started by cmake during the configuration
-  # phase, no matter if we want to run tests or not. Therefore we need
-  # to ensure the server's been shut down here.
-  cd "$srcdir/build"
-  python Testing/client_http.py || true 2> /dev/null
-  cd ..
+  cd "$srcdir"
 
   DESTDIR="$pkgdir" cmake --install build
 }
