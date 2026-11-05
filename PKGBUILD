@@ -3,9 +3,9 @@
 
 pkgname=gau
 pkgver=2.2.4
-pkgrel=1
+pkgrel=1.1
 pkgdesc="Fetch known URLs from AlienVault's Open Threat Exchange, the Wayback Machine, and Common Crawl"
-arch=(any)
+arch=(x86_64 aarch64)
 url='https://github.com/lc/gau'
 license=(MIT)
 depends=(glibc)
