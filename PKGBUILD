@@ -1,11 +1,12 @@
 # Maintainer: Asimwe Landry <landryasimwe@gmail.com>
 pkgname=blazetest-rs
 pkgver=0.2.0
-pkgrel=1
+pkgrel=1.1
 pkgdesc="Blazing fast Rust speedtest CLI - Superior performance & accuracy"
 arch=('x86_64' 'aarch64')
 url="https://github.com/asimwe1/blazetest-rs"
-license=('MIT')
+license=('AGPL-3.0-only')
+depends=('glibc' 'gcc-libs' 'openssl')
 makedepends=('cargo' 'rust')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/asimwe1/$pkgname/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('ad7cd828efb40774770cf884e87cb88b4499af97d47bf8164da1ad2592a30419')
