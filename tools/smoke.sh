@@ -14,11 +14,13 @@ if [[ ${1:-} != --inside ]]; then
   existing=("$output"/*)
   ((${#existing[@]} == 0)) || { echo 'smoke evidence directory must be empty' >&2; exit 1; }
   shopt -u nullglob dotglob
-  container=$(docker create --platform linux/amd64 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SETFCAP --cap-add SYS_CHROOT --cap-add SYS_ADMIN --cap-add MKNOD --security-opt no-new-privileges --security-opt apparmor=unconfined "$image" /bin/bash /smoke.sh --inside "$snapshot")
+  container=$(docker create --platform linux/amd64 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SETFCAP --cap-add SYS_CHROOT --cap-add SYS_ADMIN --cap-add NET_ADMIN --cap-add MKNOD --security-opt no-new-privileges --security-opt apparmor=unconfined "$image" /bin/bash /smoke.sh --inside "$snapshot")
   trap 'docker rm -f "$container" >/dev/null' EXIT
   docker cp "$root/tools/smoke.sh" "$container:/smoke.sh"
   docker cp "$root/tools/apexshot-smoke.sh" "$container:/apexshot-smoke.sh"
   docker cp "$root/tools/public-smoke.sh" "$container:/public-smoke.sh"
+  docker cp "$root/tools/public-x11.py" "$container:/public-x11.py"
+  docker cp "$root/tools/public-http.py" "$container:/public-http.py"
   docker cp "$root/tools/consumer_fixtures.py" "$container:/consumer_fixtures.py"
   docker cp "$root/tools/consumer-fixtures.json" "$container:/consumer-fixtures.json"
   docker cp "$root/tools/dependency_repo.py" "$container:/dependency_repo.py"
@@ -128,7 +130,7 @@ PY
 mapfile -t targets < /evidence/targets.txt
 # Kernel and headers belong only to this disposable proof root, not the runner.
 # Normal package install scripts and ALPM hooks restore file caps and build DKMS.
-pacman --config /fresh/pacman.conf -S --noconfirm -- base core/linux core/linux-headers python util-linux tmux desktop-file-utils binutils ca-certificates man-db zip unzip "${dependency_targets[@]}" "${targets[@]}"
+pacman --config /fresh/pacman.conf -S --noconfirm -- base core/linux core/linux-headers python util-linux tmux desktop-file-utils binutils ca-certificates man-db zip unzip xorg-server-xvfb python-xlib "${dependency_targets[@]}" "${targets[@]}"
 package_files() {
   # Keep the explicit setup database, but report paths as seen inside the chroot.
   pacman --config /fresh/pacman.conf --root / -Ql "$1"
@@ -237,10 +239,42 @@ if 'looking-glass-module-dkms' in names:
 PY
 chroot /fresh/root useradd --uid 1000 --home-dir /fresh/home --shell /bin/bash smoke
 chown -R 1000:1000 /fresh/root/fresh/home /fresh/root/fresh/config /fresh/root/fresh/data /fresh/root/fresh/runtime
+# Arch's X server otherwise falls back to /tmp for compiled keyboard maps.
+install -d -m 700 -o 1000 -g 1000 /fresh/root/var/lib/xkb
 # Consumers receive no ambient CI environment and no privileges.
 consumer_namespace=()
 consumer() { "${consumer_namespace[@]}" chroot /fresh/root /usr/bin/setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs -- env -i PATH=/usr/bin HOME=/fresh/home XDG_CONFIG_HOME=/fresh/config XDG_DATA_HOME=/fresh/data XDG_RUNTIME_DIR=/fresh/runtime LANG=C.UTF-8 TERM=xterm-256color "$@"; }
 offline_consumer() { local -a consumer_namespace=(unshare --net); consumer "$@"; }
+# Only the trusted launcher enables loopback; package processes still lose every cap.
+loopback_consumer() {
+  local -a consumer_namespace=(unshare --net -- /bin/bash -ceu
+    'chroot /fresh/root /usr/bin/ip link set dev lo up; exec "$@"' --)
+  consumer "$@"
+}
+# Exercise the actual privilege boundary before any package can use local fixtures.
+loopback_consumer python - <<'PY' > /evidence/loopback-isolation.txt
+import errno, pathlib, socket
+status = dict(line.split(':', 1) for line in pathlib.Path('/proc/self/status').read_text().splitlines())
+for field in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'):
+    assert int(status[field].strip(), 16) == 0, (field, status[field])
+assert status['NoNewPrivs'].strip() == '1'
+with socket.socket() as listener:
+    listener.bind(('127.0.0.1', 0))
+    listener.listen()
+    with socket.create_connection(listener.getsockname(), timeout=2) as client:
+        with listener.accept()[0] as peer:
+            client.sendall(b'isolated-loopback')
+            assert peer.recv(64) == b'isolated-loopback'
+with socket.socket() as remote:
+    remote.settimeout(2)
+    try:
+        remote.connect(('198.51.100.1', 9))
+    except OSError as error:
+        assert error.errno == errno.ENETUNREACH, error
+    else:
+        raise AssertionError('fixture namespace unexpectedly has an external route')
+print('Loopback connects; external routing unavailable; all capability sets empty; no-new-privileges active.')
+PY
 enrolled() {
   python - "$@" <<'PY'
 import json, sys
@@ -435,6 +469,8 @@ PY
 fi
 # Actual signed output membership gates new proofs; dependencies never enroll a case.
 cp /public-smoke.sh /fresh/root/public-smoke.sh
+cp /public-x11.py /fresh/root/public-x11.py
+cp /public-http.py /fresh/root/public-http.py
 cp /expected.json /fresh/root/expected.json
 python - <<'PY' > /evidence/public-targets.txt
 import json
@@ -451,7 +487,9 @@ single=('pi','podcheck','spotify-adblock','spotify-remove-ad-banner','ttf-ioskel
         'computer-use-linux','i915ovmf','mdevctl','microsandbox',
         'captiveportalautologin-vith-git','carapace-spec','crush','fresh-editor','prek','swag','zig0.15',
         'arping-th','batdoc','ccze','crunch','fish-tide','nwipe',
-        'opentracker-cli','terminus-font-ttf','python-ftfy')
+        'opentracker-cli','terminus-font-ttf','python-ftfy',
+        'blazetest-rs','caffeinate','cupp-git','gau',
+        'journalctl-desktop-notification','lcdtest','screentest-git','osslsigncode')
 groups.update({n:{n} for n in single})
 for proof,outputs in sorted(groups.items()):
     if names & outputs:
@@ -468,9 +506,13 @@ chown -R 1000:1000 /fresh/root/fresh/data
 mapfile -t public_targets < /evidence/public-targets.txt
 failed_targets=()
 for name in "${public_targets[@]}"; do
+  runner=offline_consumer
+  case "$name" in
+    blazetest-rs|gau|caffeinate|lcdtest|screentest-git) runner=loopback_consumer ;;
+  esac
   if { [[ $name != terminus-font-ttf ]] ||
        package_files "$name" > "/fresh/root/$name-files.txt" 2> "/evidence/$name-consumer.txt"; } &&
-     offline_consumer bash /public-smoke.sh "$name" > "/evidence/$name-consumer.txt" 2>&1; then
+     "$runner" bash /public-smoke.sh "$name" > "/evidence/$name-consumer.txt" 2>&1; then
     continue
   else
     status=$?

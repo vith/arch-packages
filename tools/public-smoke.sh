@@ -586,9 +586,146 @@ assert not absent.exists()
 assert not (home/'images').exists()
 PY
 ;;
+  blazetest-rs)
+python /public-http.py "$name"
+;;
+  caffeinate)
+python /public-x11.py caffeinate
+;;
+  cupp-git)
+python - <<'PY'
+import configparser, pathlib, subprocess
+source = pathlib.Path('words.txt')
+source.write_text('planet\nplanet\ngarden\nabc\nabcdefghijkl\n')
+config = configparser.ConfigParser()
+config.read('/etc/cupp.cfg')
+words = source.read_text().split()
+years = config.get('years', 'years').split(',')
+expected = set(words)
+expected.update(word + year for word in words for year in years)
+low, high = config.getint('nums', 'wcfrom'), config.getint('nums', 'wcto')
+expected = {word for word in expected if low < len(word) < high}
+p = subprocess.run(['cupp', '-q', '-w', str(source)], input='n\nn\nn\nn\nn\n',
+                   capture_output=True, text=True, timeout=20, check=True)
+actual = pathlib.Path('words.txt.cupp.txt').read_text().splitlines()
+assert set(actual) == expected and len(actual) == len(expected), (actual, sorted(expected), p)
+assert 'planet' in actual and 'planet1990' in actual and 'abc' not in actual
+assert source.read_text() == 'planet\nplanet\ngarden\nabc\nabcdefghijkl\n'
+print('CUPP transformed local words: deduplicated, expanded configured years, filtered length;', len(actual), 'exact entries')
+PY
+;;
+  gau)
+python /public-http.py "$name"
+;;
+  journalctl-desktop-notification)
+python - <<'PY'
+import os, pathlib, signal, subprocess, time
+scratch = pathlib.Path.cwd()
+home = scratch / 'home'
+home.mkdir()
+config = scratch / 'proof.conf'
+token = 'n3t-offline-invalid-journal-priority-7e429c'
+config.write_text('  # Isolated config expansion proof\nLOG_LEVEL="$PROOF_INVALID_LEVEL"\nREMOTE_HOST=""\nSKIP_OLD_MESSAGES="yes"\n')
+env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'),
+           PROOF_INVALID_LEVEL=token, DBUS_SESSION_BUS_ADDRESS='unix:path='+str(scratch / 'nonexistent-session-bus'),
+           DBUS_SYSTEM_BUS_ADDRESS='unix:path='+str(scratch / 'nonexistent-system-bus'), LC_ALL='C')
+with open('notifier.stdout', 'wb') as out, open('notifier.stderr', 'wb') as err:
+    p = subprocess.Popen(['journalctl-desktop-notification', '--config', str(config)], env=env,
+                         stdout=out, stderr=err, stdin=subprocess.DEVNULL, start_new_session=True)
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            diagnostics = pathlib.Path('notifier.stderr').read_text()
+            if token in diagnostics:
+                break
+            assert p.poll() is None, ('notifier exited before journalctl failure', p.returncode, diagnostics)
+            time.sleep(0.02)
+        else:
+            raise AssertionError('real journalctl did not reject expanded LOG_LEVEL')
+    finally:
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            p.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.wait(timeout=2)
+stderr = pathlib.Path('notifier.stderr').read_text()
+assert token in stderr and '$PROOF_INVALID_LEVEL' not in stderr, stderr
+assert 'log level' in stderr.lower() or 'priority' in stderr.lower(), stderr
+print('Real config/envsubst/journalctl rejection observed; successful notification delivery is not exercised.')
+print(stderr[:2048], end='')
+PY
+;;
+  lcdtest)
+python /public-x11.py lcdtest
+;;
+  screentest-git)
+python /public-x11.py screentest-git
+;;
+  osslsigncode)
+python - <<'PY'
+import os, pathlib, struct, subprocess
+os.umask(0o077)
+def run(*args):
+    p = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    assert p.returncode == 0, (args, p.stdout, p.stderr)
+    return p.stdout
+# A non-executed PE32 fixture: one 512-byte .text section and complete headers.
+pe = bytearray(1024)
+pe[:2] = b'MZ'
+struct.pack_into('<I', pe, 0x3c, 0x80)
+pe[0x80:0x84] = b'PE\0\0'
+struct.pack_into('<HHIIIHH', pe, 0x84, 0x14c, 1, 0, 0, 0, 224, 0x102)
+o = 0x98
+struct.pack_into('<H', pe, o, 0x10b)
+struct.pack_into('<III', pe, o+4, 512, 0, 0)
+struct.pack_into('<III', pe, o+16, 0x1000, 0x1000, 0x2000)
+struct.pack_into('<III', pe, o+28, 0x400000, 0x1000, 0x200)
+struct.pack_into('<HH', pe, o+40, 4, 0)
+struct.pack_into('<HH', pe, o+48, 4, 0)
+struct.pack_into('<II', pe, o+56, 0x2000, 0x200)
+struct.pack_into('<H', pe, o+68, 3)
+struct.pack_into('<IIIIII', pe, o+72, 0x100000, 0x1000, 0x100000, 0x1000, 0, 16)
+s = o+224
+pe[s:s+8] = b'.text\0\0\0'
+struct.pack_into('<IIII', pe, s+8, 1, 0x1000, 512, 512)
+struct.pack_into('<I', pe, s+36, 0x60000020)
+pe[512] = 0xc3
+pathlib.Path('unsigned.exe').write_bytes(pe)
+run('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '2', '-subj', '/CN=Disposable offline proof root', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-keyout', 'root.key', '-out', 'root.pem')
+run('openssl', 'req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=Disposable offline code signer', '-keyout', 'signer.key', '-out', 'signer.csr')
+pathlib.Path('signer.ext').write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=codeSigning\n')
+run('openssl', 'x509', '-req', '-in', 'signer.csr', '-CA', 'root.pem', '-CAkey', 'root.key', '-CAcreateserial', '-days', '1', '-sha256', '-extfile', 'signer.ext', '-out', 'signer.pem')
+run('osslsigncode', 'sign', '-certs', 'signer.pem', '-key', 'signer.key', '-h', 'sha256', '-n', 'Offline signed consumer proof', '-in', 'unsigned.exe', '-out', 'signed.exe')
+verified = run('osslsigncode', 'verify', '-CAfile', 'root.pem', '-in', 'signed.exe')
+assert 'Signature verification: ok' in verified, verified
+signed = bytearray(pathlib.Path('signed.exe').read_bytes())
+signed[513] ^= 1
+pathlib.Path('tampered.exe').write_bytes(signed)
+p = subprocess.run(['osslsigncode', 'verify', '-CAfile', 'root.pem', '-in', 'tampered.exe'], capture_output=True, text=True, timeout=30)
+assert p.returncode != 0 and any('Calculated message digest' in line and 'MISMATCH!!!' in line for line in p.stdout.splitlines()), p
+assert pathlib.Path('unsigned.exe').read_bytes() == pe
+print(verified, end='')
+print(p.stdout, end='')
+# No fixture is ever executed and all keys belong only to this disposable proof.
+for key in pathlib.Path('.').glob('*.key'):
+    key.unlink()
+PY
+;;
   *) echo "Unknown public consumer proof: $name" >&2; exit 2 ;;
 esac
 case "$name" in
+  blazetest-rs) echo 'Scope: local server XML selection, three latency requests and JSON results through an isolated loopback proxy; no public speedtest, throughput or TLS coverage.' ;;
+  caffeinate) echo 'Scope: actual XTest pointer movement, restored position and clean SIGINT exit on disposable Xvfb; no host display or workstation sleep integration.' ;;
+  cupp-git) echo 'Scope: real local wordlist expansion using installed year configuration, duplicate removal and length boundaries; no downloads or account data.' ;;
+  gau) echo 'Scope: two local OTX pages, exact text/JSON URLs, extension filtering and invalid URL rejection; no external provider access.' ;;
+  journalctl-desktop-notification) echo 'Scope: real custom configuration expansion and journalctl invalid-priority rejection; no successful notification delivery, service activation or SSH.' ;;
+  lcdtest) echo 'Scope: real red/green and horizontal-line rendering, keyboard input and clean exit on private Xvfb; saved frames, no physical display.' ;;
+  screentest-git) echo 'Scope: real RGB calibration rendering, middle-button color cycling and Ctrl-Q exit on private Xvfb; saved frames, no physical display.' ;;
+  osslsigncode) echo 'Scope: real Authenticode signing, local trust verification and tamper rejection using a nonexecuted PE fixture and disposable keys; no timestamp service or real credentials.' ;;
   arping-th) echo 'Scope: negative packet-count rejection before network initialization; no ARP traffic or interface enumeration.' ;;
   batdoc) echo 'Scope: local OOXML text extraction with entity/Unicode decoding and paragraph boundaries; no OCR, model download or external viewer.' ;;
   ccze) echo 'Scope: offline syslog ANSI colorization preserving message text; lookups disabled.' ;;
