@@ -1,12 +1,13 @@
 # Maintainer: Zesko
 pkgname=journalctl-desktop-notification
 pkgver=2.0.0
-pkgrel=1
+pkgrel=1.1
 pkgdesc="Displays notifications for journalctl error messages."
 arch=('any')
 url="https://gitlab.com/Zesko/journalctl-desktop-notification"
 license=('GPL3')
-depends=('libnotify' 'systemd')
+depends=('gettext' 'libnotify' 'systemd')
+optdepends=('openssh: monitor a remote journal over SSH')
 makedepends=('git')
 provides=("${pkgname}")
 conflicts=("${pkgname}-git")
