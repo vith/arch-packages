@@ -380,6 +380,8 @@ Those two cases and the caffeinate, lcdtest and screentest cases receive fresh n
 
 Official `xorg-server-xvfb` and `python-xlib` are consumer-only prerequisites, not dependencies of the published packages. The private X server uses TCP within that loopback-only namespace, with Unix listeners and lock files disabled. Its compiled keyboard maps use a consumer-writable `/var/lib/xkb` inside the disposable root; startup rejects an unwritable directory instead of allowing Xorg's `/tmp` fallback. Caffeinate must produce its real pointer movements and terminate cleanly; lcdtest and screentest must render expected pixels and respond to actual synthetic input. Frames and logs are retained without accessing a host or physical display.
 
+The shared keyboard driver explicitly focuses the application window before sending either single keys or modifier chords; the disposable X server has no window manager to focus it implicitly.
+
 CUPP's case transforms a local wordlist using the installed configuration, checking duplicate removal and length boundaries without downloading data. The journal notifier's case checks real configuration expansion followed by journalctl's rejection of an invalid priority; it does not claim successful notification delivery, service activation or remote SSH. The osslsigncode case creates a nonexecuted PE fixture and disposable signing certificates, then requires actual Authenticode signing, local trust verification and tamper rejection without a timestamp service or real credentials.
 
 The ccze case requires ANSI color sequences and preservation of the complete input syslog fields and message after those sequences are removed. Terminal display padding is not part of the log-content contract.
