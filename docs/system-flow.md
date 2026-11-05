@@ -374,6 +374,8 @@ Fresh Editor proof supplies explicit update settings and checks that the install
 
 Signed membership also enables bounded offline cases for arping-th packet-count rejection, batdoc local DOCX extraction, ccze syslog colorization, crunch alphabet enumeration, fish-tide status rendering, nwipe non-root refusal, opentracker malformed-configuration rejection, Terminus font parsing and ftfy Unicode repair. Dependency presence alone never enables a case. ARP traffic, disk discovery/wiping, OCR/model downloads, live account fetching and GUI font rendering are outside these cases; adding the cases does not itself establish that new packages have built or passed signed consumer verification.
 
+The ccze case requires ANSI color sequences and preservation of the complete input syslog fields and message after those sequences are removed. Terminal display padding is not part of the log-content contract.
+
 ApexShot and Terminus receive package-owned paths queried on the setup side against the explicitly configured pacman database; that database is outside the consumer chroot.
 Publication does not dispatch this workflow. Signed consumer proof is not installation on a client's machine.
 
