@@ -104,12 +104,15 @@ def pixels(connection, window, evidence_name):
     return counts, geometry.width * geometry.height
 
 
-def key(connection, window, symbol):
+def key(connection, window, symbol, *modifiers):
     window.set_input_focus(X.RevertToParent, X.CurrentTime)
-    code = connection.keysym_to_keycode(XK.string_to_keysym(symbol))
-    assert code
-    xtest.fake_input(connection, X.KeyPress, code)
-    xtest.fake_input(connection, X.KeyRelease, code)
+    codes = [connection.keysym_to_keycode(XK.string_to_keysym(name))
+             for name in (*modifiers, symbol)]
+    assert all(codes)
+    for code in codes:
+        xtest.fake_input(connection, X.KeyPress, code)
+    for code in reversed(codes):
+        xtest.fake_input(connection, X.KeyRelease, code)
     connection.sync()
 
 
@@ -160,14 +163,8 @@ def prove_screentest(display_name):
                 after, _ = pixels(connection, window, 'screentest-after-color-cycle')
                 return after != before and after[(255, 255, 255)] < before[(255, 255, 255)]
             wait_for(changed, process, 'middle-button foreground color cycling')
-            # Use the application's declared Ctrl-Q accelerator for a clean exit.
-            ctrl = connection.keysym_to_keycode(XK.string_to_keysym('Control_L'))
-            q = connection.keysym_to_keycode(XK.string_to_keysym('q'))
-            xtest.fake_input(connection, X.KeyPress, ctrl)
-            xtest.fake_input(connection, X.KeyPress, q)
-            xtest.fake_input(connection, X.KeyRelease, q)
-            xtest.fake_input(connection, X.KeyRelease, ctrl)
-            connection.sync()
+            # Focus the window before sending its declared Ctrl-Q accelerator.
+            key(connection, window, 'q', 'Control_L')
             assert process.wait(timeout=3) == 0
             print('screentest: RGB pattern, real middle-button color cycle, Ctrl-Q exit')
     finally:
