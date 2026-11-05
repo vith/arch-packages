@@ -3,14 +3,14 @@
 _pkgname=screentest
 pkgname=$_pkgname-git
 pkgver=r111.bf1ad7d
-pkgrel=1
+pkgrel=1.1
 pkgdesc="Tesing the quality of CRT/LCD screens"
 arch=('x86_64')
 url="https://github.com/TobiX/screentest"
 #url="https://github.com/sfs-pra/screentest"
 license=('GPL2')
 depends=('gtk3' )
-makedepends=('meson')
+makedepends=('git' 'meson')
 source=(git+$url "ru.po" "screentest.desktop")
 sha256sums=('SKIP'
             'f126afdabf9c8cd2b7f52690149596569fd0c774a4ef8d62aac55c651c804307'
