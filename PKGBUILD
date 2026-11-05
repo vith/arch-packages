@@ -1,7 +1,7 @@
 # Maintainer: vith
 pkgname=oh-my-pi-vith-git
 pkgver=18.16.0.vith.r422.g1e8e79187082
-pkgrel=1
+pkgrel=2
 pkgdesc='Oh My Pi coding agent — vith fork'
 arch=('x86_64')
 url='https://github.com/vith/oh-my-pi'
@@ -34,7 +34,7 @@ pkgver() {
 }
 
 build() {
-  cd oh-my-pi
+  cd oh-my-pi || return
   [[ $CARCH == x86_64 && $(uname -m) == x86_64 ]] || return 1
   bun install --frozen-lockfile --ignore-scripts
   local fork_version
@@ -47,8 +47,11 @@ build() {
   export PCRE2_SYS_STATIC=0
   export ZSTD_SYS_USE_PKG_CONFIG=1
   export RUSTONIG_SYSTEM_LIBONIG=1
+  # Bundling discovers both variants; never include a previous build's modern
+  # addon alongside the baseline produced here. Keep Cargo's build cache.
+  rm -f packages/natives/native/pi_natives.linux-x64-{baseline,modern}.node
   cargo build --frozen --config "$srcdir/system-opus.toml" --profile ci --target x86_64-unknown-linux-gnu \
-    -p pi-natives --features wayland-pipewire
+    -p pi-natives --features wayland-pipewire || return
 
   local addon=packages/natives/native/pi_natives.linux-x64-baseline.node
   install -Dm755 "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/ci/libpi_natives.so" "$addon"
@@ -58,8 +61,36 @@ build() {
   [[ $dynamic == *'Shared library: [libpipewire-0.3.so.0]'* && $dynamic == *'Shared library: [libopus.so.'* ]] || {
     error "Native addon lacks required PipeWire or system Opus linkage"; return 1;
   }
-  CROSS_TARGET=linux-x64 bun --cwd=packages/coding-agent run build
-  [[ $(packages/coding-agent/dist/omp-linux-x64 --version) == "omp/$fork_version" ]]
+  CROSS_TARGET=linux-x64 bun --cwd=packages/coding-agent run build || return
+
+  # Prefer modern to expose accidentally bundled leftovers. A fresh extraction
+  # must still select this build's baseline, without reusing the user's cache.
+  local native_check_dir native_check_status=0
+  native_check_dir=$(mktemp -d) || return
+  (
+    local extracted_addon="$native_check_dir/$fork_version/${addon##*/}" version_output
+    export PI_NATIVES_DIR="$native_check_dir" PI_NATIVE_VARIANT=modern
+    version_output=$(packages/coding-agent/dist/omp-linux-x64 --version) || exit 1
+    [[ $version_output == "omp/$fork_version" ]] || exit 1
+    # --version exits before native initialization; --help exercises extraction.
+    packages/coding-agent/dist/omp-linux-x64 --help >/dev/null || exit 1
+    cmp -- "$addon" "$extracted_addon" || exit 1
+    [[ ! -e "$native_check_dir/$fork_version/pi_natives.linux-x64-modern.node" ]] || exit 1
+    bun --eval '
+      const assert = require("node:assert/strict");
+      const native = require(process.argv[1]);
+      assert.equal(native.__piNativesBuildVersion(), process.argv[2]);
+      const input = "*** Edit File: local://notes\n*** Find\nold\n*** Replace\nnew\n" +
+        "*** Edit File: src/config.go\n*** Find\nold\n*** Replace\nnew";
+      assert.deepEqual(native.editInspect("sloppy", JSON.stringify({ input })).paths,
+        ["local://notes", "src/config.go"]);
+    ' "$extracted_addon" "$fork_version"
+  ) || native_check_status=$?
+  rm -rf -- "$native_check_dir"
+  if (( native_check_status != 0 )); then
+    error "Packaged native addon verification failed"
+    return "$native_check_status"
+  fi
 }
 
 package() {

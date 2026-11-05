@@ -1,7 +1,7 @@
 pkgbase = oh-my-pi-vith-git
 	pkgdesc = Oh My Pi coding agent — vith fork
 	pkgver = 18.16.0.vith.r422.g1e8e79187082
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/vith/oh-my-pi
 	arch = x86_64
 	license = MIT
