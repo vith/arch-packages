@@ -1,0 +1,1 @@
+{"aur":{"commit":"37562970f013ee2ee02bfd4520651078680c7069","package":"gau","ref":"refs/heads/master","url":"https://aur.archlinux.org/gau.git"},"pkgbase":"gau","schema":1,"watchers":[{"baseline_commit":"37562970f013ee2ee02bfd4520651078680c7069","id":"gau-aur","kind":"aur","package":"gau","ref":"refs/heads/master","url":"https://aur.archlinux.org/gau.git"}]}

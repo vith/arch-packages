@@ -166,3 +166,35 @@
 	path = recipes/python-ftfy
 	url = https://github.com/vith/arch-packages.git
 	branch = pkg/python-ftfy
+[submodule "recipes/blazetest-rs"]
+	path = recipes/blazetest-rs
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/blazetest-rs
+[submodule "recipes/caffeinate"]
+	path = recipes/caffeinate
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/caffeinate
+[submodule "recipes/cupp-git"]
+	path = recipes/cupp-git
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/cupp-git
+[submodule "recipes/gau"]
+	path = recipes/gau
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/gau
+[submodule "recipes/journalctl-desktop-notification"]
+	path = recipes/journalctl-desktop-notification
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/journalctl-desktop-notification
+[submodule "recipes/lcdtest"]
+	path = recipes/lcdtest
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/lcdtest
+[submodule "recipes/screentest-git"]
+	path = recipes/screentest-git
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/screentest-git
+[submodule "recipes/osslsigncode"]
+	path = recipes/osslsigncode
+	url = https://github.com/vith/arch-packages.git
+	branch = pkg/osslsigncode
