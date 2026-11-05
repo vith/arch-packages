@@ -80,12 +80,17 @@ def wait_for(check, process, description):
     raise AssertionError(description+' timed out')
 
 
-def visible_window(connection, title):
+def visible_windows(connection):
     for window in connection.screen().root.query_tree().children:
         if window.get_attributes().map_state == X.IsViewable:
-            name = window.get_wm_name() or ''
-            if title.lower() in name.lower():
-                return window
+            yield window
+
+
+def visible_window(connection, title):
+    for window in visible_windows(connection):
+        name = window.get_wm_name() or ''
+        if title.lower() in name.lower():
+            return window
     return None
 
 
@@ -113,6 +118,12 @@ def key(connection, window, symbol, *modifiers):
         xtest.fake_input(connection, X.KeyPress, code)
     for code in reversed(codes):
         xtest.fake_input(connection, X.KeyRelease, code)
+    connection.sync()
+
+
+def click(connection, button):
+    xtest.fake_input(connection, X.ButtonPress, button)
+    xtest.fake_input(connection, X.ButtonRelease, button)
     connection.sync()
 
 
@@ -156,17 +167,25 @@ def prove_screentest(display_name):
             wait_for(rendered, process, 'basic RGB test-pattern rendering')
             before, _ = pixels(connection, window, 'screentest-before-color-cycle')
             window.warp_pointer(20, 20)
-            xtest.fake_input(connection, X.ButtonPress, 2)
-            xtest.fake_input(connection, X.ButtonRelease, 2)
-            connection.sync()
+            click(connection, 2)
             def changed():
                 after, _ = pixels(connection, window, 'screentest-after-color-cycle')
                 return after != before and after[(255, 255, 255)] < before[(255, 255, 255)]
             wait_for(changed, process, 'middle-button foreground color cycling')
-            # Focus the window before sending its declared Ctrl-Q accelerator.
-            key(connection, window, 'q', 'Control_L')
+            # GtkBuilder registers this accelerator on the popup's own window.
+            type_property = connection.intern_atom('_NET_WM_WINDOW_TYPE')
+            popup_type = connection.intern_atom('_NET_WM_WINDOW_TYPE_POPUP_MENU')
+            def popup_window():
+                for candidate in visible_windows(connection):
+                    types = candidate.get_full_property(type_property, X.AnyPropertyType)
+                    if types is not None and popup_type in types.value:
+                        return candidate
+            click(connection, 3)
+            popup = wait_for(popup_window, process, 'right-click popup menu')
+            pixels(connection, connection.screen().root, 'screentest-quit-menu')
+            key(connection, popup, 'q', 'Control_L')
             assert process.wait(timeout=3) == 0
-            print('screentest: RGB pattern, real middle-button color cycle, Ctrl-Q exit')
+            print('screentest: RGB pattern, real middle-button color cycle, Ctrl-Q popup-menu exit')
     finally:
         connection.close()
 
