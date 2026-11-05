@@ -24,7 +24,7 @@ if [[ ${1:-} != --inside ]]; then
   docker cp "$root/tools/consumer_fixtures.py" "$container:/consumer_fixtures.py"
   docker cp "$root/tools/consumer-fixtures.json" "$container:/consumer-fixtures.json"
   docker cp "$root/tools/dependency_repo.py" "$container:/dependency_repo.py"
-  docker cp "$root/tools/github_api.py" "$container:/github_api.py"
+  tar -C "$root" -cf - tools/github_api.py tools/pacman_download.py | docker cp - "$container:/"
   docker cp "$root/keys/n3t.asc" "$container:/n3t.asc"
   docker cp "$root/keys/arch-packages.asc" "$container:/key.asc"
   docker cp "$root/keys/fingerprint" "$container:/fingerprint.txt"
@@ -100,7 +100,7 @@ sys.exit(0 if names & {'spotify-adblock','spotify-remove-ad-banner'} else 1)
 PY
 then
   mkdir -p /fresh/n3t /tools /keys
-  cp /dependency_repo.py /github_api.py /tools/
+  cp /dependency_repo.py /tools/
   cp /n3t.asc /keys/n3t.asc
   PYTHONPATH=/ python - <<'PY'
 import subprocess
@@ -129,8 +129,11 @@ for name in sorted(names):
 PY
 mapfile -t targets < /evidence/targets.txt
 # Kernel and headers belong only to this disposable proof root, not the runner.
-# Normal package install scripts and ALPM hooks restore file caps and build DKMS.
-pacman --config /fresh/pacman.conf -S --noconfirm -- base core/linux core/linux-headers python util-linux tmux desktop-file-utils binutils ca-certificates man-db zip unzip xorg-server-xvfb python-xlib "${dependency_targets[@]}" "${targets[@]}"
+install_targets=(base core/linux core/linux-headers python util-linux tmux desktop-file-utils binutils ca-certificates man-db zip unzip xorg-server-xvfb python-xlib "${dependency_targets[@]}" "${targets[@]}")
+PYTHONPATH=/ python -m tools.pacman_download /evidence/pacman-download -- \
+  pacman --config /fresh/pacman.conf --sync --downloadonly --noconfirm -- "${install_targets[@]}"
+# Normal package install scripts and ALPM hooks restore file caps and build DKMS once.
+pacman --config /fresh/pacman.conf -S --noconfirm -- "${install_targets[@]}"
 package_files() {
   # Keep the explicit setup database, but report paths as seen inside the chroot.
   pacman --config /fresh/pacman.conf --root / -Ql "$1"

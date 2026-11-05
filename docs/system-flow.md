@@ -53,6 +53,8 @@ An operation-level `StateSnapshot` resolves the state tip once, batch-loads exac
 
 The same operation scope reuses successful full-SHA commit/tree API responses and public SHA-pinned recipe archives. JSON consumers receive independent values, and authorized reads are separated by credential identity. Archive reuse retains streaming bounds and atomic destination replacement; owned cached files are removed when the operation ends. Mutable refs, PRs, statuses, writes, failed reads, and other download URLs are not cached.
 
+Anonymous asset downloads allow at most five attempts, with exponential waits of 1, 2, 4 and 8 seconds. Only response opening or reading can qualify: HTTP 408/500/502/503/504, interrupted connections, timeouts, incomplete responses and temporary DNS failures. Each retry starts with fresh staging bytes; a destination changes only after a complete bounded download. Authentication, missing assets, rate limits, TLS verification, transport downgrade, filesystem, size, digest and signature failures are not retried. API calls and writes do not acquire retry behavior.
+
 Recipe exports always validate the complete enrolled pin roster. Reconciliation starts with pin metadata; discovery exports active packages, not pending imports; writing exports only changed receipt packages; single-package acceptance exports that package. Historical harness declarations referencing unselected recipe roots retain the full-payload fallback.
 
 Draft build assets are not platform-immutable just because they are on GitHub. Inclusion checks their bound IDs, sizes/digests, archive/context attestation, exact request, producer, and whole-worker success. An OIDC attestation is provenance, not a pacman signature. Compiler cache is neither output nor authority.
@@ -343,6 +345,8 @@ An inclusion failure retries inclusion using the same successful build. Missing 
 Manual dispatch has one required string input, `snapshot_tag`, with no declared default. The sole `consumers` job is main-only, with a 60-minute timeout and contents read. There is no concurrency group or environment approval.
 
 It checks out `main` without stored credentials, installs public verification tools, and runs `tools.consumer` for the exact snapshot. Expectations and enrollment come from that snapshot's accepted commit, not today's package list. `smoke.sh` installs every enrolled target using required database/package signatures in a fresh Arch environment, then runs the retained package-specific consumer proofs.
+
+Before the bulk installation, the same complete target array is fetched with explicit pacman `--sync --downloadonly`. Recognized transient retrieval failures use the shared five-attempt exponential policy; every attempt retains merged C-locale output under `pacman-download/attempt-*.log` in the evidence artifact. Unknown or mixed errors, invalid signatures, corruption, certificate failures, authentication, missing packages, disk and dependency errors stop immediately. The actual signature-required installation and its hooks run once, outside that retry operation. Official bootstrap and database synchronization are unchanged.
 
 Nasc's corresponding-source archive is selected by its locked checksum from the signed catalog's source assets and downloaded anonymously from the exact snapshot release. The proof checks the archive hash and installed license before exercising the TUI; native packages need not install their source archives.
 
