@@ -534,6 +534,18 @@ class SuccessfulOutputAcceptance(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'frozen candidate'):
             acceptance.verify_native_evidence(candidate, changed)
 
+    def test_makepkg_release_reset_still_requires_actual_version_progression(self):
+        candidate, evidence = self.fixture(dynamic=True)
+        package = candidate['packages'][0]
+        package['expected_srcinfo'] = package['expected_srcinfo'].replace('pkgrel = 1', 'pkgrel = 3.1')
+        package['lock']['version'] = '1-3.1'
+        candidate['proposal_origin'] = 'manual'
+        candidate['predecessor_lock'] = {'version': '1-3.1', 'sources': []}
+        acceptance.verify_native_evidence(candidate, evidence)
+        candidate['predecessor_lock']['version'] = '2-1'
+        with self.assertRaisesRegex(ValueError, 'advance accepted version'):
+            acceptance.verify_native_evidence(candidate, evidence)
+
     def test_actual_dynamic_pkgrel_bump_must_advance_prior_actual_version(self):
         candidate, evidence = self.fixture(dynamic=True)
         candidate['predecessor_lock'] = {'version': '2-1', 'sources': []}

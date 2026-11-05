@@ -85,12 +85,17 @@ def _metadata_declarations(metadata):
 
 
 def metadata_equivalent(expected_srcinfo, actual_srcinfo, dynamic=False) -> bool:
-    """Compare scoped declarations, allowing pkgver changes only for dynamic recipes."""
+    """Bind declarations, allowing dynamic pkgver and makepkg's release reset."""
     expected = parse_srcinfo(expected_srcinfo)
     actual = parse_srcinfo(actual_srcinfo)
-    if dynamic is not True and expected["pkgver"] != actual["pkgver"]:
+    changed = expected["pkgver"] != actual["pkgver"]
+    if dynamic is not True and changed:
         return False
-    return _metadata_declarations(expected) == _metadata_declarations(actual)
+    expected_fields = _metadata_declarations(expected)
+    actual_fields = _metadata_declarations(actual)
+    if dynamic is True and changed and actual["pkgrel"] == "1":
+        actual_fields[("base", "pkgrel")] = expected_fields[("base", "pkgrel")]
+    return expected_fields == actual_fields
 
 
 def tree_manifest(directory):
