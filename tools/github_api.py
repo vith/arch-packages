@@ -2,17 +2,22 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import re
+import socket
+import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 API = "https://api.github.com"
 MAX_JSON = 16 * 1024 * 1024
+TRANSIENT_HTTP_CODES = (408, 500, 502, 503, 504)
 _IMMUTABLE_JSON = re.compile(r"/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/git/(?:commits/[0-9a-f]{40}|trees/[0-9a-f]{40}(?:\?recursive=1)?)")
 _IMMUTABLE_ARCHIVE = re.compile(r"https://api\.github\.com/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/tarball/[0-9a-f]{40}")
 _READ_SCOPE = ContextVar("github_immutable_reads", default=None)
@@ -113,9 +118,32 @@ def api(path, method="GET", data=None, *, authenticated=True):
     return value
 
 
-def _copy_bounded(source, output, maximum):
+def retry_download(operation, transient, description):
+    """Retry a download at most five times; description must be a safe label."""
+    for attempt in range(5):
+        try:
+            return operation()
+        except Exception as error:
+            if attempt == 4 or not transient(error):
+                raise
+            delay = 2 ** attempt
+            print(f"{description}: transient download failure; retrying in {delay}s "
+                  f"(attempt {attempt + 2}/5)", file=sys.stderr)
+            time.sleep(delay)
+
+
+def _transient_download_error(error):
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in TRANSIENT_HTTP_CODES
+    if isinstance(error, urllib.error.URLError):
+        error = error.reason
+    return (isinstance(error, (TimeoutError, ConnectionError, http.client.IncompleteRead))
+            or isinstance(error, socket.gaierror) and error.errno == socket.EAI_AGAIN)
+
+
+def _copy_bounded(read, output, maximum):
     count = 0
-    while chunk := source.read(1024 * 1024):
+    while chunk := read(1024 * 1024):
         count += len(chunk)
         if count > maximum:
             raise ValueError("asset exceeds size limit")
@@ -134,21 +162,47 @@ def download(url, path, maximum=805306368):
     cacheable = scope is not None and _IMMUTABLE_ARCHIVE.fullmatch(url)
     cached = scope["archives"].get(url) if cacheable else None
     owned = None
-    try:
-        if cached is not None:
-            with cached.open("rb") as source, staging.open("xb") as output:
-                _copy_bounded(source, output, maximum)
-        else:
-            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "arch-packages"}), timeout=120) as response, staging.open("xb") as output:
+    transport_error = None
+
+    def transport(operation, *args, **kwargs):
+        nonlocal transport_error
+        try:
+            return operation(*args, **kwargs)
+        except Exception as error:
+            transport_error = error
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            raise
+
+    def fetch():
+        nonlocal transport_error
+        transport_error = None
+        try:
+            response = transport(
+                urllib.request.urlopen,
+                urllib.request.Request(url, headers={"User-Agent": "arch-packages"}), timeout=120)
+            with response, staging.open("xb") as output:
                 final = urllib.parse.urlsplit(response.url)
                 if final.scheme != "https":
                     raise ValueError("asset redirect downgraded transport")
-                _copy_bounded(response, output, maximum)
+                _copy_bounded(lambda amount: transport(response.read, amount), output, maximum)
+        except BaseException:
+            staging.unlink(missing_ok=True)
+            raise
+
+    try:
+        if cached is not None:
+            with cached.open("rb") as source, staging.open("xb") as output:
+                _copy_bounded(source.read, output, maximum)
+        else:
+            # Only opening/reading the response may trigger a retry, never local I/O.
+            retry_download(fetch, lambda error: error is transport_error and _transient_download_error(error),
+                           "Public HTTPS asset")
             if cacheable:
                 with staging.open("rb") as source, tempfile.NamedTemporaryFile(
                         dir=_archive_directory(scope), delete=False) as output:
                     owned = Path(output.name)
-                    _copy_bounded(source, output, maximum)
+                    _copy_bounded(source.read, output, maximum)
         staging.replace(path)
         if owned is not None:
             scope["archives"][url] = owned
