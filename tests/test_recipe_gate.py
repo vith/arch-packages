@@ -39,10 +39,26 @@ depends = example=1:r10.abcdef-2
         with self.assertRaises(ValueError):
             parse_srcinfo(declared)
 
-    def test_only_pkgver_can_change(self):
+    def test_pkgver_changes_require_dynamic_recipes(self):
         actual = self.metadata.replace('pkgver = r10.abcdef', 'pkgver = r11.123456')
         self.assertFalse(metadata_equivalent(self.metadata, actual))
         self.assertTrue(metadata_equivalent(self.metadata, actual, dynamic=True))
+
+    def test_release_reset_requires_a_changed_dynamic_pkgver(self):
+        reset = self.metadata.replace('pkgrel = 2', 'pkgrel = 1')
+        self.assertFalse(metadata_equivalent(self.metadata, reset, dynamic=True))
+        changed = reset.replace('pkgver = r10.abcdef', 'pkgver = r11.123456')
+        self.assertFalse(metadata_equivalent(self.metadata, changed, dynamic=False))
+
+    def test_makepkg_release_reset_keeps_other_declarations_bound(self):
+        reset = self.metadata.replace('pkgver = r10.abcdef', 'pkgver = r11.123456')
+        reset = reset.replace('pkgrel = 2', 'pkgrel = 1')
+        for old, new in (
+                ('pkgrel = 1', 'pkgrel = 1.1'),
+                ('epoch = 1', 'epoch = 2'),
+                ('depends = glibc', 'depends = musl')):
+            with self.subTest(field=old):
+                self.assertFalse(metadata_equivalent(self.metadata, reset.replace(old, new), dynamic=True))
 
     def test_non_version_fields_and_output_scopes_remain_bound(self):
         for old, new in (
