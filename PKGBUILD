@@ -11,8 +11,8 @@ _cratename=${_pkgname}
 pkgname=${_cratename}
 pkgdesc="Easy, fast and local-first microVM runtime"
 
-pkgver=0.7.13
-pkgrel=2
+pkgver=0.7.15
+pkgrel=1
 _pkgvername=${pkgver}
 
 arch=('x86_64' 'aarch64')
@@ -30,7 +30,7 @@ depends=('glibc' 'libgcc')
 options=('!strip' '!lto')
 
 source=("${_pkgname}-${_pkgvername}.crate::https://crates.io/api/v1/crates/${_cratename}/${_pkgvername}/download")
-sha256sums=('a48c0d71742e29110b3f0f6111a94460cd980c876b5ec36533ff005f2c044fb1')
+sha256sums=('8954b98b4df567690f7210a886102eafd6375ab5d24a0d299ce0386693885303')
 
 
 prepare() {
@@ -45,14 +45,13 @@ build() {
 	export CC="clang"
 	export CXX="clang++"
 
-	RUSTFLAGS="--remap-path-prefix=$(pwd)=/build/" cargo build --release --locked \
-		--bin "${_pkgname}" --target-dir "${CARGO_TARGET_DIR:-target}"
+	RUSTFLAGS="--remap-path-prefix=$(pwd)=/build/" cargo build --release --locked
 }
 
 package() {
 	cd ${srcdir}/${_cratename}-${_pkgvername} || exit 1
 
-	install -Dm755 "${CARGO_TARGET_DIR:-target}/release/${_pkgname}" "${pkgdir}/usr/bin/${_pkgname}"
+	install -Dm755 "target/release/${_cratename}" "${pkgdir}/usr/bin/${_pkgname}"
 	ln -sf "/usr/bin/${_pkgname}" "${pkgdir}/usr/bin/${_pkgalias}"
 
 	install -Dm644 "README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
