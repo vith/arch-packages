@@ -1,6 +1,6 @@
 pkgbase = apexshot
 	pkgdesc = Linux screenshot, annotation, OCR, and screen recording tool
-	pkgver = 0.3.0
+	pkgver = 0.3.1
 	pkgrel = 1
 	url = https://github.com/apex-shot/apexshot
 	arch = x86_64
@@ -54,7 +54,7 @@ pkgbase = apexshot
 	optdepends = wf-recorder: wlroots recording fallback
 	optdepends = wtype: Wayland input for scrolling captures
 	options = !lto
-	source = apexshot::git+https://github.com/apex-shot/apexshot.git#tag=v0.3.0
-	sha256sums = 112a3ea2c45dda35e39594e31c9c74f5ac1707c3cb14d411d4810f8264977f1e
+	source = apexshot::git+https://github.com/apex-shot/apexshot.git#tag=v0.3.1
+	sha256sums = 177ca9512beda532393ca9bdcfe4f9e67a3a8e354f849a829f898d7b32db4b49
 
 pkgname = apexshot
