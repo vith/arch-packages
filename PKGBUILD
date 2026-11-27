@@ -1,7 +1,7 @@
 # Maintainer: Amin Vakil <info AT aminvakil DOT com>
 
 pkgname=pi
-pkgver=1.6.0
+pkgver=1.7.0
 pkgrel=1
 pkgdesc="AI coding agent for the terminal — minimal, extensible and optimized for tool use"
 arch=('x86_64' 'aarch64')
@@ -10,6 +10,7 @@ license=('MIT')
 depends=('nodejs>=22')
 makedepends=('npm')
 optdepends=(
+  'npm: for installing and managing npm-based Pi packages'
   'tmux: for background bash capabilities'
   'fd: system-provided backend for the find tool'
   'ripgrep: system-provided backend for the grep tool'
@@ -18,8 +19,8 @@ options=('!strip' '!debug')
 
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz"
         "pi-ai-${pkgver}.tgz::https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-${pkgver}.tgz")
-sha256sums=('e99588da5aa5b73dd5045fdd318a81928f036ac67ae2254c32fd333c597d5f68'
-            'd68312ec574bc959cb7fee26da4f4876d067aed9bbbe76e876359e60d2294747')
+sha256sums=('764a15b547d6658ae97b3a003e735422fe6e2a4a4dea2da77dffc2c60b99c2c9'
+            'd0dd546e7c7c1dfdab6582be8a177ed1184cc857b6a876d3ef576a1cc8088a12')
 
 prepare() {
   rm -rf "${srcdir}/${pkgname}-${pkgver}/packages/ai/src/providers/data"
@@ -34,7 +35,8 @@ build() {
 
   npm run build:offline
 
-  # Remove packages which are only necessary in development / building
+  # Keep only the coding agent and its runtime dependencies
+  npm pkg set --json 'workspaces=["packages/{ai,agent,tui,telemetry,coding-agent,codemode,mcp,schema}"]'
   npm prune --omit=dev --ignore-scripts --no-audit --no-fund --cache "${srcdir}/npm-cache"
 }
 
@@ -50,7 +52,7 @@ package() {
   cp -a node_modules/. "$pkgdir/$mod_dir/node_modules/"
 
   local _pkg
-  for _pkg in ai agent tui telemetry chord coding-agent codemode mcp schema; do
+  for _pkg in ai agent tui telemetry coding-agent codemode mcp schema; do
     install -dm755 "$pkgdir/$mod_dir/packages/$_pkg"
     cp -a "packages/$_pkg/dist" "packages/$_pkg/package.json" "packages/$_pkg/README.md" \
       "$pkgdir/$mod_dir/packages/$_pkg/"
